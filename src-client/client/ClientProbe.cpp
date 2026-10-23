@@ -37,7 +37,13 @@
 
 #include <fmt/format.h>
 
+#include <windows.h>
+
+#include "client/gameplay/ClientShooter.h"
 #include "client/sound/GunSound.h"
+#include "gun/Reload.h"
+#include "mod/TaczMod.h"
+#include "nbt/AmmoItem.h"
 #include "nbt/GunItem.h"
 #include "net/DebugPackets.h"
 
@@ -96,11 +102,11 @@ std::array<ll::event::ListenerPtr, 2> listeners;
 void enable() {
     auto& bus = ll::event::EventBus::getInstance();
 
-    // R: packet-path ping (reload itself is not implemented yet). Shooting and fire select are
-    // handled by client/gameplay/ClientShooter.
+    // Shooting, fire select (G) and reload (R) are handled by client/gameplay/ClientShooter.
+    // Ctrl+P: packet-path ping to the server.
     listeners[0] = bus.emplaceListener<ll::event::input::KeyInputEvent>([](ll::event::input::KeyInputEvent& event) {
         if (!event.isDown() || event.controller().mTextboxIsFocused || !inGameplay()) return;
-        if (event.keyCode() == 'R') sendAction("reload");
+        if (event.keyCode() == 'P' && (GetKeyState(VK_CONTROL) & 0x8000)) sendAction("ping");
     });
 
     listeners[1] = bus.emplaceListener<ll::event::AfterUIRenderEvent>([](ll::event::AfterUIRenderEvent& event) {
@@ -110,13 +116,20 @@ void enable() {
             context.mClient.getMinecraftGame_DEPRECATED().getFontRepository()->getFontFromFontType("default").getFont();
         std::string held = "-";
         if (auto client = ll::service::getClientInstance(); client && client->getLocalPlayer()) {
-            if (auto gun = nbt::readGun(client->getLocalPlayer()->getSelectedItem())) {
+            auto& player = *client->getLocalPlayer();
+            if (auto gun = nbt::readGun(player.getSelectedItem())) {
+                int reserve = 0;
+                if (auto const* entry = TaczMod::getInstance().gunPacks().gun(gun->gunId); entry && entry->data.ammoId) {
+                    reserve = nbt::countAmmo(player, *entry->data.ammoId);
+                }
                 held = fmt::format(
-                    "{} {} ammo={}{}",
+                    "{} {} ammo={}{} reserve={} {}",
                     gun->gunId.toString(),
                     nbt::fireModeName(gun->fireMode),
                     gun->ammo,
-                    gun->barrel ? "+1" : ""
+                    gun->barrel ? "+1" : "",
+                    reserve,
+                    gun::reloadStateName(shooter::reloadState())
                 );
             }
         }

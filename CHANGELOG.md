@@ -8,6 +8,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 Versioning rule for this project: the patch number goes up by 1 for each small item or test
 round, the minor number goes up by 1 for each finished feature or phase.
 
+## [0.3.4] - 2026-10-24
+
+### Added
+
+- Reload (R, TACZ's default key), after LivingEntityReload / LocalPlayerReload:
+  - The server runs the gun's Lua logic script every tick (AK47: `xmag_reload_logic.lua` with
+    its `script_param` timings), or TACZ's default reload when a gun has no script. Tactical
+    reload keeps the chambered round; empty reload chambers one from the new magazine.
+  - The reload state is sent to the client on every change; no shooting while reloading,
+    switching weapon stops the reload, pulling the trigger sends TACZ's interrupt.
+  - The client plays the reload animation's sound keyframes (magout, magin, ...) at their times.
+- Embedded Lua 5.4 + sol2 (`src/lua/GunLogic.*`) after TACZ's ScriptManager: modules in
+  `package.preload` as `<ns>_<path>`, TACZ's reload-state and fire-mode constants, sandboxed
+  (no io/os/file loading/bytecode, instruction limit per call). All 10 default-pack gun logic
+  scripts load.
+- Ammo: items carrying TACZ's `AmmoId` NBT count as ammo; survival reloads take them from the
+  inventory, creative reloads are free. `/tacz ammo <count>` gives ammo for the held gun
+  (placeholder look: iron nugget).
+- Probe HUD shows reserve ammo and reload state; the server ping moved to Ctrl+P.
+- Unit tests: reload timelines (default and AK47 script), sandbox, animation sound keyframes
+  (42 cases total).
+
 ## [0.3.3] - 2026-10-23
 
 ### Fixed

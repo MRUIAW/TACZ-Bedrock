@@ -3,6 +3,7 @@
 #include <array>
 #include <chrono>
 #include <cstdint>
+#include <memory>
 #include <mutex>
 #include <optional>
 #include <unordered_map>
@@ -23,8 +24,11 @@
 #include "mc/world/actor/player/Player.h"
 #include "mc/world/level/Level.h"
 
+#include "gun/Reload.h"
 #include "gun/ShootRules.h"
+#include "lua/GunLogic.h"
 #include "mod/TaczMod.h"
+#include "nbt/AmmoItem.h"
 #include "nbt/GunItem.h"
 #include "net/GunPackets.h"
 #include "server/BulletSystem.h"
@@ -44,6 +48,7 @@ int64_t serverNowMs() {
 struct ShooterState {
     std::optional<int64_t> clockOffset; // server ms - client ms, set on the first trigger pull
     std::optional<int64_t> lastShot;    // client timestamp of the last accepted trigger pull
+    int64_t                lastShotServerMs = -1;
 
     // Rounds of the current trigger pull still to fire (bursts).
     int                           remaining = 0;
@@ -52,14 +57,22 @@ struct ShooterState {
     pack::ResourceId              gunId;
     std::optional<pack::FireMode> mode;
     int                           slot = -1;
+
+    // Reload (LivingEntityReload / ShooterDataHolder.reloadTimestamp / reloadStateType).
+    gun::ReloadStateType reloadState      = gun::ReloadStateType::NotReloading;
+    int64_t              reloadStartedMs  = -1;
+    int                  reloadSlot       = -1;
+    pack::ResourceId     reloadGunId;
 };
 
 std::mutex                                 mutex;
 std::unordered_map<int64_t, ShooterState> states; // by ActorUniqueID
+std::unique_ptr<lua::GunLogic>             logic;
 
 std::array<ll::event::ListenerPtr, 3> listeners;
 
-ShooterState& stateOf(Player const& player) { return states[player.getOrCreateUniqueID().rawID]; }
+int64_t       keyOf(Player const& player) { return player.getOrCreateUniqueID().rawID; }
+ShooterState& stateOf(Player const& player) { return states[keyOf(player)]; }
 
 Player* senderOf(NetworkIdentifier const& netId, SubClientId subId) {
     auto handler = ll::service::getServerNetworkHandler();
@@ -67,6 +80,40 @@ Player* senderOf(NetworkIdentifier const& netId, SubClientId subId) {
 }
 
 pack::GunEntry const* gunEntry(pack::ResourceId const& id) { return TaczMod::getInstance().gunPacks().gun(id); }
+
+lua::GunLogic& gunLogic() {
+    if (!logic) {
+        logic = std::make_unique<lua::GunLogic>(TaczMod::getInstance().gunPacks(), [](std::string const& msg) {
+            logger().warn("{}", msg);
+        });
+    }
+    return *logic;
+}
+
+// The script API view of the player's held gun.
+lua::ScriptApi scriptApi(Player& player, nbt::GunItemState const& item, pack::GunEntry const& entry, ShooterState const& s) {
+    lua::ScriptApi api;
+    api.gunId          = item.gunId;
+    api.data           = &entry.data;
+    api.ammo           = {item.ammo, item.barrel};
+    api.maxAmmo        = entry.data.ammoAmount;
+    api.magExtentLevel = 0; // extended magazines come with attachments
+    api.fireMode       = item.fireMode;
+    api.needCheckAmmo  = !player.isCreative();
+    api.consumesAmmo   = true; // TACZ GunConfig.CREATIVE_PLAYER_CONSUME_AMMO default
+    api.reloadState    = s.reloadState;
+    api.nowMs          = serverNowMs();
+    api.reloadTimeMs   = s.reloadStartedMs < 0 ? 0 : api.nowMs - s.reloadStartedMs;
+    api.shooterKey     = keyOf(player);
+    auto ammoId        = entry.data.ammoId;
+    api.extractAmmo    = [&player, ammoId](int n) { return ammoId ? nbt::extractAmmo(player, *ammoId, n) : 0; };
+    api.inventoryHasAmmo = [&player, ammoId] { return ammoId && nbt::countAmmo(player, *ammoId) > 0; };
+    return api;
+}
+
+void sendReloadState(Player& player, gun::ReloadState state) {
+    net::ReloadStatePacket{static_cast<int>(state.type), state.countDown}.sendTo(player);
+}
 
 // One round of the trigger pull: ammo, then the bullets. False ends the pull (TACZ's cycle
 // task returns false when the shooter died, switched weapon or ran dry).
@@ -85,12 +132,9 @@ bool fireRound(Player& player, ShooterState& s) {
     nbt::writeSelectedGun(player, *item);
 
     // Aiming is not implemented yet, so the aim inaccuracy never applies.
-    auto  type        = gun::inaccuracyType(false, player.isSneaking(), glm::length(glm::dvec3{
-                                                                   player.getPosDelta().x,
-                                                                   player.getPosDelta().y,
-                                                                   player.getPosDelta().z,
-                                                               }));
-    float inaccuracy  = gun::inaccuracy(data, s.mode, type);
+    auto  delta      = player.getPosDelta();
+    auto  type       = gun::inaccuracyType(false, player.isSneaking(), glm::length(glm::dvec3{delta.x, delta.y, delta.z}));
+    float inaccuracy = gun::inaccuracy(data, s.mode, type);
     bullet::fire(player, data, s.mode, inaccuracy);
     return true;
 }
@@ -117,6 +161,7 @@ char const* handleShoot(Player& player, int64_t timestamp) {
         s.clockOffset = now - timestamp;
         return "NETWORK_FAIL";
     }
+    if (gun::isReloading(s.reloadState)) return "IS_RELOADING";
 
     gun::GunAmmo ammo{item->ammo, item->barrel};
     switch (gun::prepareShot(*data.bolt, ammo)) {
@@ -133,13 +178,14 @@ char const* handleShoot(Player& player, int64_t timestamp) {
         nbt::writeSelectedGun(player, *item);
     }
 
-    s.lastShot  = timestamp;
-    s.gunId     = item->gunId;
-    s.mode      = item->fireMode;
-    s.slot      = player.getSelectedItemSlot();
-    int cycles  = s.mode == pack::FireMode::Burst ? std::max(data.burst.count, 1) : 1;
-    s.period    = std::chrono::milliseconds(s.mode == pack::FireMode::Burst ? gun::burstShootIntervalMs(data) : 1);
-    s.remaining = cycles;
+    s.lastShot         = timestamp;
+    s.lastShotServerMs = now;
+    s.gunId            = item->gunId;
+    s.mode             = item->fireMode;
+    s.slot             = player.getSelectedItemSlot();
+    int cycles         = s.mode == pack::FireMode::Burst ? std::max(data.burst.count, 1) : 1;
+    s.period           = std::chrono::milliseconds(s.mode == pack::FireMode::Burst ? gun::burstShootIntervalMs(data) : 1);
+    s.remaining        = cycles;
     // CycleTaskHelper runs the first round right away; the rest follow on server ticks.
     if (fireRound(player, s)) {
         --s.remaining;
@@ -150,11 +196,118 @@ char const* handleShoot(Player& player, int64_t timestamp) {
     return nullptr;
 }
 
-void tickBursts(Level& level) {
+// AbstractGunItem.canReload: not full, and (outside creative) ammo in the inventory.
+bool canReload(Player& player, nbt::GunItemState const& item, pack::GunEntry const& entry) {
+    auto const& data = entry.data;
+    if (item.ammo >= data.ammoAmount) return false;
+    if (data.reload.type == pack::FeedType::Inventory) return false;
+    if (player.isCreative() || data.reload.infinite) return true;
+    return data.ammoId && nbt::countAmmo(player, *data.ammoId) > 0;
+}
+
+// LivingEntityReload.reload. Returns a reason when the request is refused.
+char const* handleReload(Player& player) {
+    auto item = nbt::readGun(player.getSelectedItem());
+    if (!item) return "NOT_GUN";
+    auto const* entry = gunEntry(item->gunId);
+    if (!entry) return "ID_NOT_EXIST";
+    auto const& data = entry->data;
+    if (data.reload.type == pack::FeedType::Inventory) return "INVENTORY_FED";
+
+    std::lock_guard lock(mutex);
+    auto&           s = stateOf(player);
+    if (gun::isReloading(s.reloadState)) return "ALREADY_RELOADING";
+    // getShootCoolDown() != 0 at the server's own clock.
+    if (s.lastShotServerMs >= 0 && gun::triggerIntervalMs(data, item->fireMode) - (serverNowMs() - s.lastShotServerMs) - 5 > 0) {
+        return "COOL_DOWN";
+    }
+    if (s.remaining > 0) return "COOL_DOWN";
+    if (!canReload(player, *item, *entry)) return "CANNOT_RELOAD";
+
+    gun::GunAmmo ammo{item->ammo, item->barrel};
+    bool         empty = gun::availableRounds(*data.bolt, ammo) <= 0;
+    s.reloadState      = empty ? gun::ReloadStateType::EmptyFeeding : gun::ReloadStateType::TacticalFeeding;
+    s.reloadStartedMs  = serverNowMs();
+    s.reloadSlot       = player.getSelectedItemSlot();
+    s.reloadGunId      = item->gunId;
+
+    auto api = scriptApi(player, *item, *entry, s);
+    if (!gunLogic().startReload(api)) {
+        s.reloadState     = gun::ReloadStateType::NotReloading;
+        s.reloadStartedMs = -1;
+        return "SCRIPT_REFUSED";
+    }
+    logger().info(
+        "[reload] {} {} reload of {} ({}{} rounds)",
+        player.getRealName(),
+        empty ? "empty" : "tactical",
+        item->gunId.toString(),
+        item->ammo,
+        item->barrel ? "+1" : ""
+    );
+    sendReloadState(player, {s.reloadState, 0});
+    return nullptr;
+}
+
+// ShooterDataHolder.initialData for the reload part, after a weapon switch or cancel.
+void stopReload(Player& player, ShooterState& s, char const* why) {
+    if (!gun::isReloading(s.reloadState)) return;
+    s.reloadState     = gun::ReloadStateType::NotReloading;
+    s.reloadStartedMs = -1;
+    gunLogic().clearScriptData(keyOf(player));
+    logger().info("[reload] {} reload stopped: {}", player.getRealName(), why);
+    sendReloadState(player, {});
+}
+
+// LivingEntityReload.cancelReload -> ModernKineticGunItem.interruptReload. Scripts decide what
+// interrupting means (shell-by-shell guns stop after the current shell); TACZ's default does
+// nothing, so a magazine reload keeps running.
+void handleCancelReload(Player& player) {
+    auto item = nbt::readGun(player.getSelectedItem());
+    if (!item) return;
+    auto const* entry = gunEntry(item->gunId);
+    if (!entry) return;
+    std::lock_guard lock(mutex);
+    auto&           s = stateOf(player);
+    if (!gun::isReloading(s.reloadState)) return;
+    auto api = scriptApi(player, *item, *entry, s);
+    gunLogic().interruptReload(api);
+}
+
+// LivingEntityReload.tickReloadState, once per server tick.
+void tickReload(Player& player, ShooterState& s) {
+    if (!gun::isReloading(s.reloadState)) return;
+    auto item = nbt::readGun(player.getSelectedItem());
+    // Switching away from the gun resets the shooter (LivingEntityDrawGun -> initialData).
+    if (!item || item->gunId != s.reloadGunId || player.getSelectedItemSlot() != s.reloadSlot) {
+        stopReload(player, s, "weapon switched");
+        return;
+    }
+    auto const* entry = gunEntry(item->gunId);
+    if (!entry) {
+        stopReload(player, s, "gun data gone");
+        return;
+    }
+    auto api  = scriptApi(player, *item, *entry, s);
+    auto next = gunLogic().tickReload(api);
+    if (api.ammo != gun::GunAmmo{item->ammo, item->barrel}) {
+        item->ammo   = api.ammo.magazine;
+        item->barrel = api.ammo.barrel;
+        nbt::writeSelectedGun(player, *item);
+        logger().info("[reload] {} loaded: {}{} rounds", player.getRealName(), item->ammo, item->barrel ? "+1" : "");
+    }
+    if (next.type != s.reloadState) sendReloadState(player, next);
+    s.reloadState = next.type;
+    if (!gun::isReloading(next.type)) {
+        s.reloadStartedMs = -1;
+        logger().info("[reload] {} reload finished", player.getRealName());
+    }
+}
+
+void tick(Level& level) {
     std::lock_guard lock(mutex);
     auto            now = Clock::now();
     for (auto& [id, s] : states) {
-        if (s.remaining <= 0) continue;
         Actor* actor = level.fetchEntity(ActorUniqueID{id}, false);
         if (!actor || !actor->isPlayer()) {
             s.remaining = 0;
@@ -169,6 +322,7 @@ void tickBursts(Level& level) {
             --s.remaining;
             s.nextRound += s.period;
         }
+        tickReload(player, s);
     }
 }
 
@@ -199,20 +353,43 @@ public:
     }
 };
 
+class ReloadHandler final : public ll::network::PacketHandlerBase<ReloadHandler, net::ReloadPacket> {
+public:
+    void handlePacket(NetworkIdentifier const& netId, NetEventCallback&, net::ReloadPacket const& packet) const {
+        auto* player = senderOf(netId, packet.mSenderSubId);
+        if (!player) return;
+        if (char const* refused = handleReload(*player)) {
+            logger().info("[reload] {} refused: {}", player->getRealName(), refused);
+            // The client already played its reload sound; tell it the reload is not happening.
+            sendReloadState(*player, {});
+        }
+    }
+};
+
+class CancelReloadHandler final : public ll::network::PacketHandlerBase<CancelReloadHandler, net::CancelReloadPacket> {
+public:
+    void handlePacket(NetworkIdentifier const& netId, NetEventCallback&, net::CancelReloadPacket const& packet) const {
+        if (auto* player = senderOf(netId, packet.mSenderSubId)) handleCancelReload(*player);
+    }
+};
+
 } // namespace
 
 void enable() {
     auto& bus    = ll::event::EventBus::getInstance();
     listeners[0] = bus.emplaceListener<ll::event::ServerLevelTickEvent>([](ll::event::ServerLevelTickEvent& event) {
-        tickBursts(event.level());
+        tick(event.level());
     });
     listeners[1] = bus.emplaceListener<ll::event::PlayerDisconnectEvent>([](ll::event::PlayerDisconnectEvent& event) {
         std::lock_guard lock(mutex);
-        states.erase(event.self().getOrCreateUniqueID().rawID);
+        auto            key = keyOf(event.self());
+        states.erase(key);
+        if (logic) logic->clearScriptData(key);
     });
     listeners[2] = bus.emplaceListener<ll::event::ServerStoppingEvent>([](ll::event::ServerStoppingEvent&) {
         std::lock_guard lock(mutex);
         states.clear();
+        logic.reset(); // a fresh Lua state per world, as TACZ reloads scripts with the data packs
     });
 }
 
@@ -224,6 +401,7 @@ void disable() {
     }
     std::lock_guard lock(mutex);
     states.clear();
+    logic.reset();
 }
 
 } // namespace tacz::server::shooter

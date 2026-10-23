@@ -1,5 +1,6 @@
 #include "server/ServerProbe.h"
 
+#include <algorithm>
 #include <memory>
 #include <string>
 
@@ -23,6 +24,7 @@
 
 #include "debug/RenderDebug.h"
 #include "mod/TaczMod.h"
+#include "nbt/AmmoItem.h"
 #include "nbt/GunItem.h"
 #include "net/DebugPackets.h"
 
@@ -51,6 +53,10 @@ struct RenderDebugParams {
 struct BulletDebugParams {
     int   moveMode;
     float speedScale;
+};
+
+struct AmmoParams {
+    int count;
 };
 
 namespace {
@@ -108,6 +114,33 @@ void registerCommands() {
                             + " speedScale=" + std::to_string(debug::bulletSpeedScale.load());
             if (auto* player = originPlayer(origin)) player->sendMessage(msg);
             output.success(msg);
+        });
+    // /tacz ammo <count> : give ammo for the held gun (an item carrying TACZ's AmmoId NBT; there is
+    // no dedicated ammo item yet, so it looks like an iron nugget)
+    command.overload<AmmoParams>()
+        .text("ammo")
+        .required("count")
+        .execute([](CommandOrigin const& origin, CommandOutput& output, AmmoParams const& params) {
+            auto* player = originPlayer(origin);
+            if (!player) return output.error("Player only");
+            auto gun   = nbt::readGun(player->getSelectedItem());
+            auto entry = gun ? TaczMod::getInstance().gunPacks().gun(gun->gunId) : nullptr;
+            if (!entry || !entry->data.ammoId) {
+                player->sendMessage("[TACZ] Hold a gun first");
+                return output.error("Hold a gun first");
+            }
+            int left = std::clamp(params.count, 1, 64 * 36);
+            int given = 0;
+            while (left > 0) {
+                int stack = std::min(left, 64);
+                if (!nbt::giveAmmo(*player, *entry->data.ammoId, stack)) break;
+                given += stack;
+                left -= stack;
+            }
+            player->sendMessage(
+                "[TACZ] Gave " + std::to_string(given) + " x " + entry->data.ammoId->toString()
+                + (left > 0 ? " (inventory full)" : "")
+            );
         });
     // /tacz setgun <gunId> : turn the selected item into a gun as TACZ's creative tab hands it out
     // (first fire mode, full magazine, round chambered)

@@ -12,4 +12,7 @@ inline constexpr std::string_view GunFireMode         = "GunFireMode";
 inline constexpr std::string_view GunCurrentAmmoCount = "GunCurrentAmmoCount";
 inline constexpr std::string_view HasBulletInBarrel   = "HasBulletInBarrel";
 
+// Ammo items (api/item/nbt/AmmoItemDataAccessor).
+inline constexpr std::string_view AmmoId = "AmmoId";
+
 } // namespace tacz::nbt

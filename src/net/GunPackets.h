@@ -36,4 +36,44 @@ public:
     Bedrock::Result<void> read(ReadOnlyBinaryStream&) override { return {}; }
 };
 
+// Client -> server: start reloading (ClientMessagePlayerReloadGun).
+class ReloadPacket final : public ll::network::PacketBase<ReloadPacket> {
+public:
+    void                  write(BinaryStream&) const override {}
+    Bedrock::Result<void> read(ReadOnlyBinaryStream&) override { return {}; }
+};
+
+// Client -> server: interrupt the reload (ClientMessagePlayerCancelReload).
+class CancelReloadPacket final : public ll::network::PacketBase<CancelReloadPacket> {
+public:
+    void                  write(BinaryStream&) const override {}
+    Bedrock::Result<void> read(ReadOnlyBinaryStream&) override { return {}; }
+};
+
+// Server -> client: the shooter's reload state (TACZ syncs it as entity data, RELOAD_STATE_KEY).
+// Sent on every state change, and in reply to a refused reload request.
+class ReloadStatePacket final : public ll::network::PacketBase<ReloadStatePacket> {
+public:
+    int     state     = 0; // ReloadStateType ordinal
+    int64_t countDown = -1;
+
+    ReloadStatePacket() = default;
+    ReloadStatePacket(int s, int64_t c) : state(s), countDown(c) {}
+
+    void write(BinaryStream& stream) const override {
+        stream.writeVarInt(state, nullptr, nullptr);
+        stream.writeSignedInt64(countDown, nullptr, nullptr);
+    }
+
+    Bedrock::Result<void> read(ReadOnlyBinaryStream& stream) override {
+        auto s = stream.getVarInt();
+        if (!s) return nonstd::make_unexpected(s.error());
+        auto c = stream.getSignedInt64();
+        if (!c) return nonstd::make_unexpected(c.error());
+        state     = *s;
+        countDown = *c;
+        return {};
+    }
+};
+
 } // namespace tacz::net
