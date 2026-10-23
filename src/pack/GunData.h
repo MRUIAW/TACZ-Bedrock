@@ -161,8 +161,10 @@ struct GunData {
     nlohmann::json                           builtinAttachments;
     nlohmann::json                           charging;
 
-    [[nodiscard]] FireModeAdjust const* fireModeAdjustFor(FireMode mode) const {
-        auto it = fireModeAdjust.find(mode);
+    // An unset mode (TACZ FireMode.UNKNOWN) has no adjustments.
+    [[nodiscard]] FireModeAdjust const* fireModeAdjustFor(std::optional<FireMode> mode) const {
+        if (!mode) return nullptr;
+        auto it = fireModeAdjust.find(*mode);
         return it == fireModeAdjust.end() ? nullptr : &it->second;
     }
 };

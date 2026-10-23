@@ -397,6 +397,19 @@ GunDisplay parseGunDisplay(nlohmann::json const& j) {
             display.sounds.emplace(key, toResourceId(value, "sounds." + key));
         }
     }
+    // GunDisplayInstance: sounds every gun gets unless the display names its own.
+    for (auto const& [key, path] : std::initializer_list<std::pair<char const*, char const*>>{
+             {"dry_fire",      "dry_fire"                       },
+             {"fire_select",   "fire_select"                    },
+             {"head_hit",      "head_hit"                       },
+             {"flesh_hit",     "flesh_hit"                      },
+             {"kill",          "kill"                           },
+             {"melee_bayonet", "melee_bayonet/melee_bayonet_01"},
+             {"melee_stock",   "melee_stock/melee_stock_01"    },
+             {"melee_push",    "melee_stock/melee_stock_02"    },
+    }) {
+        display.sounds.try_emplace(key, ResourceId{"tacz", path});
+    }
     display.raw = j;
     return display;
 }

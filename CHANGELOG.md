@@ -8,6 +8,53 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 Versioning rule for this project: the patch number goes up by 1 for each small item or test
 round, the minor number goes up by 1 for each finished feature or phase.
 
+## [0.3.3] - 2026-10-23
+
+### Fixed
+
+- Uneven full-auto fire rate (0.3.2 test: intervals jumped between 50, 100 and 150 ms). The
+  trigger was polled through LeviLamina's ClientThreadExecutor, which only runs once per 50 ms
+  client tick. It now runs every frame from a `MinecraftGame::update` hook (as Lamium does), and
+  burst follow-up sounds are timed per frame too. The frame hook rate is logged once per world.
+
+### Changed
+
+- Bullets pass through iron bars, fences, fence gates and leaves, as TACZ's
+  `tacz:bullet_ignore` block tag does (matched by block name; Bedrock has no block tags).
+- Bullet entity collision box is 0.0625 x 0.0625, TACZ's entity size. Hit detection does not
+  use it (bullets are rays, as in TACZ). Pack change: restart the game.
+
+## [0.3.2] - 2026-10-23
+
+### Added
+
+- Shooting (`src-server/server/Shooter.cpp`, `src-client/client/gameplay/ClientShooter.cpp`,
+  rules in `src/gun/ShootRules.h`), following TACZ's ShootKey / LocalPlayerShoot /
+  LivingEntityShoot / ModernKineticGunScriptAPI.shootOnce:
+  - Holding the left button fires at the gun's rate in AUTO (and BURST with continuous_shoot);
+    SEMI and BURST need a new press. G cycles the fire mode (TACZ's default key).
+  - The client checks its cooldown, plays the shoot / dry-fire / fire-select sound right away
+    and sends a timestamped shoot packet; the server checks the cooldown (5 ms window), the
+    client clock (±300 ms), chambers a round for closed bolts, consumes ammo per bolt type and
+    fires. Bursts spread their rounds over server ticks.
+  - Bullet spread from TACZ's inaccuracy (stand / move / sneak, fire mode addends) with
+    vanilla's triangular jitter; bullets inherit the shooter's motion.
+  - Bullet speed now includes TACZ's default global modifier (x2): the AK47 flies 25 blocks/tick.
+- Gun item state uses TACZ's NBT encodings (`src/nbt/GunItem.*`): `GunFireMode` as the enum
+  name, `HasBulletInBarrel` as a byte. `/tacz setgun` hands the gun out as TACZ's creative tab
+  does: first fire mode, full magazine, round chambered.
+- Display sounds get TACZ's defaults (`dry_fire`, `fire_select`, hit and melee sounds).
+- Unit tests for the shooting rules (36 cases total).
+
+### Changed
+
+- The probe no longer fires on click; R still pings the server, and the HUD shows fire mode
+  and chamber state.
+
+### Not yet
+
+- Reload, bolt action, aiming, draw / sprint locks, heat, Lua `shoot` overrides.
+
 ## [0.3.1] - 2026-10-23
 
 ### Added

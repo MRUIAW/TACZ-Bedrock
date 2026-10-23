@@ -4,6 +4,7 @@
 #include <array>
 #include <mutex>
 #include <optional>
+#include <random>
 #include <string>
 #include <vector>
 
@@ -33,6 +34,7 @@
 #include "mc/world/level/BlockSource.h"
 #include "mc/world/level/Level.h"
 #include "mc/world/level/ShapeType.h"
+#include "mc/world/level/block/Block.h"
 #include "mc/world/phys/AABB.h"
 #include "mc/world/phys/HitResult.h"
 #include "mc/world/phys/HitResultType.h"
@@ -41,6 +43,7 @@
 #include "gun/BulletHit.h"
 #include "gun/BulletPhysics.h"
 #include "gun/GunStats.h"
+#include "gun/ShootRules.h"
 #include "mod/TaczMod.h"
 #include "net/DebugPackets.h"
 
@@ -102,6 +105,15 @@ Cause piercingCause() {
         logger().info("Armour-piercing bullet damage uses cause {}", static_cast<int>(*chosen));
     }
     return *chosen;
+}
+
+// TACZ BlockRayTrace: blocks tagged tacz:bullet_ignore (iron bars, fences, fence gates, leaves)
+// let bullets through. Bedrock has no block tags, so the tag is matched by name.
+bool bulletPassesThrough(Block const& block) {
+    std::string_view name = block.getTypeName();
+    if (auto colon = name.find(':'); colon != std::string_view::npos) name.remove_prefix(colon + 1);
+    return name == "iron_bars" || name.ends_with("fence") || name.ends_with("fence_gate")
+        || name.find("leaves") != std::string_view::npos;
 }
 
 // One hurt() call. TACZ clears the target's hurt cooldown before each part so full-auto fire
@@ -239,7 +251,7 @@ bool tick(Level& level, Bullet& b, std::string& reason) {
         false,
         false,
         nullptr,
-        [](BlockSource const&, Block const&, bool) { return true; },
+        [](BlockSource const&, Block const& block, bool) { return !bulletPassesThrough(block); },
         false
     );
     bool hitBlock = blockHit.mType == HitResultType::Tile;
@@ -292,17 +304,21 @@ void tickAll(Level& level) {
 
 } // namespace
 
-void fire(Player& shooter, pack::GunData const& gun, pack::FireMode mode) {
-    pack::BulletData scaled = gun.bullet;
-    scaled.speed *= debug::bulletSpeedScale.load();
-    auto origin    = toGlm(shooter.getHeadPos());
-    auto direction = toGlm(shooter.getViewVector());
-    auto damage    = gun::BulletDamage::from(gun, mode);
-    int  pellets   = std::max(gun.bullet.bulletAmount, 1);
+void fire(Player& shooter, pack::GunData const& gun, std::optional<pack::FireMode> mode, float inaccuracy) {
+    static std::mt19937 rng{std::random_device{}()};
+
+    auto   origin    = toGlm(shooter.getHeadPos());
+    auto   direction = toGlm(shooter.getViewVector());
+    double speed     = gun::bulletSpeedPerTick(gun, mode) * debug::bulletSpeedScale.load();
+    auto   damage    = gun::BulletDamage::from(gun, mode);
+    int    pellets   = std::max(gun.bullet.bulletAmount, 1);
+    // Projectile.shootFromRotation: the bullet inherits the shooter's motion (vertical only in the air).
+    auto inherited = toGlm(shooter.getPosDelta());
+    if (shooter.isOnGround()) inherited.y = 0;
 
     for (int i = 0; i < pellets; ++i) {
-        // Spread (inaccuracy) is not applied yet: every pellet flies straight.
-        auto          motion = gun::BulletMotion::launch(scaled, origin, direction);
+        auto velocity = gun::spreadVelocity(direction, speed, inaccuracy, rng) + inherited;
+        auto motion   = gun::BulletMotion::launchWithVelocity(gun.bullet, origin, velocity);
         ActorUniqueID id{};
         Actor*        actor = CommandUtils::spawnEntityAt(
             shooter.getDimensionBlockSource(),
@@ -331,10 +347,11 @@ void fire(Player& shooter, pack::GunData const& gun, pack::FireMode mode) {
         b.serial        = nextSerial++;
         bullets.push_back(std::move(b));
         logger().info(
-            "[bullet #{}] fired at {:.2f} blocks/tick (x{:.2f}), life {} ticks, damage {:.1f} at the muzzle",
+            "[bullet #{}] fired at {:.2f} blocks/tick (x{:.2f}), inaccuracy {:.2f}, life {} ticks, damage {:.1f} at the muzzle",
             bullets.back().serial,
             glm::length(motion.vel),
             debug::bulletSpeedScale.load(),
+            inaccuracy,
             motion.life,
             damage.atDistance(0)
         );

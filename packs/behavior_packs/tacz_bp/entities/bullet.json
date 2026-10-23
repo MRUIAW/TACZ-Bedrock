@@ -14,7 +14,7 @@
     },
     "components": {
       "minecraft:physics": { "has_gravity": false, "has_collision": false },
-      "minecraft:collision_box": { "width": 0.1, "height": 0.1 },
+      "minecraft:collision_box": { "width": 0.0625, "height": 0.0625 },
       "minecraft:pushable": { "is_pushable": false, "is_pushable_by_piston": false },
       "minecraft:damage_sensor": {
         "triggers": { "cause": "all", "deals_damage": "no" }

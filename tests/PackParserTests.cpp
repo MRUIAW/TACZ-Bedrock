@@ -77,9 +77,13 @@ TEST_CASE("Gun data: special serializers") {
 }
 
 TEST_CASE("Gun display: empty sound ids are skipped, invalid ones fail") {
-    auto display = parseGunDisplay(parseJsonText(R"({"sounds": {"shoot": "tacz:ak47/ak47_shoot", "inspect": ""}})"));
-    CHECK(display.sounds.size() == 1);
+    auto display = parseGunDisplay(parseJsonText(R"({"sounds": {"shoot": "tacz:ak47/ak47_shoot", "inspect": "",
+        "fire_select": "tacz:custom/select"}})"));
+    CHECK_FALSE(display.sounds.contains("inspect"));
     CHECK(display.sounds.at("shoot").path == "ak47/ak47_shoot");
+    // GunDisplayInstance defaults fill in what the display does not name, and never override it.
+    CHECK(display.sounds.at("dry_fire").toString() == "tacz:dry_fire");
+    CHECK(display.sounds.at("fire_select").toString() == "tacz:custom/select");
     CHECK_THROWS_AS(parseGunDisplay(parseJsonText(R"({"sounds": {"shoot": "Tacz:Bad"}})")), ParseError);
 }
 

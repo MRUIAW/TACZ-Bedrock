@@ -1,5 +1,7 @@
 #pragma once
 
+#include <optional>
+
 #include "pack/GunData.h"
 
 class Player;
@@ -13,7 +15,8 @@ namespace tacz::server::bullet {
 void enable();
 void disable();
 
-// Fires one round from the shooter's eyes along their view direction (bullet_amount pellets).
-void fire(Player& shooter, pack::GunData const& gun, pack::FireMode mode);
+// Fires one round (bullet_amount pellets) from the shooter's eyes along their view direction,
+// each pellet with TACZ's spread for `inaccuracy`.
+void fire(Player& shooter, pack::GunData const& gun, std::optional<pack::FireMode> mode, float inaccuracy);
 
 } // namespace tacz::server::bullet

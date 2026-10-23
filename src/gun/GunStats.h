@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <cfloat>
 #include <cstdint>
+#include <optional>
 #include <vector>
 
 #include "pack/GunData.h"
@@ -23,14 +24,14 @@ struct DamageConfig {
 };
 
 // GunData.getRoundsPerMinute(FireMode): base rpm + fire mode adjust; invalid -> 300.
-inline int roundsPerMinute(GunData const& data, FireMode mode) {
+inline int roundsPerMinute(GunData const& data, std::optional<FireMode> mode) {
     int rpm = data.rpm;
     if (auto const* adjust = data.fireModeAdjustFor(mode)) rpm += adjust->rpm;
     return rpm <= 0 ? 300 : rpm;
 }
 
 // GunData.getShootInterval without heat: 60000 / clamp(rpm, 1, 1200) ms.
-inline int64_t shootIntervalMs(GunData const& data, FireMode mode) {
+inline int64_t shootIntervalMs(GunData const& data, std::optional<FireMode> mode) {
     return 60'000 / std::clamp(roundsPerMinute(data, mode), 1, 1200);
 }
 
@@ -41,7 +42,7 @@ inline int64_t burstShootIntervalMs(GunData const& data) {
 
 // DamageModifier.initCache: the distance/damage table with fire mode adjust and config applied.
 inline std::vector<pack::DistanceDamagePair>
-damageTable(GunData const& data, FireMode mode, DamageConfig const& config = {}) {
+damageTable(GunData const& data, std::optional<FireMode> mode, DamageConfig const& config = {}) {
     float adjust = 0;
     if (auto const* a = data.fireModeAdjustFor(mode)) adjust = a->damage;
     std::vector<pack::DistanceDamagePair> table;
@@ -67,14 +68,14 @@ inline float effectiveRange(GunData const& data) {
 
 // HeadShotModifier.initCache. Note: without an extra_damage block TACZ yields 0, so headshots
 // deal no damage for such guns; this is kept for parity.
-inline float headShotMultiplier(GunData const& data, FireMode mode, DamageConfig const& config = {}) {
+inline float headShotMultiplier(GunData const& data, std::optional<FireMode> mode, DamageConfig const& config = {}) {
     float base = data.bullet.extraDamage ? data.bullet.extraDamage->headShotMultiplier : 0;
     if (auto const* a = data.fireModeAdjustFor(mode)) base += a->headShotMultiplier;
     return std::max(base * config.headShotBase, 0.0f);
 }
 
 // ArmorIgnoreModifier.initCache, clamped to [0, 1] as in EntityKineticBullet.
-inline float armorIgnore(GunData const& data, FireMode mode, DamageConfig const& config = {}) {
+inline float armorIgnore(GunData const& data, std::optional<FireMode> mode, DamageConfig const& config = {}) {
     float base = data.bullet.extraDamage ? data.bullet.extraDamage->armorIgnore : 0;
     if (auto const* a = data.fireModeAdjustFor(mode)) base += a->armorIgnore;
     return std::clamp(base * config.armorIgnoreBase, 0.0f, 1.0f);
@@ -88,7 +89,7 @@ struct BulletDamage {
     float                                 armorIgnore    = 0;
     float                                 pelletModifier = 1; // 1 / bullet_amount for shotguns
 
-    static BulletDamage from(GunData const& data, FireMode mode, DamageConfig const& config = {}) {
+    static BulletDamage from(GunData const& data, std::optional<FireMode> mode, DamageConfig const& config = {}) {
         BulletDamage d;
         d.table          = gun::damageTable(data, mode, config);
         d.effectiveRange = gun::effectiveRange(data);

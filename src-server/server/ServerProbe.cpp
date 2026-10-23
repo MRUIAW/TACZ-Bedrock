@@ -13,9 +13,6 @@
 #include "ll/api/service/Bedrock.h"
 
 #include "mc/deps/nbt/CompoundTag.h"
-#include "mc/deps/nbt/CompoundTagVariant.h"
-#include "mc/deps/nbt/IntTag.h"
-#include "mc/deps/nbt/StringTag.h"
 #include "mc/network/ServerNetworkHandler.h"
 #include "mc/server/ServerPlayer.h"
 #include "mc/server/commands/CommandOrigin.h"
@@ -26,44 +23,13 @@
 
 #include "debug/RenderDebug.h"
 #include "mod/TaczMod.h"
-#include "nbt/GunNbt.h"
+#include "nbt/GunItem.h"
 #include "net/DebugPackets.h"
-#include "server/BulletSystem.h"
 
 namespace tacz::server::probe {
 namespace {
 
 ll::io::Logger& logger() { return TaczMod::getInstance().getSelf().getLogger(); }
-
-// Reads GunId / ammo from an item's user data; empty id if it is not a gun.
-struct GunState {
-    std::string id;
-    int         ammo = 0;
-};
-
-GunState readGun(ItemStack const& item) {
-    GunState state;
-    auto const& tag = item.mUserData;
-    if (!tag || !tag->contains(nbt::GunId, Tag::String)) return state;
-    state.id = static_cast<std::string const&>((*tag)[nbt::GunId]);
-    if (tag->contains(nbt::GunCurrentAmmoCount, Tag::Int)) {
-        state.ammo = static_cast<int>((*tag)[nbt::GunCurrentAmmoCount]);
-    }
-    return state;
-}
-
-// Writes GunId / ammo into the player's selected item and syncs it to the client.
-bool writeGun(Player& player, std::string const& gunId, int ammo) {
-    ItemStack item(player.getSelectedItem());
-    if (item.isNull()) return false;
-    auto tag = item.mUserData ? item.mUserData->clone() : std::make_unique<CompoundTag>();
-    (*tag)[nbt::GunId]               = StringTag{gunId};
-    (*tag)[nbt::GunCurrentAmmoCount] = IntTag{ammo};
-    item.setUserData(std::move(tag));
-    player.setSelectedItem(item);
-    player.sendInventory(false);
-    return true;
-}
 
 Player* originPlayer(CommandOrigin const& origin) {
     auto* entity = origin.getEntity();
@@ -143,7 +109,8 @@ void registerCommands() {
             if (auto* player = originPlayer(origin)) player->sendMessage(msg);
             output.success(msg);
         });
-    // /tacz setgun <gunId> : mark the selected item as a gun with a full magazine
+    // /tacz setgun <gunId> : turn the selected item into a gun as TACZ's creative tab hands it out
+    // (first fire mode, full magazine, round chambered)
     command.overload<SetGunParams>()
         .text("setgun")
         .required("gunId")
@@ -156,14 +123,16 @@ void registerCommands() {
                 player->sendMessage("[TACZ] Unknown gun id: " + params.gunId);
                 return output.error("Unknown gun id");
             }
-            int ammo = gun->data.ammoAmount;
-            if (!writeGun(*player, gun->id.toString(), ammo)) return output.error("Hold an item first");
-            player->sendMessage("[TACZ] Selected item is now " + gun->id.toString() + " with " + std::to_string(ammo) + " rounds");
+            auto state = nbt::freshGun(gun->id, gun->data);
+            if (!nbt::writeSelectedGun(*player, state)) return output.error("Hold an item first");
+            player->sendMessage(
+                "[TACZ] Selected item is now " + gun->id.toString() + " (" + nbt::fireModeName(state.fireMode) + ", "
+                + std::to_string(state.ammo) + "+1 rounds)"
+            );
         });
 }
 
-// Client -> server action handler. Replies with what the server sees, and
-// consumes one round on "fire" to prove the NBT round trip.
+// Client -> server ping used by the probe HUD (R key). Replies with what the server sees.
 class ActionHandler final : public ll::network::PacketHandlerBase<ActionHandler, net::DebugActionPacket> {
 public:
     void handlePacket(NetworkIdentifier const& netId, NetEventCallback&, net::DebugActionPacket const& packet) const {
@@ -172,17 +141,11 @@ public:
         auto* player = handler->_getServerPlayer(netId, packet.mSenderSubId);
         if (!player) return;
 
-        auto gun = readGun(player->getSelectedItem());
-        if (packet.action == "fire" && !gun.id.empty() && gun.ammo > 0) {
-            gun.ammo--;
-            writeGun(*player, gun.id, gun.ammo);
-            auto id    = pack::ResourceId::parse(gun.id);
-            auto entry = id ? TaczMod::getInstance().gunPacks().gun(*id) : nullptr;
-            // Fire mode switching is not implemented yet: use the gun's first mode (validated non-empty).
-            if (entry) bullet::fire(*player, entry->data, *entry->data.fireModes.front());
-        }
-        std::string info = packet.action + " #" + std::to_string(packet.seq) + " from " + player->getRealName()
-                         + " gun=" + (gun.id.empty() ? std::string{"-"} : gun.id) + " ammo=" + std::to_string(gun.ammo);
+        auto        gun  = nbt::readGun(player->getSelectedItem());
+        std::string info = packet.action + " #" + std::to_string(packet.seq) + " from " + player->getRealName() + " gun="
+                         + (gun ? gun->gunId.toString() + " " + nbt::fireModeName(gun->fireMode) + " ammo="
+                                      + std::to_string(gun->ammo) + (gun->barrel ? "+1" : "")
+                                : std::string{"-"});
         logger().info("[probe] {}", info);
         net::DebugAckPacket{packet.seq, std::move(info)}.sendTo(*player);
     }

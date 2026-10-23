@@ -35,10 +35,11 @@
 #include "mc/deps/nbt/CompoundTagVariant.h"
 #include "mc/world/item/ItemStack.h"
 
+#include <fmt/format.h>
+
 #include "client/sound/GunSound.h"
-#include "nbt/GunNbt.h"
+#include "nbt/GunItem.h"
 #include "net/DebugPackets.h"
-#include "pack/ResourceId.h"
 
 namespace tacz::client::probe {
 namespace {
@@ -56,40 +57,15 @@ public:
     }
 };
 
-// Held-gun state as the client sees it after the server's inventory sync.
-struct HeldGun {
-    std::string id;
-    int         ammo = -1;
-};
-
-HeldGun heldGun() {
-    HeldGun gun;
-    auto client = ll::service::getClientInstance();
-    if (!client) return gun;
-    auto* player = client->getLocalPlayer();
-    if (!player) return gun;
-    auto const& tag = player->getSelectedItem().mUserData;
-    if (!tag || !tag->contains(nbt::GunId, Tag::String)) return gun;
-    gun.id = static_cast<std::string const&>((*tag)[nbt::GunId]);
-    if (tag->contains(nbt::GunCurrentAmmoCount, Tag::Int)) {
-        gun.ammo = static_cast<int>((*tag)[nbt::GunCurrentAmmoCount]);
-    }
-    return gun;
-}
-
 bool inGameplay() {
     auto client = ll::service::getClientInstance();
     return client && client->getLocalPlayer() && client->getScreenName().starts_with("hud_screen");
 }
 
 // Input callbacks come from the window procedure; touch game state on the client thread only.
-// `soundKey` is the held gun's display sound played locally, as TACZ does for its own shooter.
-void sendAction(std::string action, std::string soundKey = {}) {
-    ll::thread::ClientThreadExecutor::getDefault().execute([action = std::move(action), soundKey = std::move(soundKey)] {
+void sendAction(std::string action) {
+    ll::thread::ClientThreadExecutor::getDefault().execute([action = std::move(action)] {
         net::DebugActionPacket{nextSeq++, action}.sendToServer();
-        if (soundKey.empty()) return;
-        auto gun = heldGun();
-        if (auto id = pack::ResourceId::parse(gun.id)) sound::playGunSound(*id, soundKey);
     });
 }
 
@@ -113,41 +89,43 @@ void drawLine(MinecraftUIRenderContext& context, Font& font, float x, float y, s
     );
 }
 
-std::array<ll::event::ListenerPtr, 3> listeners;
+std::array<ll::event::ListenerPtr, 2> listeners;
 
 } // namespace
 
 void enable() {
     auto& bus = ll::event::EventBus::getInstance();
 
-    // R: "reload" ping; works with or without a gun, so it tests the packet path alone.
+    // R: packet-path ping (reload itself is not implemented yet). Shooting and fire select are
+    // handled by client/gameplay/ClientShooter.
     listeners[0] = bus.emplaceListener<ll::event::input::KeyInputEvent>([](ll::event::input::KeyInputEvent& event) {
         if (!event.isDown() || event.controller().mTextboxIsFocused || !inGameplay()) return;
-        // fire_select is a sound shared by all guns (tacz_sounds/fire_select.ogg); the AK47's
-        // reload sounds come from animation keyframes and have no file of their own.
-        if (event.keyCode() == 'R') sendAction("reload", "fire_select");
+        if (event.keyCode() == 'R') sendAction("reload");
     });
 
-    // Left mouse while holding a gun: swallow vanilla attack and send "fire" instead.
-    listeners[1] = bus.emplaceListener<ll::event::input::MouseInputEvent>([](ll::event::input::MouseInputEvent& event) {
-        if (event.actionButtonId() != MouseAction::ActionLeft || !inGameplay()) return;
-        if (heldGun().id.empty()) return;
-        event.cancel();
-        if (event.buttonData() == MouseAction::DataDown) sendAction("fire", "shoot");
-    });
-
-    listeners[2] = bus.emplaceListener<ll::event::AfterUIRenderEvent>([](ll::event::AfterUIRenderEvent& event) {
+    listeners[1] = bus.emplaceListener<ll::event::AfterUIRenderEvent>([](ll::event::AfterUIRenderEvent& event) {
         if (!hudView(event.screenView())) return;
         auto& context = event.uiRenderContext();
         auto& font =
             context.mClient.getMinecraftGame_DEPRECATED().getFontRepository()->getFontFromFontType("default").getFont();
-        auto gun = heldGun();
+        std::string held = "-";
+        if (auto client = ll::service::getClientInstance(); client && client->getLocalPlayer()) {
+            if (auto gun = nbt::readGun(client->getLocalPlayer()->getSelectedItem())) {
+                held = fmt::format(
+                    "{} {} ammo={}{}",
+                    gun->gunId.toString(),
+                    nbt::fireModeName(gun->fireMode),
+                    gun->ammo,
+                    gun->barrel ? "+1" : ""
+                );
+            }
+        }
         std::string reply;
         {
             std::lock_guard lock(replyMutex);
             reply = lastReply;
         }
-        drawLine(context, font, 4, 4, "[TACZ probe] held: " + (gun.id.empty() ? std::string{"-"} : gun.id + " ammo=" + std::to_string(gun.ammo)));
+        drawLine(context, font, 4, 4, "[TACZ probe] held: " + held);
         drawLine(context, font, 4, 14, "[TACZ probe] server: " + reply);
         context.flushText(0, std::nullopt);
     });

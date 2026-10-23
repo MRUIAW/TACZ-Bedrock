@@ -23,11 +23,16 @@ struct BulletMotion {
 
     // Velocity at launch from bullet data: normalised direction * speed / 20.
     static BulletMotion launch(pack::BulletData const& bullet, glm::dvec3 origin, glm::dvec3 direction) {
+        double     len = glm::length(direction);
+        glm::dvec3 dir = len > 0 ? direction / len : glm::dvec3{0, 0, 1};
+        return launchWithVelocity(bullet, origin, dir * static_cast<double>(std::max(bullet.speed / 20.0f, 0.0f)));
+    }
+
+    // Launch with an already computed velocity (blocks per tick), e.g. after spread.
+    static BulletMotion launchWithVelocity(pack::BulletData const& bullet, glm::dvec3 origin, glm::dvec3 velocity) {
         BulletMotion m;
         m.pos      = origin;
-        double len = glm::length(direction);
-        glm::dvec3 dir = len > 0 ? direction / len : glm::dvec3{0, 0, 1};
-        m.vel      = dir * static_cast<double>(std::max(bullet.speed / 20.0f, 0.0f));
+        m.vel      = velocity;
         m.gravity  = std::max(bullet.gravity, 0.0f);
         m.friction = std::max(bullet.friction, 0.0f);
         m.life     = std::max(static_cast<int>(bullet.life * 20), 1);

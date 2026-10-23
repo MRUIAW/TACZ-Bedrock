@@ -4,8 +4,10 @@
 
 #include "server/BulletSystem.h"
 #include "server/ServerProbe.h"
+#include "server/Shooter.h"
 #ifdef TACZ_CLIENT
 #include "client/ClientProbe.h"
+#include "client/gameplay/ClientShooter.h"
 #include "client/render/GunRenderer.h"
 #endif
 
@@ -39,8 +41,10 @@ bool TaczMod::enable() {
     getSelf().getLogger().debug("Enabling...");
     server::probe::enable();
     server::bullet::enable();
+    server::shooter::enable();
 #ifdef TACZ_CLIENT
     client::probe::enable();
+    client::shooter::enable();
     client::render::enable();
 #endif
     return true;
@@ -50,8 +54,10 @@ bool TaczMod::disable() {
     getSelf().getLogger().debug("Disabling...");
 #ifdef TACZ_CLIENT
     client::render::disable();
+    client::shooter::disable();
     client::probe::disable();
 #endif
+    server::shooter::disable();
     server::bullet::disable();
     server::probe::disable();
     return true;
