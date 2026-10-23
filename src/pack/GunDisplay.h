@@ -16,6 +16,7 @@ struct GunDisplay {
     std::optional<ResourceId> model;      // geo_models/<path>.json
     std::optional<ResourceId> texture;    // textures/<path>.png
     std::optional<ResourceId> animation;  // animations/<path>.animation.json
+    std::optional<ResourceId> defaultAnimation;
     std::optional<ResourceId> stateMachine;
     std::string               useDefaultAnimation;
     float                     ironZoom           = 1.2f;

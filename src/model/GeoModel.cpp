@@ -255,11 +255,21 @@ GeoModel parseGeoModel(json const& j) {
     return model;
 }
 
-glm::mat4 partTransform(Bone const& bone) {
-    glm::mat4 m = glm::translate(glm::mat4(1.0f), bone.pivot / 16.0f);
+glm::mat4 partTransform(Bone const& bone, animation::BonePose const* pose) {
+    glm::vec3 offset = pose && pose->translation ? *pose->translation * glm::vec3{1, -1, 1} : glm::vec3{0};
+    glm::mat4 m = glm::translate(glm::mat4(1.0f), offset + bone.pivot / 16.0f);
     if (bone.rotation.z != 0) m = glm::rotate(m, bone.rotation.z, {0, 0, 1});
     if (bone.rotation.y != 0) m = glm::rotate(m, bone.rotation.y, {0, 1, 0});
     if (bone.rotation.x != 0) m = glm::rotate(m, bone.rotation.x, {1, 0, 0});
+    // BedrockPart: rest rotation, then additionalQuaternion (MathUtil.toQuaternion),
+    // then scale. In particular this is NOT Rz(rest.z + animation.z) * ... .
+    if (pose && pose->rotation) {
+        auto r = *pose->rotation;
+        m = glm::rotate(m, r.z, {0, 0, 1});
+        m = glm::rotate(m, r.y, {0, 1, 0});
+        m = glm::rotate(m, r.x, {1, 0, 0});
+    }
+    if (pose && pose->scale) m = glm::scale(m, *pose->scale);
     return m;
 }
 
@@ -281,26 +291,30 @@ glm::mat4 positioningInverse(GeoModel const& model, std::vector<int> const& path
 
 namespace {
 
-void bakeBone(GeoModel const& model, int index, glm::mat4 const& parentMatrix, VisitFn const& visit, std::vector<Vertex>& out) {
+void bakeBone(GeoModel const& model, int index, glm::mat4 const& parentMatrix, VisitFn const& visit, animation::Pose const& pose, std::vector<Vertex>& out) {
     Bone const& bone   = model.bones[index];
     Bone const* parent = bone.parent >= 0 ? &model.bones[bone.parent] : nullptr;
     if (visit(bone, parent) == Visit::Hide) return;
-    glm::mat4 m = parentMatrix * partTransform(bone);
+    auto it = pose.find(bone.name);
+    glm::mat4 m = parentMatrix * partTransform(bone, it == pose.end() ? nullptr : &it->second);
     glm::mat3 n(m);
+    // Normal matrix for non-uniform animated scales; zero scales collapse the geometry.
+    if (std::abs(glm::determinant(n)) > 1e-12f) n = glm::transpose(glm::inverse(n));
     for (auto const& quad : bone.quads) {
-        glm::vec3 normal = glm::normalize(n * quad.normal);
+        glm::vec3 normal = n * quad.normal;
+        normal = glm::dot(normal, normal) > 1e-12f ? glm::normalize(normal) : quad.normal;
         for (int k = 0; k < 4; ++k) {
             out.push_back({glm::vec3(m * glm::vec4(quad.pos[k] / 16.0f, 1.0f)), quad.uv[k], normal});
         }
     }
-    for (int child : bone.children) bakeBone(model, child, m, visit, out);
+    for (int child : bone.children) bakeBone(model, child, m, visit, pose, out);
 }
 
 } // namespace
 
-std::vector<Vertex> bake(GeoModel const& model, VisitFn const& visit) {
+std::vector<Vertex> bake(GeoModel const& model, VisitFn const& visit, animation::Pose const& pose) {
     std::vector<Vertex> out;
-    for (int root : model.roots) bakeBone(model, root, glm::mat4(1.0f), visit, out);
+    for (int root : model.roots) bakeBone(model, root, glm::mat4(1.0f), visit, pose, out);
     return out;
 }
 

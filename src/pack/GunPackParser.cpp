@@ -384,6 +384,7 @@ GunDisplay parseGunDisplay(nlohmann::json const& j) {
     read(j, "model", display.model);
     read(j, "texture", display.texture);
     read(j, "animation", display.animation);
+    read(j, "default_animation", display.defaultAnimation);
     read(j, "state_machine", display.stateMachine);
     read(j, "use_default_animation", display.useDefaultAnimation);
     read(j, "iron_zoom", display.ironZoom);

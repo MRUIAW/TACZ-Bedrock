@@ -59,6 +59,10 @@ struct AmmoParams {
     int count;
 };
 
+struct AnimationParams {
+    std::string name;
+};
+
 namespace {
 
 void registerCommands() {
@@ -87,6 +91,18 @@ void registerCommands() {
         if (auto* player = originPlayer(origin)) player->sendMessage(msg);
         output.success(msg);
     });
+    command.overload<AnimationParams>()
+        .text("anim")
+        .required("name")
+        .execute([](CommandOrigin const& origin, CommandOutput& output, AnimationParams const& params) {
+            auto* player = originPlayer(origin);
+            if (!player) return output.error("Player only");
+            auto gun = nbt::readGun(player->getSelectedItem());
+            if (!gun) return output.error("Hold a gun first");
+            net::AnimationDebugPacket{gun->gunId.toString(), params.name}.sendTo(*player);
+            player->sendMessage("[TACZ] animation: " + params.name + " (see client log for available names)");
+            output.success("Animation request sent");
+        });
     // /tacz rdebug <material> <twoSided> : first-person gun render diagnostics
     command.overload<RenderDebugParams>()
         .text("rdebug")

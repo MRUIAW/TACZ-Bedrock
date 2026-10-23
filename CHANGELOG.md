@@ -8,6 +8,31 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 Versioning rule for this project: the patch number goes up by 1 for each small item or test
 round, the minor number goes up by 1 for each finished feature or phase.
 
+## [0.3.5] - 2026-10-24
+
+### Added
+
+- First-person bone animation playback after TACZ's AnimationKeyframesSerializer,
+  Animations, ObjectAnimationChannel and CustomInterpolator: linear / Catmull-Rom spline,
+  pre/post keyframes, scalar scale, translation units and additional rotation / scale after
+  the rest pose (BedrockPart and ModelTranslate/Rotate/ScaleListener).
+- Temporary C++ tracks driven by the existing MinecraftGame::update frame hook: looping
+  static_idle, draw on selection, tactical / empty reload, additive shoot kick. Named debug
+  playback via `/tacz anim <name>`; unknown names list the held gun's clips in the client log.
+- Pack animation loading and missing-name fallback via default_animation / use_default_animation
+  when the referenced file is present in a gun pack. Loop / hold / stop playback boundaries,
+  real AK47 parsing, rest-pose regression and interpolation tests (57 cases total).
+- Mesh rebuild CPU timing logged once after 120 changing poses; static poses reuse the mesh.
+
+### Not yet
+
+- Lua animation state machine / transitions (0.3.6), player arms and camera / constraint
+  listeners (0.3.7), aiming / sprint / fire-select animation tracks.
+- Bundled rifle_default / pistol_default animation assets (use_default_animation currently
+  needs those files in a gun pack), glTF animations, spherical interpolation on non-rotation
+  channels, functional additional-magazine rendering. Unsupported Molang is logged and skipped
+  (string vector components become zero, as in TACZ).
+
 ## [0.3.4] - 2026-10-24
 
 ### Added

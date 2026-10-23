@@ -1,6 +1,7 @@
 #include "client/render/GunRenderer.h"
 
 #include <exception>
+#include <chrono>
 #include <map>
 #include <memory>
 #include <mutex>
@@ -66,6 +67,7 @@
 #include <glm/gtc/matrix_transform.hpp>
 
 #include "debug/RenderDebug.h"
+#include "client/animation/GunAnimation.h"
 #include "model/GeoModel.h"
 #include "model/GunModelRules.h"
 #include "mod/TaczMod.h"
@@ -84,6 +86,12 @@ struct GunVisual {
     bool                              failed = false; // logged once, then the gun falls back to vanilla
     glm::mat4                         transform{1.0f};
     std::vector<model::Vertex>        vertices; // baked rest pose, kept to rebuild the mesh
+    model::GeoModel                   model;
+    uint64_t                          animationRevision = 0;
+    bool                              animated = false;
+    size_t                            measuredFrames = 0;
+    double                            measuredMs = 0;
+    double                            maxMs = 0;
     std::optional<mce::Mesh>          mesh;
     bool                              meshTwoSided = false;
     uint                              vertexCount  = 0;
@@ -173,7 +181,7 @@ void buildMesh(ScreenContext& screen, GunVisual& visual, bool twoSided) {
         }
     }
     auto const& data = batch.mMeshData.get();
-    logger().info(
+    if (!visual.mesh) logger().info(
         "Gun mesh: {} vertices (two-sided {}), uv0={}, normals={}, colors={}",
         batch.mCount,
         twoSided,
@@ -205,7 +213,8 @@ GunVisual* visualFor(ScreenContext& screen, IClientInstance& client, pack::Resou
         auto png = packs.readFile(pack::assetPath(*display->texture, "textures", ".png"));
         if (!png) throw std::runtime_error("texture file " + display->texture->toString() + " not found");
 
-        auto geo         = model::parseGeoModel(pack::parseJsonText(*modelText));
+        visual.model     = model::parseGeoModel(pack::parseJsonText(*modelText));
+        auto const& geo  = visual.model;
         visual.transform = model::firstPersonIdleTransform(geo);
         model::GunRenderState state;
         visual.vertices = model::bake(geo, [&](model::Bone const& bone, model::Bone const* parent) {
@@ -299,7 +308,30 @@ bool drawGun(ItemInHandRenderer& renderer, BaseActorRenderContext& context) {
     if (!visual || !visual->mesh || !visual->mesh->isValid()) return false;
 
     bool twoSided = debug::gunTwoSided;
-    if (twoSided != visual->meshTwoSided) buildMesh(screen, *visual, twoSided);
+    auto pose = anim::snapshot(*gunId);
+    if (pose.revision != visual->animationRevision || twoSided != visual->meshTwoSided) {
+        auto start = std::chrono::steady_clock::now();
+        if (!pose.pose.empty() || visual->animated) {
+            model::GunRenderState state;
+            visual->vertices = model::bake(visual->model, [&](model::Bone const& bone, model::Bone const* parent) {
+                return model::gunVisibility(bone, parent, state);
+            }, pose.pose);
+        }
+        buildMesh(screen, *visual, twoSided);
+        visual->animationRevision = pose.revision;
+        visual->animated = !pose.pose.empty();
+        double ms = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - start).count();
+        // Log once per visual after 120 changing poses: CPU bake + tessellation/upload submission,
+        // not asynchronous GPU execution. Unchanged/static poses reuse the buffered mesh.
+        if (visual->measuredFrames < 120) {
+            visual->measuredMs += ms;
+            visual->maxMs = std::max(visual->maxMs, ms);
+            if (++visual->measuredFrames == 120) logger().info(
+                "[anim] {} mesh rebuild CPU: mean {:.3f} ms, max {:.3f} ms (120 poses, {} vertices)",
+                gunId->toString(), visual->measuredMs / 120, visual->maxMs, visual->vertices.size()
+            );
+        }
+    }
 
     int         materialIndex = debug::gunMaterial;
     auto const* mat           = gunMaterial(materialIndex, renderer, client);

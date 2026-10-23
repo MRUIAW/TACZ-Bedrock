@@ -11,6 +11,8 @@
 #include <glm/glm.hpp>
 #include <nlohmann/json.hpp>
 
+#include "model/Animation.h"
+
 // Bedrock geometry loaded the way TACZ loads it (client/model/bedrock/BedrockModel and
 // BedrockCubeBox/BedrockCubePerFace), so the same pack models render identically:
 // positions are in Java ModelPart convention (pixels, y down) and the whole model is
@@ -59,7 +61,7 @@ struct GeoModel {
 GeoModel parseGeoModel(nlohmann::json const& json);
 
 // BedrockPart.translateAndRotateAndScale at rest: T(pivot / 16) * Rz * Ry * Rx.
-glm::mat4 partTransform(Bone const& bone);
+glm::mat4 partTransform(Bone const& bone, animation::BonePose const* pose = nullptr);
 
 // FirstPersonRenderGunEvent.getPositioningNodeInverse: moves the end of `path` onto the
 // render origin. Empty path gives identity.
@@ -77,6 +79,6 @@ enum class Visit { Draw, Hide };
 using VisitFn = std::function<Visit(Bone const& bone, Bone const* parent)>;
 
 // Bakes the rest pose into vertices, 4 per quad, in the order BedrockModel.render emits them.
-std::vector<Vertex> bake(GeoModel const& model, VisitFn const& visit);
+std::vector<Vertex> bake(GeoModel const& model, VisitFn const& visit, animation::Pose const& pose = {});
 
 } // namespace tacz::model

@@ -28,6 +28,7 @@
 #include "mc/deps/input/MouseAction.h"
 
 #include "client/sound/GunSound.h"
+#include "client/animation/GunAnimation.h"
 #include "gun/ShootRules.h"
 #include "mod/TaczMod.h"
 #include "nbt/AmmoItem.h"
@@ -176,6 +177,7 @@ void reload(HeldGun const& gun) {
     net::ReloadPacket{}.sendToServer();
     bool noAmmo = data.bolt == pack::Bolt::OpenBolt ? gun.state.ammo <= 0 : !gun.state.barrel;
     playReloadSounds(gun, noAmmo);
+    anim::reload(noAmmo);
 }
 
 // LocalPlayerShoot.shoot + doShoot. In continuous fire the shot is stamped one interval after
@@ -207,6 +209,7 @@ bool shoot(HeldGun const& gun, int64_t now, bool chained) {
     int64_t shotAt     = keepRhythm ? *lastShot + interval : now;
     lastShot           = shotAt;
     net::ShootPacket{shotAt}.sendToServer();
+    anim::shoot();
 
     // Burst: one packet, `count` rounds; the client only plays the sounds.
     auto shootSound = displaySound(gun, "shoot");
@@ -243,8 +246,12 @@ void applyServerReloadState() {
     // A refused or stopped reload cuts its sounds (stopPlayGunSound on the next action in TACZ).
     if (!gun::isReloading(state->type) && gun::isReloading(reloadType) && !gun::isReloadFinishing(reloadType)) {
         stopReloadSounds();
+        anim::cancelReload();
     }
-    if (!gun::isReloading(state->type) && !gun::isReloading(reloadType)) stopReloadSounds();
+    if (!gun::isReloading(state->type) && !gun::isReloading(reloadType)) {
+        stopReloadSounds();
+        anim::cancelReload();
+    }
     reloadType = state->type;
     reloadTypePublished = static_cast<int>(reloadType);
 }
@@ -260,11 +267,21 @@ void frame() {
         reloadLockedAt.reset();
         pendingSounds.clear();
         animationSounds.clear();
+        anim::clear();
+    }
+    auto gun = heldGun();
+    auto client = ll::service::getClientInstance();
+    auto* player = client ? client->getLocalPlayer() : nullptr;
+    if (anim::held(gun ? std::optional{gun->state.gunId} : std::nullopt, player ? player->getSelectedItemSlot() : -1)) {
+        pendingSounds.clear(); // do not kick the newly selected gun with an old burst / reload
+        reloadLockedAt.reset();
+        lastShotSucceeded = false;
     }
     applyServerReloadState();
     // tickStateLock: a request the server never answered stops blocking after 250 ms.
     if (reloadLockedAt && Clock::now() - *reloadLockedAt > std::chrono::milliseconds(250) && !gun::isReloading(reloadType)) {
         reloadLockedAt.reset();
+        anim::cancelReload();
     }
     if (inGameplay()) measureFrameRate();
 
@@ -275,13 +292,13 @@ void frame() {
             continue;
         }
         sound::play(pendingSounds[i].sound, pendingSounds[i].volume, pendingSounds[i].pitch);
+        if (!pendingSounds[i].reload) anim::shoot();
         pendingSounds.erase(pendingSounds.begin() + static_cast<std::ptrdiff_t>(i));
     }
 
     bool wantsReload     = reloadKeyPressed.exchange(false);
     bool wantsFireSelect = fireSelectPressed.exchange(false);
     if (!inGameplay()) return;
-    auto gun = heldGun();
     if (!gun) {
         lastShotSucceeded = false;
         return;
@@ -324,6 +341,7 @@ LL_TYPE_INSTANCE_HOOK(ShooterFrameHook, ll::memory::HookPriority::Normal, Minecr
     origin();
     try {
         frame();
+        anim::update();
     } catch (std::exception const& e) {
         logger().error("Shooter frame failed: {}", e.what());
     } catch (...) {
@@ -380,6 +398,7 @@ void disable() {
     }
     triggerDown  = false;
     resetPending = true;
+    anim::clear();
 }
 
 } // namespace tacz::client::shooter
