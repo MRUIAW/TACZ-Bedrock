@@ -9,6 +9,7 @@
 #include <vector>
 
 #include "pack/GunData.h"
+#include "pack/GunDisplay.h"
 #include "pack/ResourceId.h"
 
 // Discovers TACZ gun packs in a folder (same layout as Java's .minecraft/tacz)
@@ -55,12 +56,18 @@ public:
     void loadFolder(std::filesystem::path const& folder, LogFn const& info, LogFn const& warn);
 
     // Loads already-opened packs; later packs override earlier ones on id clashes.
-    void load(std::vector<std::unique_ptr<PackSource>> const& packs, LogFn const& info, LogFn const& warn);
+    // The registry keeps the packs open so assets can be read on demand.
+    void load(std::vector<std::unique_ptr<PackSource>> packs, LogFn const& info, LogFn const& warn);
 
     void clear();
 
-    [[nodiscard]] GunEntry const*  gun(ResourceId const& id) const;
-    [[nodiscard]] AmmoEntry const* ammo(ResourceId const& id) const;
+    [[nodiscard]] GunEntry const*   gun(ResourceId const& id) const;
+    [[nodiscard]] AmmoEntry const*  ammo(ResourceId const& id) const;
+    [[nodiscard]] GunDisplay const* gunDisplay(ResourceId const& id) const;
+
+    // Reads a file by pack-relative path (e.g. "assets/tacz/textures/gun/uv/ak47.png");
+    // the last pack containing it wins, as with resource pack stacking.
+    [[nodiscard]] std::optional<std::string> readFile(std::string_view path) const;
 
     [[nodiscard]] std::map<ResourceId, GunEntry> const&  guns() const { return mGuns; }
     [[nodiscard]] std::map<ResourceId, AmmoEntry> const& ammos() const { return mAmmo; }
@@ -70,10 +77,12 @@ public:
     [[nodiscard]] std::map<ResourceId, std::string> const& dataScripts() const { return mDataScripts; }
 
 private:
-    std::vector<LoadedPack>           mPacks;
-    std::map<ResourceId, GunEntry>    mGuns;
-    std::map<ResourceId, AmmoEntry>   mAmmo;
-    std::map<ResourceId, std::string> mDataScripts;
+    std::vector<std::unique_ptr<PackSource>> mSources; // packs with a valid gunpack.meta.json
+    std::vector<LoadedPack>                  mPacks;
+    std::map<ResourceId, GunEntry>           mGuns;
+    std::map<ResourceId, AmmoEntry>          mAmmo;
+    std::map<ResourceId, GunDisplay>         mGunDisplays;
+    std::map<ResourceId, std::string>        mDataScripts;
 };
 
 // CommonGunIndex.checkIndex / checkData. Returns an error message, or empty if valid.

@@ -20,7 +20,7 @@ struct LoadedDefaultPack {
     LoadedDefaultPack() {
         std::vector<std::unique_ptr<pack::PackSource>> packs;
         packs.push_back(pack::openFolderPack(std::filesystem::u8path(TACZ_DEFAULT_PACK_DIR)));
-        registry.load(packs, [](std::string const&) {}, [this](std::string const& w) { warnings.push_back(w); });
+        registry.load(std::move(packs), [](std::string const&) {}, [this](std::string const& w) { warnings.push_back(w); });
     }
 };
 

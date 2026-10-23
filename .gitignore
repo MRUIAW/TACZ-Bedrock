@@ -552,3 +552,5 @@ fabric.properties
 
 # Local reference sources (not part of this repo)
 /_reference/
+# Source directory, not a build output (overrides the [Dd]ebug/ rule above)
+!/src/debug/

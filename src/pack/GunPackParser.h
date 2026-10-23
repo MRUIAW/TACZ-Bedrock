@@ -7,6 +7,7 @@
 #include <nlohmann/json.hpp>
 
 #include "pack/GunData.h"
+#include "pack/GunDisplay.h"
 
 // JSON -> data model, mirroring TACZ's Gson setup (CommonAssetsManager.GSON):
 // comments allowed, unknown keys ignored, unknown enum names become "unset",
@@ -25,5 +26,6 @@ PackMeta      parsePackMeta(nlohmann::json const& json);
 GunData       parseGunData(nlohmann::json const& json);
 GunIndexData  parseGunIndex(nlohmann::json const& json);
 AmmoIndexData parseAmmoIndex(nlohmann::json const& json);
+GunDisplay    parseGunDisplay(nlohmann::json const& json);
 
 } // namespace tacz::pack

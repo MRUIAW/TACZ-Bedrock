@@ -7,7 +7,7 @@
 | 1 | 自定义包双向收发 | 通过（单人） | `src/net/DebugPackets.h`、`ll::network::PacketBase` / `PacketHandlerBase` |
 | 2 | 物品 NBT 读写、同步到客户端、退出重进后保留 | 通过 | `src-server/server/ServerProbe.cpp`：`ItemStack::mUserData` + `setUserData` + `Player::setSelectedItem` + `sendInventory` |
 | 3 | 手持枪时拦截原版左键 | 通过（单击和按住都不会挖方块或攻击） | `src-client/client/ClientProbe.cpp`：`MouseInputEvent::cancel()` |
-| 4 | 自解析 geo 模型替换第一人称手持物渲染 | 未做 | |
+| 4 | 自解析 geo 模型替换第一人称手持物渲染 | 通过（静止姿态，带贴图，跟随视角不抖动，单面无缺面） | `src-client/client/render/GunRenderer.cpp`：hook `ItemInHandRenderer::renderFirstPerson`，Tessellator 建网格，stb 解码 PNG 后 `TextureGroup::uploadTexture` |
 | 5 | 播放枪包目录里的 ogg | 未做 | |
 | 6 | C++ 驱动 `tacz:bullet` 实体 | 未做 | |
 | - | 客户端 HUD 文字绘制 | 通过 | `AfterUIRenderEvent` + `MinecraftUIRenderContext::drawText`，只画 `.hud_screen` 视图 |
@@ -21,3 +21,11 @@
 - 单人世界里，自定义命令的 `CommandOutput::success` 文本不会显示在聊天栏（加了前缀也不显示），但命令确实执行了，日志里有输出。原因未查，暂不影响；需要给玩家看的反馈改用 `Player::sendMessage`。
 - 单人模式测不到网络延迟，也测不到"服务端装了 mod、客户端没装"的情况，这两项留到有 BDS 时再测。
 - 只取消 `MouseInputEvent` 就足以挡住按住左键的连续挖掘和攻击，暂时不需要 hook `InputHandler`。
+
+### 第一人称渲染（0.2.1–0.2.3）
+
+- 材质：`MovingBlockActorRenderer::mBlockMaterials[RenderlayerAlphatest]` 能画出贴图，配合 `ActorShaderManager::setupShaderParameters(screen, blockSource, 全亮 BrightnessPair, ...)`（Lamium 画贴图方块的做法）。`entity_alphatest` 画不出东西；`ItemInHandRenderer::mStaticMaterial` 在第一人称渲染器上未初始化；`debug` 纯色材质可用作排查。
+- 摆放：第一人称渲染时世界矩阵栈顶就是相机的反向旋转，把 TACZ 的 `firstPersonIdleTransform` 乘在它上面即可得到正确的视图空间位置。**不能替换视图矩阵**：push 一个单位视图矩阵后渲染器内部空指针崩溃（`+0x30`）。
+- UV 和法线：设置 `Tessellator::mNextUV[0]` / `mNextNormal` 后再 `vertex()` 能正确写入（日志 uv0、normals 数量与顶点数一致）。
+- 网格只在首次手持时构建一次并缓存（AK47：605 个骨骼，7608 个顶点）。
+- 已知缺口：光照固定为全亮；没有手臂和动画；第三人称仍是原物品。

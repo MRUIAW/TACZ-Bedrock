@@ -5,6 +5,7 @@
 #include "server/ServerProbe.h"
 #ifdef TACZ_CLIENT
 #include "client/ClientProbe.h"
+#include "client/render/GunRenderer.h"
 #endif
 
 namespace tacz {
@@ -38,6 +39,7 @@ bool TaczMod::enable() {
     server::probe::enable();
 #ifdef TACZ_CLIENT
     client::probe::enable();
+    client::render::enable();
 #endif
     return true;
 }
@@ -45,6 +47,7 @@ bool TaczMod::enable() {
 bool TaczMod::disable() {
     getSelf().getLogger().debug("Disabling...");
 #ifdef TACZ_CLIENT
+    client::render::disable();
     client::probe::disable();
 #endif
     server::probe::disable();

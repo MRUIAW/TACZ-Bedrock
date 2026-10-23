@@ -71,18 +71,19 @@ struct RawFile {
     std::string text;
 };
 
-// Collects data/<ns>/<dir>/**.<ext> across packs; later packs win on clashes.
+// Collects <root><ns>/<dir>/**.<ext> across packs; later packs win on clashes.
 std::map<ResourceId, RawFile> collect(
-    std::vector<PackSource const*> const& packs,
-    std::string_view                      dir,
-    std::string_view                      ext,
-    GunPackRegistry::LogFn const&         warn
+    std::vector<std::unique_ptr<PackSource>> const& packs,
+    std::string_view                                root,
+    std::string_view                                dir,
+    std::string_view                                ext,
+    GunPackRegistry::LogFn const&                   warn
 ) {
     std::map<ResourceId, RawFile> out;
-    for (auto const* pack : packs) {
-        for (auto const& file : pack->list("data/")) {
+    for (auto const& pack : packs) {
+        for (auto const& file : pack->list(root)) {
             if (!file.ends_with(ext)) continue;
-            auto id = fileToId(file, "data/", dir, ext);
+            auto id = fileToId(file, root, dir, ext);
             if (!id) {
                 // Only complain about files that are inside the directory but have an invalid name.
                 if (file.find(std::string("/") + std::string(dir) + "/") != std::string::npos) {
@@ -139,9 +140,11 @@ std::string validateGun(GunIndexData const& index, GunData& data) {
 }
 
 void GunPackRegistry::clear() {
+    mSources.clear();
     mPacks.clear();
     mGuns.clear();
     mAmmo.clear();
+    mGunDisplays.clear();
     mDataScripts.clear();
 }
 
@@ -163,14 +166,14 @@ void GunPackRegistry::loadFolder(fs::path const& folder, LogFn const& info, LogF
             warn("Zip gun packs are not supported yet, skipping " + toUtf8(entry.filename()));
         }
     }
-    load(packs, info, warn);
+    load(std::move(packs), info, warn);
 }
 
-void GunPackRegistry::load(std::vector<std::unique_ptr<PackSource>> const& packs, LogFn const& info, LogFn const& warn) {
+void GunPackRegistry::load(std::vector<std::unique_ptr<PackSource>> packs, LogFn const& info, LogFn const& warn) {
     clear();
     // gunpack.meta.json gates whether a pack is used at all.
-    std::vector<PackSource const*> valid;
-    for (auto const& pack : packs) {
+    auto& valid = mSources;
+    for (auto& pack : packs) {
         auto text = pack->read("gunpack.meta.json");
         if (!text) {
             warn("Failed to read info json: " + pack->name());
@@ -185,17 +188,17 @@ void GunPackRegistry::load(std::vector<std::unique_ptr<PackSource>> const& packs
             }
             info("- " + pack->name() + ", Main namespace: " + meta.ns);
             mPacks.push_back({pack->name(), std::move(meta)});
-            valid.push_back(pack.get());
+            valid.push_back(std::move(pack));
         } catch (ParseError const& e) {
             warn("Failed to read info json: " + pack->name() + ": " + e.what());
         }
     }
     info("Found " + std::to_string(mPacks.size()) + " possible gunpack(s)");
 
-    auto parseAll = [&](std::string_view dir, auto&& parse) {
+    auto parseAll = [&](std::string_view root, std::string_view dir, auto&& parse) {
         using Value = decltype(parse(std::declval<nlohmann::json const&>()));
         std::map<ResourceId, std::pair<Value, std::string>> out;
-        for (auto& [id, file] : collect(valid, dir, ".json", warn)) {
+        for (auto& [id, file] : collect(valid, root, dir, ".json", warn)) {
             try {
                 out.emplace(id, std::pair{parse(parseJsonText(file.text)), file.pack});
             } catch (ParseError const& e) {
@@ -207,11 +210,13 @@ void GunPackRegistry::load(std::vector<std::unique_ptr<PackSource>> const& packs
         return out;
     };
 
-    for (auto& [id, file] : collect(valid, "scripts", ".lua", warn)) mDataScripts[id] = std::move(file.text);
+    for (auto& [id, file] : collect(valid, "data/", "scripts", ".lua", warn)) mDataScripts[id] = std::move(file.text);
 
-    auto gunData  = parseAll("data/guns", parseGunData);
-    auto gunIndex = parseAll("index/guns", parseGunIndex);
-    auto ammo     = parseAll("index/ammo", parseAmmoIndex);
+    auto gunData  = parseAll("data/", "data/guns", parseGunData);
+    auto gunIndex = parseAll("data/", "index/guns", parseGunIndex);
+    auto ammo     = parseAll("data/", "index/ammo", parseAmmoIndex);
+    // Client-side display definitions. Small, so both sides load them; only the client uses them.
+    for (auto& [id, entry] : parseAll("assets/", "display/guns", parseGunDisplay)) mGunDisplays.emplace(id, std::move(entry.first));
 
     for (auto& [id, entry] : ammo) {
         entry.first.sort = std::clamp(entry.first.sort, 0, 65536);
@@ -234,6 +239,9 @@ void GunPackRegistry::load(std::vector<std::unique_ptr<PackSource>> const& packs
         if (data.script && !mDataScripts.contains(*data.script)) {
             warn("Gun " + id.toString() + ": script '" + data.script->toString() + "' not found");
         }
+        if (index.display && !mGunDisplays.contains(*index.display)) {
+            warn("Gun " + id.toString() + ": display '" + index.display->toString() + "' not found");
+        }
         mGuns.emplace(id, GunEntry{id, std::move(index), std::move(data), std::move(packName)});
     }
     info(
@@ -250,6 +258,18 @@ GunEntry const* GunPackRegistry::gun(ResourceId const& id) const {
 AmmoEntry const* GunPackRegistry::ammo(ResourceId const& id) const {
     auto it = mAmmo.find(id);
     return it == mAmmo.end() ? nullptr : &it->second;
+}
+
+GunDisplay const* GunPackRegistry::gunDisplay(ResourceId const& id) const {
+    auto it = mGunDisplays.find(id);
+    return it == mGunDisplays.end() ? nullptr : &it->second;
+}
+
+std::optional<std::string> GunPackRegistry::readFile(std::string_view path) const {
+    for (auto it = mSources.rbegin(); it != mSources.rend(); ++it) {
+        if (auto content = (*it)->read(path)) return content;
+    }
+    return std::nullopt;
 }
 
 } // namespace tacz::pack

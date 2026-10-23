@@ -24,6 +24,7 @@
 #include "mc/world/actor/player/Player.h"
 #include "mc/world/item/ItemStack.h"
 
+#include "debug/RenderDebug.h"
 #include "mod/TaczMod.h"
 #include "nbt/GunNbt.h"
 #include "net/DebugPackets.h"
@@ -75,6 +76,11 @@ struct SetGunParams {
     std::string gunId;
 };
 
+struct RenderDebugParams {
+    int material;
+    int twoSided;
+};
+
 namespace {
 
 void registerCommands() {
@@ -103,6 +109,20 @@ void registerCommands() {
         if (auto* player = originPlayer(origin)) player->sendMessage(msg);
         output.success(msg);
     });
+    // /tacz rdebug <material> <twoSided> : first-person gun render diagnostics
+    command.overload<RenderDebugParams>()
+        .text("rdebug")
+        .required("material")
+        .required("twoSided")
+        .execute([](CommandOrigin const& origin, CommandOutput& output, RenderDebugParams const& params) {
+            debug::gunMaterial = params.material;
+            debug::gunTwoSided = params.twoSided != 0;
+            debug::renderRevision++;
+            std::string msg = "[TACZ] render debug: material=" + std::to_string(params.material)
+                            + " twoSided=" + std::to_string(params.twoSided != 0);
+            if (auto* player = originPlayer(origin)) player->sendMessage(msg);
+            output.success(msg);
+        });
     // /tacz setgun <gunId> : mark the selected item as a gun with a full magazine
     command.overload<SetGunParams>()
         .text("setgun")

@@ -2,7 +2,7 @@ add_rules("mode.debug", "mode.release")
 
 -- Single source of the mod version. Keep tooth.json "version" in sync.
 -- Patch +1 per small item / test round; minor +1 per finished feature or phase.
-local tacz_version = "0.2.0"
+local tacz_version = "0.2.4"
 set_version(tacz_version)
 
 add_repositories("levimc-repo https://github.com/LiteLDev/xmake-repo.git")
@@ -22,7 +22,9 @@ add_requires("levibuildscript")
 
 -- Unit tests for game-independent logic (src/pack, src/gun). Not built by default:
 --   xmake build tacz-tests && xmake run tacz-tests
-add_requires("doctest 2.5.3", "nlohmann_json v3.12.0")
+add_requires("doctest 2.5.3", "nlohmann_json v3.12.0", "glm 1.0.1")
+-- PNG decoding for gun pack textures (client).
+add_requires("stb 2025.03.14")
 
 if not has_config("vs_runtime") then
     set_runtimes("MD")
@@ -68,6 +70,7 @@ target("tacz")
         add_defines("TACZ_SERVER")
     else
         add_defines("TACZ_CLIENT")
+        add_packages("stb")
         add_headerfiles("src-client/**.h")
         add_includedirs("src-client")
         add_files("src-client/**.cpp")
@@ -82,10 +85,10 @@ target("tacz-tests")
         add_cxflags("/EHsc", "/utf-8")
         set_toolchains("clang-cl")
     end
-    add_packages("doctest", "nlohmann_json")
+    add_packages("doctest", "nlohmann_json", "glm")
     add_includedirs("src")
     -- Only sources that do not touch the game or LeviLamina.
-    add_files("src/pack/**.cpp", "tests/**.cpp")
+    add_files("src/pack/**.cpp", "src/model/**.cpp", "tests/**.cpp")
     -- The reference TACZ checkout supplies the default gun pack for integration tests.
     add_defines(format('TACZ_DEFAULT_PACK_DIR="%s"',
         path.join(os.projectdir(), "_reference/TACZ/src/main/resources/assets/tacz/custom/tacz_default_gun"):gsub("\\", "/")))

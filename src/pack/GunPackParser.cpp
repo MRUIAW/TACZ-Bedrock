@@ -378,6 +378,21 @@ GunIndexData parseGunIndex(nlohmann::json const& j) {
     return index;
 }
 
+GunDisplay parseGunDisplay(nlohmann::json const& j) {
+    requireObject(j, "gun display");
+    GunDisplay display;
+    read(j, "model", display.model);
+    read(j, "texture", display.texture);
+    read(j, "animation", display.animation);
+    read(j, "state_machine", display.stateMachine);
+    read(j, "use_default_animation", display.useDefaultAnimation);
+    read(j, "iron_zoom", display.ironZoom);
+    read(j, "zoom_model_fov", display.zoomModelFov);
+    read(j, "enable_transparency", display.enableTransparency);
+    display.raw = j;
+    return display;
+}
+
 AmmoIndexData parseAmmoIndex(nlohmann::json const& j) {
     requireObject(j, "ammo index");
     AmmoIndexData index;
