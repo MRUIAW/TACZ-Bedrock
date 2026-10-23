@@ -75,6 +75,7 @@ public:
 
     // Lua sources found under data/<ns>/scripts/*.lua, keyed by id (e.g. tacz:xmag_reload_logic).
     [[nodiscard]] std::map<ResourceId, std::string> const& dataScripts() const { return mDataScripts; }
+    [[nodiscard]] std::map<ResourceId, std::string> const& assetScripts() const { return mAssetScripts; }
 
 private:
     std::vector<std::unique_ptr<PackSource>> mSources; // packs with a valid gunpack.meta.json
@@ -83,6 +84,7 @@ private:
     std::map<ResourceId, AmmoEntry>          mAmmo;
     std::map<ResourceId, GunDisplay>         mGunDisplays;
     std::map<ResourceId, std::string>        mDataScripts;
+    std::map<ResourceId, std::string>        mAssetScripts;
 };
 
 // CommonGunIndex.checkIndex / checkData. Returns an error message, or empty if valid.

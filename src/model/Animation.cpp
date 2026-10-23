@@ -123,8 +123,10 @@ AnimationFile parseAnimationFile(json const& json, LogFn const& warn) {
         throw pack::ParseError("animation: missing animations object");
     }
     AnimationFile file;
+    auto sounds = pack::parseAnimationSounds(json);
     for (auto const& [name, value] : json["animations"].items()) {
         Animation animation;
+        if (auto it = sounds.find(name); it != sounds.end()) animation.sounds = it->second;
         if (auto loop = value.find("loop"); loop != value.end()) {
             if (*loop == true) animation.playType = PlayType::Loop;
             else if (*loop == "hold_on_last_frame") animation.playType = PlayType::Hold;
@@ -167,26 +169,41 @@ std::optional<float> playbackTime(Animation const& animation, double seconds, Pl
 }
 
 void evaluate(Animation const& animation, float seconds, Pose& pose, bool blend) {
+    Pose values;
     for (auto const& channel : animation.channels) {
         auto value = channel.evaluate(seconds);
-        auto& bone = pose[channel.bone];
+        auto& bone = values[channel.bone];
         auto& target = channel.type == ChannelType::Translation ? bone.translation
                      : channel.type == ChannelType::Rotation ? bone.rotation : bone.scale;
-        if (blend && target) {
-            if (channel.type == ChannelType::Scale) value *= *target;
-            else if (channel.type == ChannelType::Rotation) {
-                // ModelRotateListener reads the existing additionalQuaternion back as Euler
-                // angles first. Canonicalise, rather than adding unbounded source angles.
-                auto q = glm::quat(*target);
-                glm::vec3 angles{
-                    std::atan2(2.f * (q.w*q.x + q.y*q.z), 1.f - 2.f * (q.x*q.x + q.y*q.y)),
-                    std::asin(std::clamp(2.f * (q.w*q.y - q.x*q.z), -1.f, 1.f)),
-                    std::atan2(2.f * (q.w*q.z + q.y*q.x), 1.f - 2.f * (q.y*q.y + q.z*q.z))
-                };
-                value += angles;
-            } else value += *target;
-        }
         target = value;
+    }
+    compose(values, pose, blend);
+}
+
+void compose(Pose const& source, Pose& pose, bool blend) {
+    for (auto const& [name, input] : source) {
+        auto& bone = pose[name];
+        for (auto type : {ChannelType::Translation, ChannelType::Rotation, ChannelType::Scale}) {
+            auto const& src = type == ChannelType::Translation ? input.translation : type == ChannelType::Rotation ? input.rotation : input.scale;
+            if (!src) continue;
+            auto value = *src;
+            auto& target = type == ChannelType::Translation ? bone.translation : type == ChannelType::Rotation ? bone.rotation : bone.scale;
+            if (blend && target) {
+                if (type == ChannelType::Scale) value *= *target;
+                else if (type == ChannelType::Rotation) {
+                    // ModelRotateListener reads the existing additionalQuaternion back as Euler
+                    // angles first. Canonicalise, rather than adding unbounded source angles.
+                    auto q = glm::quat(*target);
+                    glm::vec3 angles{
+                        std::atan2(2.f * (q.w*q.x + q.y*q.z), 1.f - 2.f * (q.x*q.x + q.y*q.y)),
+                        std::asin(std::clamp(2.f * (q.w*q.y - q.x*q.z), -1.f, 1.f)),
+                        std::atan2(2.f * (q.w*q.z + q.y*q.x), 1.f - 2.f * (q.y*q.y + q.z*q.z))
+                    };
+                    value += angles;
+                } else value += *target;
+            }
+            target = value;
+        }
     }
 }
 

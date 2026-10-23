@@ -4,10 +4,12 @@
 #include <atomic>
 #include <chrono>
 #include <cstdint>
+#include <limits>
 #include <map>
 #include <mutex>
 #include <optional>
 #include <random>
+#include <stdexcept>
 #include <string>
 #include <vector>
 
@@ -16,6 +18,7 @@
 #include "ll/api/event/client/ClientExitLevelEvent.h"
 #include "ll/api/event/input/KeyInputEvent.h"
 #include "ll/api/event/input/MouseInputEvent.h"
+#include "ll/api/event/world/ClientLevelTickEvent.h"
 #include "ll/api/io/Logger.h"
 #include "ll/api/memory/Hook.h"
 #include "ll/api/network/packet/Packet.h"
@@ -34,8 +37,6 @@
 #include "nbt/AmmoItem.h"
 #include "nbt/GunItem.h"
 #include "net/GunPackets.h"
-#include "pack/AnimationSounds.h"
-#include "pack/GunPackParser.h"
 
 namespace tacz::client::shooter {
 namespace {
@@ -43,6 +44,9 @@ namespace {
 using Clock = std::chrono::steady_clock;
 
 int64_t nowMs() { return std::chrono::duration_cast<std::chrono::milliseconds>(Clock::now().time_since_epoch()).count(); }
+int64_t systemNowMs() {
+    return std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::system_clock::now().time_since_epoch()).count();
+}
 
 ll::io::Logger& logger() { return TaczMod::getInstance().getSelf().getLogger(); }
 
@@ -51,6 +55,9 @@ std::atomic<bool> triggerDown{false};
 std::atomic<bool> resetPending{false};
 std::atomic<bool> reloadKeyPressed{false};
 std::atomic<bool> fireSelectPressed{false};
+std::atomic<bool> inspectPressed{false};
+std::atomic<unsigned> movementTicksPending{0};
+std::array<std::atomic<bool>, 3> actionKeyDown{}; // rising edges, not OS key repeat
 
 // Server-reported reload state (TACZ's synced RELOAD_STATE_KEY). Written by the packet handler.
 std::mutex                          serverStateMutex;
@@ -58,6 +65,8 @@ std::optional<gun::ReloadState>     serverReloadState;
 
 // LocalPlayerDataHolder, reduced to what is implemented. Main thread only (frame()).
 std::optional<int64_t> lastShot;                 // clientShootTimestamp
+std::optional<int64_t> shotTimestamp;            // system time, for GunAnimationStateContext
+std::optional<int64_t> previousShotTimestamp;    // clientLastShootTimestamp (previous trigger pull)
 bool                   lastShotSucceeded = false; // ShootKey.lastTimeShootSuccess
 bool                   dryFireArmed      = true;  // SoundPlayManager.DRY_SOUND_TRACK
 gun::ReloadStateType   reloadType        = gun::ReloadStateType::NotReloading; // getSynReloadState()
@@ -65,19 +74,25 @@ std::atomic<int>       reloadTypePublished{0};
 // Client state lock (LocalPlayerDataHolder.clientStateLock): set when a reload is requested,
 // held until the server confirms or refuses it, or 250 ms pass.
 std::optional<Clock::time_point> reloadLockedAt;
+std::optional<Clock::time_point> drawingUntil;
+bool reloadCancelRequested = false;
 
-// Sounds to play at a given time: burst follow-up shots, reload animation keyframes.
-struct PendingSound {
+// Burst follow-up shots. Animation sound keys now belong to ObjectAnimationRunner, not a
+// second hard-coded reload timeline that would desynchronise Lua-selected animations.
+struct PendingShot {
     Clock::time_point due;
-    pack::ResourceId  sound;
-    float             volume;
+    std::optional<pack::ResourceId> sound;
     float             pitch;
-    bool              reload; // cut off by stopReloadSounds (SoundPlayManager.stopPlayGunSound)
 };
-std::vector<PendingSound> pendingSounds;
+std::vector<PendingShot> pendingShots;
 
-// Animation sound keyframes per animation file, parsed on first use.
-std::map<pack::ResourceId, std::map<std::string, std::vector<pack::AnimationSound>>> animationSounds;
+struct PredictedMode {
+    pack::ResourceId gun;
+    int slot;
+    std::optional<pack::FireMode> mode;
+    Clock::time_point at;
+};
+std::optional<PredictedMode> predictedMode; // frame thread only, as LocalPlayerFireSelect
 
 std::mt19937& rng() {
     static std::mt19937 engine{std::random_device{}()};
@@ -91,7 +106,7 @@ struct HeldGun {
     pack::GunEntry const* entry;
 };
 
-std::optional<HeldGun> heldGun() {
+std::optional<HeldGun> heldGun(bool predict = false) {
     auto client = ll::service::getClientInstance();
     if (!client) return std::nullopt;
     auto* player = client->getLocalPlayer();
@@ -100,6 +115,12 @@ std::optional<HeldGun> heldGun() {
     if (!state) return std::nullopt;
     auto const* entry = TaczMod::getInstance().gunPacks().gun(state->gunId);
     if (!entry) return std::nullopt;
+    if (predict && predictedMode) {
+        auto const& p = *predictedMode;
+        if (p.gun != state->gunId || p.slot != player->getSelectedItemSlot() || p.mode == state->fireMode
+            || Clock::now() - p.at > std::chrono::milliseconds(250)) predictedMode.reset();
+        else state->fireMode = p.mode;
+    }
     return HeldGun{*state, entry};
 }
 
@@ -117,53 +138,12 @@ std::optional<pack::ResourceId> displaySound(HeldGun const& gun, std::string con
     return it == display->sounds.end() ? std::nullopt : std::optional{it->second};
 }
 
-std::vector<pack::AnimationSound> const* animationKeyframes(HeldGun const& gun, std::string const& animation) {
-    auto const& packs = TaczMod::getInstance().gunPacks();
-    if (!gun.entry->index.display) return nullptr;
-    auto const* display = packs.gunDisplay(*gun.entry->index.display);
-    if (!display || !display->animation) return nullptr;
-    auto it = animationSounds.find(*display->animation);
-    if (it == animationSounds.end()) {
-        std::map<std::string, std::vector<pack::AnimationSound>> parsed;
-        if (auto text = packs.readFile(pack::assetPath(*display->animation, "animations", ".animation.json"))) {
-            try {
-                parsed = pack::parseAnimationSounds(pack::parseJsonText(*text));
-            } catch (std::exception const& e) {
-                logger().warn("Animation {} cannot be read: {}", display->animation->toString(), e.what());
-            }
-        }
-        it = animationSounds.emplace(*display->animation, std::move(parsed)).first;
-    }
-    auto found = it->second.find(animation);
-    return found == it->second.end() ? nullptr : &found->second;
-}
-
-void stopReloadSounds() {
-    std::erase_if(pendingSounds, [](PendingSound const& s) { return s.reload; });
-}
-
-// LocalPlayerReload.doReload. TACZ plays the display's reload sound and the animation state
-// machine plays the reload animation, whose sound keyframes carry the actual reload sounds.
-// The animation system is not ported yet, so the keyframes of the animation the default and
-// AK47 state machines would pick (reload_empty / reload_tactical, no extended magazine) are
-// scheduled directly.
-void playReloadSounds(HeldGun const& gun, bool noAmmo) {
-    stopReloadSounds();
-    if (auto id = displaySound(gun, noAmmo ? "reload_empty" : "reload_tactical")) sound::play(*id, 1.0f, 1.0f);
-    auto const* keyframes = animationKeyframes(gun, noAmmo ? "reload_empty" : "reload_tactical");
-    if (!keyframes) return;
-    auto start = Clock::now();
-    for (auto const& k : *keyframes) {
-        auto due = start + std::chrono::duration_cast<Clock::duration>(std::chrono::duration<double>(k.time));
-        pendingSounds.push_back({due, k.sound, 1.0f, 1.0f, true});
-    }
-}
-
 // LocalPlayerReload.reload.
 void reload(HeldGun const& gun) {
     auto const& data = gun.entry->data;
     if (data.reload.type == pack::FeedType::Inventory) return;
-    if (reloadLockedAt || gun::isReloading(reloadType)) return;
+    if (reloadLockedAt || drawingUntil || gun::isReloading(reloadType)) return;
+    if (gun::clientCooldownMs(data, gun.state.fireMode, nowMs(), lastShot) > 0) return;
     if (lastShot && nowMs() - *lastShot < 100) return;
     // canReload: not full and, outside creative, carrying the ammo.
     auto client = ll::service::getClientInstance();
@@ -174,10 +154,11 @@ void reload(HeldGun const& gun) {
     if (!creative && !data.reload.infinite && !(data.ammoId && nbt::countAmmo(*player, *data.ammoId) > 0)) return;
 
     reloadLockedAt = Clock::now();
+    reloadCancelRequested = false;
     net::ReloadPacket{}.sendToServer();
     bool noAmmo = data.bolt == pack::Bolt::OpenBolt ? gun.state.ammo <= 0 : !gun.state.barrel;
-    playReloadSounds(gun, noAmmo);
-    anim::reload(noAmmo);
+    if (auto id = displaySound(gun, noAmmo ? "reload_empty" : "reload_tactical")) sound::play(*id, 1.f, 1.f);
+    anim::reload();
 }
 
 // LocalPlayerShoot.shoot + doShoot. In continuous fire the shot is stamped one interval after
@@ -189,7 +170,7 @@ bool shoot(HeldGun const& gun, int64_t now, bool chained) {
     auto        mode = gun.state.fireMode;
     if (gun::clientCooldownMs(data, mode, now, lastShot) > 0) return false;
     // preCheck: no shooting while reloading.
-    if (gun::isReloading(reloadType) || reloadLockedAt) return false;
+    if (gun::isReloading(reloadType) || reloadLockedAt || drawingUntil) return false;
 
     gun::GunAmmo ammo{gun.state.ammo, gun.state.barrel};
     int          rounds = gun::availableRounds(*data.bolt, ammo);
@@ -207,17 +188,18 @@ bool shoot(HeldGun const& gun, int64_t now, bool chained) {
     // firing a catch-up double shot.
     bool    keepRhythm = chained && lastShot && now - *lastShot < interval * 2;
     int64_t shotAt     = keepRhythm ? *lastShot + interval : now;
+    previousShotTimestamp = shotTimestamp;
+    shotTimestamp      = systemNowMs();
     lastShot           = shotAt;
     net::ShootPacket{shotAt}.sendToServer();
     anim::shoot();
 
     // Burst: one packet, `count` rounds; the client only plays the sounds.
     auto shootSound = displaySound(gun, "shoot");
-    if (!shootSound) return true;
-    sound::play(*shootSound, 0.8f, soundPitch());
+    if (shootSound) sound::play(*shootSound, 0.8f, soundPitch());
     int  burst  = mode == pack::FireMode::Burst ? std::min(std::max(data.burst.count, 1), rounds) : 1;
     auto period = std::chrono::milliseconds(gun::burstShootIntervalMs(data));
-    for (int i = 1; i < burst; ++i) pendingSounds.push_back({Clock::now() + period * i, *shootSound, 0.8f, soundPitch(), false});
+    for (int i = 1; i < burst; ++i) pendingShots.push_back({Clock::now() + period * i, shootSound, soundPitch()});
     return true;
 }
 
@@ -242,16 +224,17 @@ void applyServerReloadState() {
         state.swap(serverReloadState);
     }
     if (!state) return;
+    bool wasRequested = reloadLockedAt.has_value();
     reloadLockedAt.reset();
-    // A refused or stopped reload cuts its sounds (stopPlayGunSound on the next action in TACZ).
+    // Dispatch cancellation for refusal / interruption, not every NOT_RELOADING sync packet.
+    // Whether this changes a track is the pack state machine's decision, as in TACZ.
     if (!gun::isReloading(state->type) && gun::isReloading(reloadType) && !gun::isReloadFinishing(reloadType)) {
-        stopReloadSounds();
+        if (!reloadCancelRequested) anim::cancelReload();
+    }
+    if (!gun::isReloading(state->type) && !gun::isReloading(reloadType) && wasRequested && !reloadCancelRequested) {
         anim::cancelReload();
     }
-    if (!gun::isReloading(state->type) && !gun::isReloading(reloadType)) {
-        stopReloadSounds();
-        anim::cancelReload();
-    }
+    if (!gun::isReloading(state->type)) reloadCancelRequested = false;
     reloadType = state->type;
     reloadTypePublished = static_cast<int>(reloadType);
 }
@@ -260,23 +243,33 @@ void applyServerReloadState() {
 void frame() {
     if (resetPending.exchange(false)) {
         lastShot.reset();
+        shotTimestamp.reset();
+        previousShotTimestamp.reset();
+        drawingUntil.reset();
+        predictedMode.reset();
+        reloadCancelRequested = false;
         lastShotSucceeded = false;
         dryFireArmed      = true;
         reloadType        = gun::ReloadStateType::NotReloading;
         reloadTypePublished = 0;
         reloadLockedAt.reset();
-        pendingSounds.clear();
-        animationSounds.clear();
+        pendingShots.clear();
         anim::clear();
     }
-    auto gun = heldGun();
+    auto gun = heldGun(true);
     auto client = ll::service::getClientInstance();
     auto* player = client ? client->getLocalPlayer() : nullptr;
     if (anim::held(gun ? std::optional{gun->state.gunId} : std::nullopt, player ? player->getSelectedItemSlot() : -1)) {
-        pendingSounds.clear(); // do not kick the newly selected gun with an old burst / reload
+        pendingShots.clear(); // do not kick the newly selected gun with an old burst
         reloadLockedAt.reset();
         lastShotSucceeded = false;
+        lastShot.reset();
+        shotTimestamp.reset();
+        previousShotTimestamp.reset();
+        drawingUntil.reset();
+        if (gun) drawingUntil = Clock::now() + std::chrono::duration_cast<Clock::duration>(std::chrono::duration<float>(gun->entry->data.drawTime));
     }
+    if (drawingUntil && Clock::now() >= *drawingUntil) drawingUntil.reset();
     applyServerReloadState();
     // tickStateLock: a request the server never answered stops blocking after 250 ms.
     if (reloadLockedAt && Clock::now() - *reloadLockedAt > std::chrono::milliseconds(250) && !gun::isReloading(reloadType)) {
@@ -284,30 +277,44 @@ void frame() {
         anim::cancelReload();
     }
     if (inGameplay()) measureFrameRate();
+    for (unsigned ticks = movementTicksPending.exchange(0); ticks > 0; --ticks) anim::movementTick();
 
     auto clockNow = Clock::now();
-    for (size_t i = 0; i < pendingSounds.size();) {
-        if (pendingSounds[i].due > clockNow) {
+    for (size_t i = 0; i < pendingShots.size();) {
+        if (pendingShots[i].due > clockNow) {
             ++i;
             continue;
         }
-        sound::play(pendingSounds[i].sound, pendingSounds[i].volume, pendingSounds[i].pitch);
-        if (!pendingSounds[i].reload) anim::shoot();
-        pendingSounds.erase(pendingSounds.begin() + static_cast<std::ptrdiff_t>(i));
+        if (pendingShots[i].sound) sound::play(*pendingShots[i].sound, 0.8f, pendingShots[i].pitch);
+        anim::shoot();
+        pendingShots.erase(pendingShots.begin() + static_cast<std::ptrdiff_t>(i));
     }
 
     bool wantsReload     = reloadKeyPressed.exchange(false);
     bool wantsFireSelect = fireSelectPressed.exchange(false);
+    bool wantsInspect = inspectPressed.exchange(false);
     if (!inGameplay()) return;
     if (!gun) {
         lastShotSucceeded = false;
         return;
     }
-    if (wantsFireSelect && !gun::isReloading(reloadType)) {
+    bool stateLocked = drawingUntil || reloadLockedAt || gun::isReloading(reloadType)
+                    || gun::clientCooldownMs(gun->entry->data, gun->state.fireMode, nowMs(), lastShot) > 0;
+    if (wantsFireSelect && !stateLocked) {
         if (auto id = displaySound(*gun, "fire_select")) sound::play(*id, 1.0f, 1.0f);
         net::FireSelectPacket{}.sendToServer();
+        gun->state.fireMode = gun::nextFireMode(gun->entry->data.fireModes, gun->state.fireMode);
+        predictedMode = PredictedMode{gun->state.gunId, player->getSelectedItemSlot(), gun->state.fireMode, Clock::now()};
+        anim::fireSelect();
     }
     if (wantsReload) reload(*gun);
+    // LocalPlayerInspect respects the same state lock as reload/fire-select (including
+    // the existing gun cooldown); no synthetic inspect animation selection here.
+    if (wantsInspect && !stateLocked && !reloadLockedAt) {
+        bool empty = gun->entry->data.bolt == pack::Bolt::OpenBolt ? gun->state.ammo <= 0 : !gun->state.barrel;
+        if (auto id = displaySound(*gun, empty ? "inspect_empty" : "inspect")) sound::play(*id, 1.f, 1.f);
+        anim::inspect();
+    }
 
     if (!triggerDown) {
         lastShotSucceeded = false;
@@ -316,7 +323,11 @@ void frame() {
     }
     // LocalPlayerMixin.shoot: pulling the trigger interrupts a reload first.
     if (gun::isReloading(reloadType)) {
-        if (!lastShotSucceeded) net::CancelReloadPacket{}.sendToServer();
+        if (!lastShotSucceeded && !reloadCancelRequested) {
+            net::CancelReloadPacket{}.sendToServer();
+            anim::cancelReload();
+            reloadCancelRequested = true;
+        }
         lastShotSucceeded = true; // one cancel per press
         return;
     }
@@ -350,11 +361,32 @@ LL_TYPE_INSTANCE_HOOK(ShooterFrameHook, ll::memory::HookPriority::Normal, Minecr
 }
 
 bool                                  hooked = false;
-std::array<ll::event::ListenerPtr, 3> listeners;
+std::array<ll::event::ListenerPtr, 4> listeners;
 
 } // namespace
 
 gun::ReloadStateType reloadState() { return static_cast<gun::ReloadStateType>(reloadTypePublished.load()); }
+
+AnimationTiming animationTiming() {
+    AnimationTiming result;
+    if (auto gun = heldGun(true)) {
+        result.interval = gun::triggerIntervalMs(gun->entry->data, gun->state.fireMode);
+        result.cooldown = gun::clientCooldownMs(gun->entry->data, gun->state.fireMode, nowMs(), lastShot);
+        result.fireMode = gun->state.fireMode ? static_cast<int>(*gun->state.fireMode) : 3;
+    }
+    result.lastShootTimestamp = previousShotTimestamp.value_or(-1);
+    return result;
+}
+void adjustShootInterval(int64_t delta) {
+    for (auto t : {lastShot, shotTimestamp}) {
+        if (t && ((delta > 0 && *t > std::numeric_limits<int64_t>::max() - delta)
+            || (delta < 0 && *t < std::numeric_limits<int64_t>::min() - delta))) {
+            throw std::overflow_error("animation shoot timestamp overflow");
+        }
+    }
+    if (lastShot) *lastShot += delta;
+    if (shotTimestamp) *shotTimestamp += delta;
+}
 
 void enable() {
     auto& bus = ll::event::EventBus::getInstance();
@@ -369,19 +401,26 @@ void enable() {
         if (down) triggerDown = true;
     });
 
-    // TACZ's default keys: G fire select, R reload.
+    // TACZ's default keys: G fire select, R reload, H inspect.
     listeners[1] = bus.emplaceListener<ll::event::input::KeyInputEvent>([](ll::event::input::KeyInputEvent& event) {
-        if (!event.isDown() || event.controller().mTextboxIsFocused) return;
         int key = event.keyCode();
-        if (key != 'G' && key != 'R') return;
+        if (key != 'G' && key != 'R' && key != 'H') return;
+        bool wasDown = actionKeyDown[key == 'G' ? 0 : key == 'R' ? 1 : 2].exchange(event.isDown());
+        if (!event.isDown() || event.controller().mTextboxIsFocused) return;
         if (!inGameplay() || !heldGun()) return;
         event.cancel();
-        (key == 'G' ? fireSelectPressed : reloadKeyPressed) = true;
+        if (wasDown) return;
+        (key == 'G' ? fireSelectPressed : key == 'H' ? inspectPressed : reloadKeyPressed) = true;
     });
 
     listeners[2] = bus.emplaceListener<ll::event::ClientExitLevelEvent>([](ll::event::ClientExitLevelEvent&) {
         triggerDown  = false;
         resetPending = true;
+        for (auto& down : actionKeyDown) down = false;
+        movementTicksPending = 0;
+    });
+    listeners[3] = bus.emplaceListener<ll::event::ClientLevelTickEvent>([](ll::event::ClientLevelTickEvent&) {
+        ++movementTicksPending; // retain every TickAnimationEvent input, even below 20 FPS
     });
 
     hooked = ShooterFrameHook::hook() == 0;

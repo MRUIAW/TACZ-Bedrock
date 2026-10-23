@@ -2,7 +2,7 @@ add_rules("mode.debug", "mode.release")
 
 -- Single source of the mod version. Keep tooth.json "version" in sync.
 -- Patch +1 per small item / test round; minor +1 per finished feature or phase.
-local tacz_version = "0.3.5"
+local tacz_version = "0.3.6"
 set_version(tacz_version)
 
 add_repositories("levimc-repo https://github.com/LiteLDev/xmake-repo.git")
@@ -33,7 +33,28 @@ if not has_config("vs_runtime") then
     set_runtimes("MD")
 end
 
+-- TACZ's internal fallback assets, embedded so deployed mods do not need the reference tree.
+rule("tacz.builtin_assets")
+    on_load(function (target)
+        local dir = path.join(os.projectdir(), "build/generated")
+        local text = "#pragma once\nnamespace tacz::pack::builtin {\n"
+        for _, name in ipairs({"rifle_default", "pistol_default", "default_state_machine"}) do
+            local ext = name == "default_state_machine" and ".lua" or ".animation.json"
+            text = text .. "inline constexpr char " .. name .. "[] = R\"tacz_asset("
+                .. io.readfile(path.join(os.projectdir(), "resources/tacz", name .. ext)) .. ")tacz_asset\";\n"
+        end
+        text = text .. "}\n"
+        local output = path.join(dir, "TaczBuiltinAssets.h")
+        if not os.isfile(output) or io.readfile(output) ~= text then
+            os.mkdir(dir)
+            io.writefile(output, text)
+        end
+        target:add("includedirs", dir)
+    end)
+rule_end()
+
 target("tacz")
+    add_rules("tacz.builtin_assets")
     add_rules("@levibuildscript/linkrule")
     add_rules("@levibuildscript/modpacker", {modVersion = tacz_version})
     add_defines(format('TACZ_VERSION="%s"', tacz_version))
@@ -81,6 +102,7 @@ target("tacz")
     end
 
 target("tacz-tests")
+    add_rules("tacz.builtin_assets")
     set_default(false)
     set_kind("binary")
     set_languages("c++20")

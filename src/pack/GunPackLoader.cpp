@@ -6,6 +6,7 @@
 #include <system_error>
 
 #include "pack/GunPackParser.h"
+#include "pack/BuiltinAssets.h"
 
 namespace tacz::pack {
 namespace {
@@ -146,6 +147,7 @@ void GunPackRegistry::clear() {
     mAmmo.clear();
     mGunDisplays.clear();
     mDataScripts.clear();
+    mAssetScripts.clear();
 }
 
 void GunPackRegistry::loadFolder(fs::path const& folder, LogFn const& info, LogFn const& warn) {
@@ -211,6 +213,8 @@ void GunPackRegistry::load(std::vector<std::unique_ptr<PackSource>> packs, LogFn
     };
 
     for (auto& [id, file] : collect(valid, "data/", "scripts", ".lua", warn)) mDataScripts[id] = std::move(file.text);
+    mAssetScripts[ResourceId{"tacz", "default_state_machine"}] = *builtinAsset("assets/tacz/scripts/default_state_machine.lua");
+    for (auto& [id, file] : collect(valid, "assets/", "scripts", ".lua", warn)) mAssetScripts[id] = std::move(file.text);
 
     auto gunData  = parseAll("data/", "data/guns", parseGunData);
     auto gunIndex = parseAll("data/", "index/guns", parseGunIndex);
@@ -269,6 +273,7 @@ std::optional<std::string> GunPackRegistry::readFile(std::string_view path) cons
     for (auto it = mSources.rbegin(); it != mSources.rend(); ++it) {
         if (auto content = (*it)->read(path)) return content;
     }
+    if (auto text = builtinAsset(path)) return std::string(*text);
     return std::nullopt;
 }
 

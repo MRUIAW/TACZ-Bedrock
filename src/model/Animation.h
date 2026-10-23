@@ -9,6 +9,8 @@
 #include <glm/glm.hpp>
 #include <nlohmann/json.hpp>
 
+#include "pack/AnimationSounds.h"
+
 namespace tacz::animation {
 
 using LogFn = std::function<void(std::string const&)>;
@@ -42,6 +44,7 @@ using Pose = std::map<std::string, BonePose>;
 
 struct Animation {
     std::vector<Channel> channels;
+    std::vector<pack::AnimationSound> sounds;
     float               duration = 0; // ObjectAnimation.maxEndTimeS, including sound keys
     PlayType            playType = PlayType::Stop;
 };
@@ -53,5 +56,6 @@ AnimationFile parseAnimationFile(nlohmann::json const& json, LogFn const& warn =
 // Runner boundary is strictly > end, not >=. A stopped track contributes nothing.
 std::optional<float> playbackTime(Animation const& animation, double seconds, PlayType type);
 void evaluate(Animation const& animation, float seconds, Pose& pose, bool blend = false);
+void compose(Pose const& source, Pose& pose, bool blend);
 
 } // namespace tacz::animation

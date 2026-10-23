@@ -18,6 +18,7 @@ struct GunDisplay {
     std::optional<ResourceId> animation;  // animations/<path>.animation.json
     std::optional<ResourceId> defaultAnimation;
     std::optional<ResourceId> stateMachine;
+    nlohmann::json            stateMachineParam = nlohmann::json::object();
     std::string               useDefaultAnimation;
     float                     ironZoom           = 1.2f;
     float                     zoomModelFov       = 70.0f;

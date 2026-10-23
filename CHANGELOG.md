@@ -8,6 +8,47 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 Versioning rule for this project: the patch number goes up by 1 for each small item or test
 round, the minor number goes up by 1 for each finished feature or phase.
 
+## [0.3.6] - 2026-10-24
+
+### Added
+
+- TACZ Lua animation state machines replace the temporary C++ driver, after
+  LuaStateMachineFactory / LuaAnimationState / AnimationStateMachine. Asset modules use
+  `<namespace>_<path>` in package.preload; initialize, states, entry/update/exit and nested
+  trigger dispatch run the unmodified default / AK47 scripts (and the other default-pack guns).
+- Game-independent AnimationController / DiscreteTrackArray / ObjectAnimationRunner semantics:
+  ordered track lines, overlapping additive gun kicks, loop / hold / stop, pause / seek,
+  quaternion cross-fades and TACZ's actual `1 - (1 - t)^4` transition easing. Sound keyframes
+  now run on those same timelines instead of the separate reload scheduler.
+- GunAnimationStateContext reads ammo / barrel / fire mode / cooldown / reload state and native
+  movement input, walk distance, ground, crouch and sprint state. Movement inputs are dispatched
+  from ClientLevelTickEvent; state updates and animation evaluation stay per frame.
+- H inspects, following LocalPlayerInspect's state-lock checks. Draw, shoot, reload,
+  cancel_reload, fire_select, idle/walk/run and put_away inputs are dispatched to Lua. Fire mode
+  is predicted locally until sync; draw time locks local actions. `/tacz anim <name>` now plays
+  one debug override and returns control to the continuously updating state machine.
+- Internal rifle/pistol fallback animations and the default state-machine script are embedded
+  from TACZ's original assets; gun packs override them. Display state_machine_param and a
+  read-only primitive/compound NBT accessor are available to scripts.
+- A separate animation Lua VM with text/preload-only loading and an instruction budget per
+  invocation, isolated per held-gun session. LuaJ compatibility shims provide unpack, math.pow,
+  bit32 and integral number formatting. Script errors identify the module and fall back to
+  static_idle, not a game crash.
+- Controller / sandbox / real-pack sequence tests; all 54 default-pack guns' state machines
+  initialize and accept action inputs (76 cases total).
+
+### Not yet
+
+- Delaying Bedrock's actual item switch for put_away_time: put_away and exit are dispatched,
+  but selection changes immediately, so the old gun is not kept onscreen for the holster animation.
+- Aiming, crawl, slide, heat, charge and attachments (including extended-magazine modifiers)
+  return neutral context values; manual-action bolt and melee gameplay inputs are not wired.
+- Arms, camera/constraint bone listeners, functional additional-magazine rendering and shell
+  ejection rendering. Crosshair-hide flags and shell-window requests are stored/logged only.
+- glTF animations and spherical interpolation on non-rotation channels remain unsupported.
+- Lua module globals shared across gun-selection sessions are not retained: a fresh animation
+  VM isolates a faulty pack from the next selection instead of sharing Java's asset-script VM.
+
 ## [0.3.5] - 2026-10-24
 
 ### Added

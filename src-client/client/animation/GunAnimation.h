@@ -7,14 +7,17 @@
 #include "model/Animation.h"
 #include "pack/ResourceId.h"
 
-// TEMPORARY 0.3.5 driver. Replace these tracks with TACZ's Lua state machine in 0.3.6.
+// Client adapter for TACZ's Lua animation state machine. All VM/controller logic is shared.
 namespace tacz::client::anim {
 
 bool held(std::optional<pack::ResourceId> const& gun, int slot = -1); // true on selection change
 void update(); // called only from MinecraftGame::update, never a 50 ms client tick
 void shoot();
-void reload(bool empty);
+void reload();
 void cancelReload();
+void inspect();
+void fireSelect();
+void movementTick();
 void clear();
 
 struct Snapshot {
