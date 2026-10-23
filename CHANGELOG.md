@@ -8,6 +8,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 Versioning rule for this project: the patch number goes up by 1 for each small item or test
 round, the minor number goes up by 1 for each finished feature or phase.
 
+## [0.2.5] - 2026-10-23
+
+### Added
+
+- Gun pack sound playback (client, `src-client/client/sound`): `tacz_sounds/<path>.ogg` is read
+  from the gun pack and played through `SoundEngine::playFromMemory`; no resource pack needed.
+- Gun display `sounds` map is parsed. Probe: left click plays the held gun's `shoot` sound,
+  R plays `fire_select`.
+
+### Fixed
+
+- Displays with an empty sound id (`"inspect": ""`, used by fn_fal, hk_mk23, spas_12) failed to
+  load, so those three guns had no display. Empty ids are now skipped, as in TACZ.
+
 ## [0.2.4] - 2026-10-23
 
 ### Changed

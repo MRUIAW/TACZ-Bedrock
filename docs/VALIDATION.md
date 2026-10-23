@@ -8,7 +8,7 @@
 | 2 | 物品 NBT 读写、同步到客户端、退出重进后保留 | 通过 | `src-server/server/ServerProbe.cpp`：`ItemStack::mUserData` + `setUserData` + `Player::setSelectedItem` + `sendInventory` |
 | 3 | 手持枪时拦截原版左键 | 通过（单击和按住都不会挖方块或攻击） | `src-client/client/ClientProbe.cpp`：`MouseInputEvent::cancel()` |
 | 4 | 自解析 geo 模型替换第一人称手持物渲染 | 通过（静止姿态，带贴图，跟随视角不抖动，单面无缺面） | `src-client/client/render/GunRenderer.cpp`：hook `ItemInHandRenderer::renderFirstPerson`，Tessellator 建网格，stb 解码 PNG 后 `TextureGroup::uploadTexture` |
-| 5 | 播放枪包目录里的 ogg | 未做 | |
+| 5 | 播放枪包目录里的 ogg | 通过（枪声、切换模式声，连点无卡顿） | `src-client/client/sound/GunSound.cpp`：读取 `tacz_sounds/<path>.ogg`，`SoundEngine::playFromMemory`（非定位） |
 | 6 | C++ 驱动 `tacz:bullet` 实体 | 未做 | |
 | - | 客户端 HUD 文字绘制 | 通过 | `AfterUIRenderEvent` + `MinecraftUIRenderContext::drawText`，只画 `.hud_screen` 视图 |
 | - | 服务端命令注册（单人） | 通过 | 监听 `ServerCommandRegisterEvent`，每次进世界重新注册 |
@@ -29,3 +29,10 @@
 - UV 和法线：设置 `Tessellator::mNextUV[0]` / `mNextNormal` 后再 `vertex()` 能正确写入（日志 uv0、normals 数量与顶点数一致）。
 - 网格只在首次手持时构建一次并缓存（AK47：605 个骨骼，7608 个顶点）。
 - 已知缺口：光照固定为全亮；没有手臂和动画；第三人称仍是原物品。
+
+### 音效（0.2.5）
+
+- `SoundEngine::playFromMemory(name, data, size, is3D, ...)` 直接播放 ogg 字节，无需资源包。字节缓冲在进程内一直保留，因为引擎可能在调用返回后继续读取。
+- display 的 `sounds` 里有些键在枪包中没有对应文件（如 AK47 的 `reload_tactical`、`inspect`）；这些声音实际写在动画关键帧的 `sound_effects` 里，要随动画系统一起播放。
+- 空音效 ID（`""`）在 TACZ 里表示不播放，必须跳过而不是报错，否则 fn_fal、hk_mk23、spas_12 的 display 会整体加载失败。
+- 尚未验证：3D 定位播放（其他玩家开枪的声音）、服务端广播。

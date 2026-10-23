@@ -35,8 +35,10 @@
 #include "mc/deps/nbt/CompoundTagVariant.h"
 #include "mc/world/item/ItemStack.h"
 
+#include "client/sound/GunSound.h"
 #include "nbt/GunNbt.h"
 #include "net/DebugPackets.h"
+#include "pack/ResourceId.h"
 
 namespace tacz::client::probe {
 namespace {
@@ -81,9 +83,13 @@ bool inGameplay() {
 }
 
 // Input callbacks come from the window procedure; touch game state on the client thread only.
-void sendAction(std::string action) {
-    ll::thread::ClientThreadExecutor::getDefault().execute([action = std::move(action)] {
+// `soundKey` is the held gun's display sound played locally, as TACZ does for its own shooter.
+void sendAction(std::string action, std::string soundKey = {}) {
+    ll::thread::ClientThreadExecutor::getDefault().execute([action = std::move(action), soundKey = std::move(soundKey)] {
         net::DebugActionPacket{nextSeq++, action}.sendToServer();
+        if (soundKey.empty()) return;
+        auto gun = heldGun();
+        if (auto id = pack::ResourceId::parse(gun.id)) sound::playGunSound(*id, soundKey);
     });
 }
 
@@ -117,7 +123,9 @@ void enable() {
     // R: "reload" ping; works with or without a gun, so it tests the packet path alone.
     listeners[0] = bus.emplaceListener<ll::event::input::KeyInputEvent>([](ll::event::input::KeyInputEvent& event) {
         if (!event.isDown() || event.controller().mTextboxIsFocused || !inGameplay()) return;
-        if (event.keyCode() == 'R') sendAction("reload");
+        // fire_select is a sound shared by all guns (tacz_sounds/fire_select.ogg); the AK47's
+        // reload sounds come from animation keyframes and have no file of their own.
+        if (event.keyCode() == 'R') sendAction("reload", "fire_select");
     });
 
     // Left mouse while holding a gun: swallow vanilla attack and send "fire" instead.
@@ -125,7 +133,7 @@ void enable() {
         if (event.actionButtonId() != MouseAction::ActionLeft || !inGameplay()) return;
         if (heldGun().id.empty()) return;
         event.cancel();
-        if (event.buttonData() == MouseAction::DataDown) sendAction("fire");
+        if (event.buttonData() == MouseAction::DataDown) sendAction("fire", "shoot");
     });
 
     listeners[2] = bus.emplaceListener<ll::event::AfterUIRenderEvent>([](ll::event::AfterUIRenderEvent& event) {
@@ -151,6 +159,7 @@ void disable() {
         if (listener) bus.removeListener(listener);
         listener = nullptr;
     }
+    sound::clear();
 }
 
 } // namespace tacz::client::probe

@@ -76,6 +76,13 @@ TEST_CASE("Gun data: special serializers") {
     CHECK(data.inaccuracy->size() == 1);
 }
 
+TEST_CASE("Gun display: empty sound ids are skipped, invalid ones fail") {
+    auto display = parseGunDisplay(parseJsonText(R"({"sounds": {"shoot": "tacz:ak47/ak47_shoot", "inspect": ""}})"));
+    CHECK(display.sounds.size() == 1);
+    CHECK(display.sounds.at("shoot").path == "ak47/ak47_shoot");
+    CHECK_THROWS_AS(parseGunDisplay(parseJsonText(R"({"sounds": {"shoot": "Tacz:Bad"}})")), ParseError);
+}
+
 TEST_CASE("Gun data: unknown enum names become unset, wrong types fail") {
     auto data = parseGunData(parseJsonText(R"({"bolt": "pump", "reload": {"type": "belt"}})"));
     CHECK_FALSE(data.bolt.has_value());

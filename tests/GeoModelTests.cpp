@@ -99,6 +99,13 @@ TEST_CASE("AK47 model loads and idle_view sits at the camera") {
     CHECK(display->model->toString() == "tacz:gun/ak47_geo");
     CHECK(display->zoomModelFov == doctest::Approx(45));
 
+    // Display sounds resolve to tacz_sounds/<path>.ogg. Not every key has a file: the AK47's
+    // reload and inspect sounds are played from animation keyframes, so those ids are unused.
+    REQUIRE(display->sounds.contains("shoot"));
+    CHECK(display->sounds.at("shoot").toString() == "tacz:ak47/ak47_shoot");
+    CHECK(registry.readFile(pack::assetPath(display->sounds.at("shoot"), "tacz_sounds", ".ogg")).has_value());
+    CHECK(registry.readFile(pack::assetPath(display->sounds.at("fire_select"), "tacz_sounds", ".ogg")).has_value());
+
     auto text = registry.readFile(pack::assetPath(*display->model, "geo_models", ".json"));
     REQUIRE(text);
     auto m = model::parseGeoModel(pack::parseJsonText(*text));

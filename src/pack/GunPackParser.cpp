@@ -389,6 +389,14 @@ GunDisplay parseGunDisplay(nlohmann::json const& j) {
     read(j, "iron_zoom", display.ironZoom);
     read(j, "zoom_model_fov", display.zoomModelFov);
     read(j, "enable_transparency", display.enableTransparency);
+    if (auto* sounds = object(j, "sounds")) {
+        for (auto const& [key, value] : sounds->items()) {
+            // An empty id is a valid (path-less) ResourceLocation in Java and simply plays
+            // nothing; several default-pack displays use it to silence a sound.
+            if (value.is_null() || (value.is_string() && value.get<std::string>().empty())) continue;
+            display.sounds.emplace(key, toResourceId(value, "sounds." + key));
+        }
+    }
     display.raw = j;
     return display;
 }
