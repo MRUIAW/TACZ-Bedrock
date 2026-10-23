@@ -1,10 +1,13 @@
 #include "server/BulletSystem.h"
 
+#include <algorithm>
 #include <array>
 #include <mutex>
+#include <optional>
 #include <string>
 #include <vector>
 
+#include <fmt/format.h>
 #include <glm/glm.hpp>
 
 #include "ll/api/event/EventBus.h"
@@ -15,32 +18,50 @@
 
 #include "mc/deps/core/math/Vec2.h"
 #include "mc/deps/core/math/Vec3.h"
+#include "mc/deps/shared_types/legacy/actor/ActorDamageCause.h"
 #include "mc/legacy/ActorUniqueID.h"
 #include "mc/server/commands/CommandUtils.h"
 #include "mc/world/actor/Actor.h"
+#include "mc/world/actor/ActorCategory.h"
+#include "mc/world/actor/ActorDamageByChildActorSource.h"
+#include "mc/world/actor/ActorDamageSource.h"
 #include "mc/world/actor/ActorDefinitionIdentifier.h"
+#include "mc/world/actor/ActorHurtResult.h"
+#include "mc/world/actor/HurtParameters.h"
 #include "mc/world/actor/player/Player.h"
 #include "mc/world/level/BlockPos.h"
 #include "mc/world/level/BlockSource.h"
 #include "mc/world/level/Level.h"
 #include "mc/world/level/ShapeType.h"
+#include "mc/world/phys/AABB.h"
 #include "mc/world/phys/HitResult.h"
 #include "mc/world/phys/HitResultType.h"
 
 #include "debug/RenderDebug.h"
+#include "gun/BulletHit.h"
 #include "gun/BulletPhysics.h"
+#include "gun/GunStats.h"
 #include "mod/TaczMod.h"
+#include "net/DebugPackets.h"
 
 namespace tacz::server::bullet {
 namespace {
+
+using Cause = SharedTypes::Legacy::ActorDamageCause;
 
 ll::io::Logger& logger() { return TaczMod::getInstance().getSelf().getLogger(); }
 
 struct Bullet {
     ActorUniqueID     entity;
+    ActorUniqueID     shooter;
     gun::BulletMotion motion;
     glm::dvec3        origin;
-    int               serial;
+    gun::BulletDamage damage;
+    int               pierce = 1;
+    float             knockback = 0;
+    bool              igniteEntity = false;
+    int               igniteSeconds = 0;
+    int               serial = 0;
 };
 
 std::mutex          mutex;
@@ -49,7 +70,7 @@ int                 nextSerial = 1;
 
 std::array<ll::event::ListenerPtr, 2> listeners;
 
-Vec3 toVec3(glm::dvec3 v) { return {static_cast<float>(v.x), static_cast<float>(v.y), static_cast<float>(v.z)}; }
+Vec3       toVec3(glm::dvec3 v) { return {static_cast<float>(v.x), static_cast<float>(v.y), static_cast<float>(v.z)}; }
 glm::dvec3 toGlm(Vec3 const& v) { return {v.x, v.y, v.z}; }
 
 void place(Actor& actor, gun::BulletMotion const& motion) {
@@ -61,6 +82,135 @@ void place(Actor& actor, gun::BulletMotion const& motion) {
     }
 }
 
+// TACZ splits each hit into an armour-reduced part and an armour-piercing part. Bedrock has no
+// bullet damage type, so the piercing part uses the first cause the game does not reduce by
+// armour; it is picked once at runtime instead of assuming which causes bypass armour.
+Cause piercingCause() {
+    static std::optional<Cause> chosen;
+    if (!chosen) {
+        for (Cause candidate : {Cause::Magic, Cause::Override, Cause::Void}) {
+            ActorDamageSource source(candidate, {});
+            if (!source.isReducedByArmorReduction()) {
+                chosen = candidate;
+                break;
+            }
+        }
+        if (!chosen) {
+            chosen = Cause::Projectile;
+            logger().warn("No damage cause bypasses armour; armour_ignore has no effect");
+        }
+        logger().info("Armour-piercing bullet damage uses cause {}", static_cast<int>(*chosen));
+    }
+    return *chosen;
+}
+
+// One hurt() call. TACZ clears the target's hurt cooldown before each part so full-auto fire
+// is not swallowed by invulnerability frames.
+bool applyDamage(Actor& target, Actor const& bulletActor, Actor const* shooter, float amount, Cause cause, bool knockback) {
+    if (amount <= 0) return false;
+    target.mInvulnerableTime = 0;
+    target.mLastHurt         = 0;
+    HurtParameters params(knockback, false);
+    if (shooter) {
+        ActorDamageByChildActorSource source(bulletActor, *shooter, cause);
+        return static_cast<bool>(target.hurt(source, amount, params));
+    }
+    ActorDamageSource source(cause, {});
+    return static_cast<bool>(target.hurt(source, amount, params));
+}
+
+// TACZ EntityUtil PROJECTILE_TARGETS plus the owner / same-vehicle exclusions. Bedrock has no
+// isPickable, so only mobs and players are targets for now.
+bool isTarget(Actor& candidate, Actor const& bulletActor, Actor const* shooter) {
+    if (&candidate == &bulletActor || &candidate == shooter) return false;
+    if (candidate.getTypeName() == "tacz:bullet") return false;
+    if (!candidate.hasCategory(ActorCategory::Mob)) return false;
+    if (candidate.isDead() || !candidate.isAlive() || candidate.isSpectator()) return false;
+    if (shooter) {
+        Actor* vehicle = shooter->getVehicle();
+        if (vehicle && (&candidate == vehicle || candidate.getVehicle() == vehicle)) return false;
+    }
+    return true;
+}
+
+struct EntityHit {
+    Actor*     actor;
+    glm::dvec3 pos;
+    double     distance; // from the segment start, for ordering
+    bool       headshot;
+};
+
+std::vector<EntityHit> findEntityHits(
+    BlockSource& region,
+    Actor const& bulletActor,
+    Actor const* shooter,
+    glm::dvec3   from,
+    glm::dvec3   to
+) {
+    std::vector<EntityHit> hits;
+    // TACZ: bullet box expanded along the motion, inflated by 1.
+    glm::dvec3 lo = glm::min(from, to) - 1.0;
+    glm::dvec3 hi = glm::max(from, to) + 1.0;
+    for (Actor* candidate : region.getEntities(AABB{toVec3(lo), toVec3(hi)}, 1.0f)) {
+        if (!candidate || !isTarget(*candidate, bulletActor, shooter)) continue;
+        AABB const&       aabb = candidate->getAABB();
+        gun::HitboxTarget target{
+            {toGlm(aabb.min), toGlm(aabb.max)},
+            toGlm(candidate->getPosDelta()),
+            candidate->isPlayer(),
+            candidate->isSneaking(),
+            candidate->getVehicle() != nullptr,
+        };
+        auto pos = gun::clip(gun::fixedHitbox(target), from, to);
+        if (!pos) continue;
+        double eyeY = candidate->getHeadPos().y;
+        hits.push_back({candidate, *pos, glm::length(*pos - from), gun::isHeadshot(pos->y, eyeY)});
+    }
+    std::ranges::sort(hits, {}, &EntityHit::distance);
+    return hits;
+}
+
+void reportHit(Actor const* shooter, std::string const& info) {
+    logger().info("{}", info);
+    // Shown on the shooter's probe HUD ("server: ...") as in-game feedback.
+    if (shooter && shooter->isPlayer()) net::DebugAckPacket{0, info}.sendTo(*static_cast<Player const*>(shooter));
+}
+
+void hitEntity(Bullet& b, Actor& bulletActor, Actor* shooter, EntityHit const& hit) {
+    Actor& target = *hit.actor;
+    double fromMuzzle = glm::length(hit.pos - b.origin);
+    auto   split      = b.damage.onHit(fromMuzzle, hit.headshot);
+    int    before     = target.getHealth();
+    bool   knockback  = b.knockback > 0;
+    bool   normal     = applyDamage(target, bulletActor, shooter, split.normal, Cause::Projectile, knockback);
+    bool   piercing   = applyDamage(target, bulletActor, shooter, split.armorPiercing, piercingCause(), false);
+    if (b.igniteEntity && b.igniteSeconds > 0) target.setOnFire(b.igniteSeconds, true);
+    int  after  = target.getHealth();
+    bool killed = target.isDead() || after <= 0;
+
+    AABB const& aabb = target.getAABB();
+    reportHit(
+        shooter,
+        fmt::format(
+            "[bullet #{}] hit {}{} at {:.1f} m: {:.2f} + {:.2f} piercing (applied {}/{}), hp {} -> {}{} "
+            "| hit y {:.2f} above feet, eye {:.2f}",
+            b.serial,
+            target.getTypeName(),
+            hit.headshot ? " (HEAD)" : "",
+            fromMuzzle,
+            split.normal,
+            split.armorPiercing,
+            normal,
+            piercing,
+            before,
+            after,
+            killed ? " KILLED" : "",
+            hit.pos.y - aabb.min.y,
+            target.getHeadPos().y - aabb.min.y
+        )
+    );
+}
+
 // Advances one bullet by a tick. Returns false when it should be removed.
 bool tick(Level& level, Bullet& b, std::string& reason) {
     Actor* actor = level.fetchEntity(b.entity, false);
@@ -68,17 +218,19 @@ bool tick(Level& level, Bullet& b, std::string& reason) {
         reason = "entity gone";
         return false;
     }
-    auto& region = actor->getDimensionBlockSource();
-    auto  from   = b.motion.pos;
-    auto  to     = b.motion.next();
+    Actor* shooter = level.fetchEntity(b.shooter, false);
+    auto&  region  = actor->getDimensionBlockSource();
+    auto   from    = b.motion.pos;
+    auto   to      = b.motion.next();
     if (!region.hasChunksAt(BlockPos{toVec3(to)}, 0, false)) {
         reason = "unloaded chunk";
         actor->remove();
         return false;
     }
-    // TACZ ray-traces blocks with the collision shape and ignores fluids (ClipContext COLLIDER/NONE).
+    // Blocks first (collision shape, fluids ignored: TACZ ClipContext COLLIDER / NONE); entities
+    // are then only looked for up to the block hit.
     double distance = glm::length(to - from);
-    auto   hit      = region.clip(
+    auto   blockHit = region.clip(
         toVec3(from),
         toVec3(to),
         false,
@@ -90,11 +242,23 @@ bool tick(Level& level, Bullet& b, std::string& reason) {
         [](BlockSource const&, Block const&, bool) { return true; },
         false
     );
-    if (hit.mType == HitResultType::Tile) {
-        b.motion.pos = toGlm(hit.mPos);
+    bool hitBlock = blockHit.mType == HitResultType::Tile;
+    auto end      = hitBlock ? toGlm(blockHit.mPos) : to;
+
+    for (auto const& hit : findEntityHits(region, *actor, shooter, from, end)) {
+        hitEntity(b, *actor, shooter, hit);
+        if (--b.pierce < 1) {
+            b.motion.pos = hit.pos;
+            place(*actor, b.motion);
+            reason = "stopped in " + hit.actor->getTypeName();
+            actor->remove();
+            return false;
+        }
+    }
+    if (hitBlock) {
+        b.motion.pos = end;
         place(*actor, b.motion);
-        reason = "hit block (" + std::to_string(hit.mBlock.x) + ", " + std::to_string(hit.mBlock.y) + ", "
-               + std::to_string(hit.mBlock.z) + ")";
+        reason = fmt::format("hit block ({}, {}, {})", blockHit.mBlock.x, blockHit.mBlock.y, blockHit.mBlock.z);
         actor->remove();
         return false;
     }
@@ -128,39 +292,53 @@ void tickAll(Level& level) {
 
 } // namespace
 
-void fire(Player& shooter, pack::BulletData const& data) {
-    pack::BulletData scaled = data;
+void fire(Player& shooter, pack::GunData const& gun, pack::FireMode mode) {
+    pack::BulletData scaled = gun.bullet;
     scaled.speed *= debug::bulletSpeedScale.load();
-
     auto origin    = toGlm(shooter.getHeadPos());
     auto direction = toGlm(shooter.getViewVector());
-    auto motion    = gun::BulletMotion::launch(scaled, origin, direction);
+    auto damage    = gun::BulletDamage::from(gun, mode);
+    int  pellets   = std::max(gun.bullet.bulletAmount, 1);
 
-    ActorUniqueID id{};
-    Actor*        actor = CommandUtils::spawnEntityAt(
-        shooter.getDimensionBlockSource(),
-        toVec3(origin),
-        ActorDefinitionIdentifier("tacz:bullet"),
-        id,
-        &shooter
-    );
-    if (!actor) {
-        logger().warn("Cannot spawn tacz:bullet; is the TACZ behavior pack loaded?");
-        return;
+    for (int i = 0; i < pellets; ++i) {
+        // Spread (inaccuracy) is not applied yet: every pellet flies straight.
+        auto          motion = gun::BulletMotion::launch(scaled, origin, direction);
+        ActorUniqueID id{};
+        Actor*        actor = CommandUtils::spawnEntityAt(
+            shooter.getDimensionBlockSource(),
+            toVec3(origin),
+            ActorDefinitionIdentifier("tacz:bullet"),
+            id,
+            &shooter
+        );
+        if (!actor) {
+            logger().warn("Cannot spawn tacz:bullet; is the TACZ behavior pack loaded?");
+            return;
+        }
+        place(*actor, motion);
+
+        std::lock_guard lock(mutex);
+        Bullet b;
+        b.entity        = actor->getOrCreateUniqueID();
+        b.shooter       = shooter.getOrCreateUniqueID();
+        b.motion        = motion;
+        b.origin        = origin;
+        b.damage        = damage;
+        b.pierce        = std::max(gun.bullet.pierce, 1);
+        b.knockback     = gun.bullet.knockback;
+        b.igniteEntity  = gun.bullet.ignite.entity;
+        b.igniteSeconds = gun.bullet.igniteEntityTime;
+        b.serial        = nextSerial++;
+        bullets.push_back(std::move(b));
+        logger().info(
+            "[bullet #{}] fired at {:.2f} blocks/tick (x{:.2f}), life {} ticks, damage {:.1f} at the muzzle",
+            bullets.back().serial,
+            glm::length(motion.vel),
+            debug::bulletSpeedScale.load(),
+            motion.life,
+            damage.atDistance(0)
+        );
     }
-    place(*actor, motion);
-
-    std::lock_guard lock(mutex);
-    int serial = nextSerial++;
-    bullets.push_back({actor->getOrCreateUniqueID(), motion, origin, serial});
-    logger().info(
-        "[bullet #{}] fired at {:.2f} blocks/tick (x{:.2f}), life {} ticks, move mode {}",
-        serial,
-        glm::length(motion.vel),
-        debug::bulletSpeedScale.load(),
-        motion.life,
-        debug::bulletMoveMode.load()
-    );
 }
 
 void enable() {

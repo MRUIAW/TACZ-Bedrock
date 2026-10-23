@@ -5,14 +5,15 @@
 class Player;
 
 // Server-driven bullets: each shot spawns a tacz:bullet entity (behavior pack) that the mod
-// moves every server tick with TACZ's motion model, stopping at the first block it hits.
-// Entity hits and damage are not wired up yet.
+// moves every server tick with TACZ's motion model. Per tick the path is ray-traced against
+// blocks and entities; entity hits deal TACZ damage (distance falloff, headshot, armour
+// ignore, pierce). Not yet: player latency rewind, explosions, water drag, hit feedback UI.
 namespace tacz::server::bullet {
 
 void enable();
 void disable();
 
-// Fires one bullet from the shooter's eyes along their view direction.
-void fire(Player& shooter, pack::BulletData const& data);
+// Fires one round from the shooter's eyes along their view direction (bullet_amount pellets).
+void fire(Player& shooter, pack::GunData const& gun, pack::FireMode mode);
 
 } // namespace tacz::server::bullet

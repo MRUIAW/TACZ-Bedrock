@@ -178,7 +178,8 @@ public:
             writeGun(*player, gun.id, gun.ammo);
             auto id    = pack::ResourceId::parse(gun.id);
             auto entry = id ? TaczMod::getInstance().gunPacks().gun(*id) : nullptr;
-            if (entry) bullet::fire(*player, entry->data.bullet);
+            // Fire mode switching is not implemented yet: use the gun's first mode (validated non-empty).
+            if (entry) bullet::fire(*player, entry->data, *entry->data.fireModes.front());
         }
         std::string info = packet.action + " #" + std::to_string(packet.seq) + " from " + player->getRealName()
                          + " gun=" + (gun.id.empty() ? std::string{"-"} : gun.id) + " ammo=" + std::to_string(gun.ammo);

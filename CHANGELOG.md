@@ -8,6 +8,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 Versioning rule for this project: the patch number goes up by 1 for each small item or test
 round, the minor number goes up by 1 for each finished feature or phase.
 
+## [0.3.1] - 2026-10-23
+
+### Added
+
+- Bullets hit entities (`src-server/server/BulletSystem.cpp`, `src/gun/BulletHit.h`): each tick
+  the path up to the first block is tested against mobs and players with TACZ's fixed hitbox
+  (stretched along and shifted back against the target's motion, +1/16 for standing players),
+  nearest first, up to `pierce` targets.
+- TACZ damage on hit: distance falloff, headshot multiplier (eye height ± 0.25), armour-ignore
+  split into an armour-reduced projectile part and a part with a cause the game does not reduce
+  by armour (chosen at runtime), shotgun pellets, ignite, knockback. The hurt cooldown is
+  cleared before each part, as in TACZ, so full-auto fire is not absorbed.
+- Damage is attributed to the shooter (`ActorDamageByChildActorSource`); hit details are
+  logged and shown on the probe HUD.
+- Unit tests for hit geometry (28 cases total).
+
+### Not yet
+
+- Player-vs-player latency rewind, configured headshot boxes, explosions, spread.
+
 ## [0.3.0] - 2026-10-23
 
 Technical validation phase complete: all six items in `docs/VALIDATION.md` pass in single-player
