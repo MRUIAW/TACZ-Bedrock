@@ -28,6 +28,7 @@
 #include "mod/TaczMod.h"
 #include "nbt/GunNbt.h"
 #include "net/DebugPackets.h"
+#include "server/BulletSystem.h"
 
 namespace tacz::server::probe {
 namespace {
@@ -81,6 +82,11 @@ struct RenderDebugParams {
     int twoSided;
 };
 
+struct BulletDebugParams {
+    int   moveMode;
+    float speedScale;
+};
+
 namespace {
 
 void registerCommands() {
@@ -123,6 +129,20 @@ void registerCommands() {
             if (auto* player = originPlayer(origin)) player->sendMessage(msg);
             output.success(msg);
         });
+    // /tacz bdebug <moveMode> <speedScale> : bullet entity diagnostics
+    //   moveMode 0 = Actor::moveTo, 1 = Actor::teleport; speedScale < 1 slows bullets down to watch them.
+    command.overload<BulletDebugParams>()
+        .text("bdebug")
+        .required("moveMode")
+        .required("speedScale")
+        .execute([](CommandOrigin const& origin, CommandOutput& output, BulletDebugParams const& params) {
+            debug::bulletMoveMode   = params.moveMode;
+            debug::bulletSpeedScale = params.speedScale > 0 ? params.speedScale : 1.0f;
+            std::string msg         = "[TACZ] bullet debug: moveMode=" + std::to_string(params.moveMode)
+                            + " speedScale=" + std::to_string(debug::bulletSpeedScale.load());
+            if (auto* player = originPlayer(origin)) player->sendMessage(msg);
+            output.success(msg);
+        });
     // /tacz setgun <gunId> : mark the selected item as a gun with a full magazine
     command.overload<SetGunParams>()
         .text("setgun")
@@ -156,6 +176,9 @@ public:
         if (packet.action == "fire" && !gun.id.empty() && gun.ammo > 0) {
             gun.ammo--;
             writeGun(*player, gun.id, gun.ammo);
+            auto id    = pack::ResourceId::parse(gun.id);
+            auto entry = id ? TaczMod::getInstance().gunPacks().gun(*id) : nullptr;
+            if (entry) bullet::fire(*player, entry->data.bullet);
         }
         std::string info = packet.action + " #" + std::to_string(packet.seq) + " from " + player->getRealName()
                          + " gun=" + (gun.id.empty() ? std::string{"-"} : gun.id) + " ammo=" + std::to_string(gun.ammo);

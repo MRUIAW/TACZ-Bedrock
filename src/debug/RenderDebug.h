@@ -17,4 +17,10 @@ inline std::atomic<bool> gunTwoSided{false};
 // Bumped whenever a setting changes so the renderer logs its state once more.
 inline std::atomic<int> renderRevision{0};
 
+// Bullet entity sync (/tacz bdebug): 0 Actor::moveTo, 1 Actor::teleport.
+inline std::atomic<int> bulletMoveMode{0};
+
+// Multiplies bullet speed, gravity and life stay as in the pack; < 1 gives slow motion.
+inline std::atomic<float> bulletSpeedScale{1.0f};
+
 } // namespace tacz::debug

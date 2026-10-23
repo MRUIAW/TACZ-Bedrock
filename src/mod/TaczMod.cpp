@@ -2,6 +2,7 @@
 
 #include "ll/api/mod/RegisterHelper.h"
 
+#include "server/BulletSystem.h"
 #include "server/ServerProbe.h"
 #ifdef TACZ_CLIENT
 #include "client/ClientProbe.h"
@@ -37,6 +38,7 @@ void TaczMod::reloadGunPacks() {
 bool TaczMod::enable() {
     getSelf().getLogger().debug("Enabling...");
     server::probe::enable();
+    server::bullet::enable();
 #ifdef TACZ_CLIENT
     client::probe::enable();
     client::render::enable();
@@ -50,6 +52,7 @@ bool TaczMod::disable() {
     client::render::disable();
     client::probe::disable();
 #endif
+    server::bullet::disable();
     server::probe::disable();
     return true;
 }

@@ -9,7 +9,7 @@
 | 3 | 手持枪时拦截原版左键 | 通过（单击和按住都不会挖方块或攻击） | `src-client/client/ClientProbe.cpp`：`MouseInputEvent::cancel()` |
 | 4 | 自解析 geo 模型替换第一人称手持物渲染 | 通过（静止姿态，带贴图，跟随视角不抖动，单面无缺面） | `src-client/client/render/GunRenderer.cpp`：hook `ItemInHandRenderer::renderFirstPerson`，Tessellator 建网格，stb 解码 PNG 后 `TextureGroup::uploadTexture` |
 | 5 | 播放枪包目录里的 ogg | 通过（枪声、切换模式声，连点无卡顿） | `src-client/client/sound/GunSound.cpp`：读取 `tacz_sounds/<path>.ogg`，`SoundEngine::playFromMemory`（非定位） |
-| 6 | C++ 驱动 `tacz:bullet` 实体 | 未做 | |
+| 6 | C++ 驱动 `tacz:bullet` 实体 | 通过（正常速度可见，命中方块即消失无残留；234 发中 173 命中方块、60 寿命到期） | `src-server/server/BulletSystem.cpp` + `packs/behavior_packs/tacz_bp`：`CommandUtils::spawnEntityAt` 生成，`ServerLevelTickEvent` 每 tick 推进，`BlockSource::clip` 判定方块 |
 | - | 客户端 HUD 文字绘制 | 通过 | `AfterUIRenderEvent` + `MinecraftUIRenderContext::drawText`，只画 `.hud_screen` 视图 |
 | - | 服务端命令注册（单人） | 通过 | 监听 `ServerCommandRegisterEvent`，每次进世界重新注册 |
 | - | 游戏内加载默认枪包（54 把枪） | 通过 | `/tacz packs`、`/tacz setgun` 校验枪 ID；回复改用 `Player::sendMessage` 后聊天栏可见 |
@@ -36,3 +36,12 @@
 - display 的 `sounds` 里有些键在枪包中没有对应文件（如 AK47 的 `reload_tactical`、`inspect`）；这些声音实际写在动画关键帧的 `sound_effects` 里，要随动画系统一起播放。
 - 空音效 ID（`""`）在 TACZ 里表示不播放，必须跳过而不是报错，否则 fn_fal、hk_mk23、spas_12 的 display 会整体加载失败。
 - 尚未验证：3D 定位播放（其他玩家开枪的声音）、服务端广播。
+
+### 子弹实体与 mod 自带包（0.2.6）
+
+- LeviLamina 会自动加载 `<mod 目录>/resource_packs/*` 和 `<mod 目录>/behavior_packs/*`：资源包在客户端启动时加入全局栈，行为包在每次进世界时加入该世界的栈（单人和 BDS 都一样，见 LL `src-*/ll/core/main_win.cpp`）。不需要在世界设置里勾选。日志里能看到 `Pack Stack - [00] TACZ Bedrock ... @ ./mods/tacz/behavior_packs/tacz_bp`。
+- 包只在游戏启动时读取，改了包要重启游戏。包的 UUID 必须固定。
+- `Actor::moveTo` 和 `Actor::teleport` 两种同步方式在客户端看起来差别不大，默认用 `moveTo`。
+- 250 m/s（每 tick 12.5 格）的子弹在正常速度下肉眼可见。
+- 行为包里的 `minecraft:timer` 15 秒保底消失，防止 mod 不再驱动时子弹残留。
+- 尚未做：命中实体、伤害、爆头、水中阻力、曳光渲染。

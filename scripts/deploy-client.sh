@@ -24,4 +24,14 @@ fi
 mkdir -p "$DEST"
 cp bin/tacz/manifest.json bin/tacz/tacz.dll bin/tacz/tacz.pdb "$DEST/"
 cmp -s bin/tacz/tacz.dll "$DEST/tacz.dll"
+# LeviLamina loads <mod>/resource_packs and <mod>/behavior_packs at game start (ll/core/main_win.cpp).
+# Replace our own packs wholesale so files deleted from the repo do not linger.
+for kind in resource_packs behavior_packs; do
+    for pack in packs/"$kind"/*/; do
+        name=$(basename "$pack")
+        rm -rf "${DEST:?}/$kind/$name"
+        mkdir -p "$DEST/$kind"
+        cp -r "$pack" "$DEST/$kind/$name"
+    done
+done
 echo "deploy: $(grep '"version"' bin/tacz/manifest.json | tr -d ' ,') client deployed to $DEST"

@@ -8,6 +8,33 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 Versioning rule for this project: the patch number goes up by 1 for each small item or test
 round, the minor number goes up by 1 for each finished feature or phase.
 
+## [0.3.0] - 2026-10-23
+
+Technical validation phase complete: all six items in `docs/VALIDATION.md` pass in single-player
+(custom packets, item NBT, input interception, first-person model rendering, sound playback,
+server-driven bullet entity). Next phase: gun logic implementation.
+
+### Changed
+
+- 0.2.6 test result: bullets are visible at full speed, disappear on the block they hit and
+  leave nothing behind; `moveTo` and `teleport` sync look the same, `moveTo` stays the default.
+
+## [0.2.6] - 2026-10-23
+
+### Added
+
+- Bullet entity probe: a minimal behavior pack (`packs/behavior_packs/tacz_bp`, entity
+  `tacz:bullet` with no physics, damage or AI of its own) and resource pack
+  (`packs/resource_packs/tacz_rp`, a small yellow cube). LeviLamina loads both from the mod
+  folder automatically.
+- Server bullet system (`src-server/server/BulletSystem.cpp`): firing spawns a bullet that the
+  mod moves every server tick with TACZ's motion model (speed / 20 blocks per tick, then drag
+  and gravity) and removes on the first block hit, on expiry or in unloaded chunks.
+- `src/gun/BulletPhysics.h` with unit tests (24 cases total).
+- `/tacz bdebug <moveMode> <speedScale>`: entity sync via `moveTo` (0) or `teleport` (1), and a
+  speed multiplier to watch bullets in slow motion.
+- `scripts/deploy-client.sh` also deploys the packs.
+
 ## [0.2.5] - 2026-10-23
 
 ### Added
