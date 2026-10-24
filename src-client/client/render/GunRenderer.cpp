@@ -8,6 +8,7 @@
 #include <optional>
 #include <string>
 #include <variant>
+#include <type_traits>
 
 #include <glm/glm.hpp>
 #include <stb_image.h>
@@ -16,6 +17,9 @@
 #include "ll/api/memory/Hook.h"
 
 #include "mc/client/game/IClientInstance.h"
+#include "mc/common/Globals.h"
+#include "mc/deps/minecraft_renderer/framebuilder/FrameBuilder.h"
+#include "mc/deps/minecraft_renderer/renderer/BedrockTextureData.h"
 #include "mc/client/gui/screens/ScreenContext.h"
 #include "mc/client/player/LocalPlayer.h"
 #include "mc/client/renderer/BaseActorRenderContext.h"
@@ -68,8 +72,10 @@
 
 #include "debug/RenderDebug.h"
 #include "client/animation/GunAnimation.h"
+#include "client/gameplay/ClientShooter.h"
 #include "model/GeoModel.h"
 #include "model/GunModelRules.h"
+#include "model/RenderResourceKey.h"
 #include "mod/TaczMod.h"
 #include "nbt/GunNbt.h"
 #include "pack/GunPackParser.h"
@@ -78,6 +84,9 @@ namespace tacz::client::render {
 namespace {
 
 using TextureVariant = std::variant<std::monostate, mce::TexturePtr, mce::ClientTexture, mce::ServerTexture>;
+
+using FirstPersonSignature = void (ItemInHandRenderer::*)(BaseActorRenderContext&, Matrix const&, ItemContextFlags);
+static_assert(std::is_same_v<decltype(&ItemInHandRenderer::renderFirstPerson), FirstPersonSignature>);
 
 ll::io::Logger& logger() { return TaczMod::getInstance().getSelf().getLogger(); }
 
@@ -97,6 +106,7 @@ struct GunVisual {
     uint                              vertexCount  = 0;
     std::unique_ptr<ResourceLocation> textureLocation;
     TextureVariant                    texture;
+    std::weak_ptr<mce::TextureGroup>   textureOwner;
 };
 
 // Render diagnostics (/tacz rdebug). Materials:
@@ -126,6 +136,38 @@ std::mutex cacheMutex;
 auto& cache     = *new std::map<pack::ResourceId, GunVisual>;
 auto& materials = *new std::array<std::optional<mce::MaterialPtr>, MaterialCount>;
 int   loggedRevision = -1;
+std::optional<model::RenderResourceKey> resourceKey;
+uint64_t resourceSerial = 0;
+struct RenderCounters {
+    std::chrono::steady_clock::time_point start = std::chrono::steady_clock::now();
+    uint64_t hooks = 0, builds = 0, draws = 0, poseChanges = 0, invalidMeshes = 0;
+    uint64_t lastPose = 0, lastMesh = 0, animationFrame = 0;
+    size_t cacheType = 0, cpuPositions = 0;
+    uint64 cacheId = 0;
+    bool temporary = false;
+} counters;
+bool waitingForResources = false;
+
+// Caller holds cacheMutex. TexturePtr is released before asking its ORIGINAL group to
+// unload our Raw resource. Never query a new world's group to release an old name.
+void releaseResources(char const* reason) {
+    for (auto& [id, visual] : cache) {
+        visual.mesh.reset();
+        visual.texture = {};
+        if (visual.textureLocation) {
+            auto owner = visual.textureOwner.lock();
+            bool unloaded = owner && owner->unloadTexture(*visual.textureLocation, false);
+            logger().info("[gun-gpu] release {} world={} serial={} reason={} textureUnloaded={}", id.toString(),
+                resourceKey ? resourceKey->world : 0, resourceSerial, reason, unloaded);
+        }
+    }
+    cache.clear();
+    for (auto& slot : materials) slot.reset();
+    resourceKey.reset();
+    loggedRevision = -1;
+    counters = {};
+    waitingForResources = false;
+}
 
 // Decodes a pack PNG and uploads it under a Raw (in-memory) resource location.
 bool uploadTexture(IClientInstance& client, std::string const& png, std::string const& name, GunVisual& visual) {
@@ -149,10 +191,13 @@ bool uploadTexture(IClientInstance& client, std::string const& png, std::string 
 
     auto group = client.getTextureGroup();
     if (!group) return false;
-    visual.textureLocation = std::make_unique<ResourceLocation>(Core::PathView("tacz/" + name), ResourceFileSystem::Raw);
+    auto runtimeName = fmt::format("tacz/runtime/{}/{}/{}", resourceKey->world, resourceSerial, name);
+    visual.textureLocation = std::make_unique<ResourceLocation>(Core::PathView(runtimeName), ResourceFileSystem::Raw);
     auto& texture          = group->uploadTexture(*visual.textureLocation, cg::ImageBuffer(std::move(image)));
     visual.texture         = mce::TexturePtr(texture, *visual.textureLocation, cg::TextureSetLayerType::Color);
-    logger().info("Uploaded gun texture {} ({}x{})", name, w, h);
+    visual.textureOwner = group;
+    logger().info("[gun-gpu] create {} ({}x{}) world={} serial={} group={}", name, w, h,
+        resourceKey->world, resourceSerial, fmt::ptr(group.get()));
     return true;
 }
 
@@ -186,6 +231,7 @@ void buildMesh(ScreenContext& screen, GunVisual& visual, bool twoSided) {
     visual.vertexCount  = batch.mCount;
     visual.meshTwoSided = twoSided;
     visual.mesh.emplace(batch.end(Tessellator::UploadMode::Buffered, "tacz gun", SupplementaryFieldAutoGenerationMode{}));
+    ++counters.builds;
 }
 
 GunVisual* visualFor(ScreenContext& screen, IClientInstance& client, pack::ResourceId const& gunId) {
@@ -194,7 +240,6 @@ GunVisual* visualFor(ScreenContext& screen, IClientInstance& client, pack::Resou
     if (!gun || !gun->index.display) return nullptr;
     auto const& displayId = *gun->index.display;
 
-    std::lock_guard lock(cacheMutex);
     auto [it, inserted] = cache.try_emplace(displayId);
     GunVisual& visual   = it->second;
     if (!inserted) return visual.failed ? nullptr : &visual;
@@ -291,16 +336,65 @@ void pop(MatrixStack::MatrixStackRef& ref) {
 }
 
 bool drawGun(ItemInHandRenderer& renderer, BaseActorRenderContext& context) {
+    auto session = shooter::worldToken();
+    if (!session) return false; // menu meshes pass through without any world-service access
+    auto pose = anim::snapshot();
+    if (!model::canUseGunRenderResources(session, pose.world, pose.gun.has_value())) return false;
     auto& client = context.mClientInstance;
     auto* player = client.getLocalPlayer();
     if (!player) return false;
-    auto pose = anim::snapshot();
     auto gunId = pose.gun;
-    if (!gunId) return false;
 
     auto& screen = context.mScreenContext;
+    auto textures = client.getTextureGroup();
+    auto buffers = screen.tessellator.mBufferResourceService.lock();
+    auto* frameBuilder = renderDragonFrameBuilder();
+    int lighting = frameBuilder && frameBuilder->isRayTracingEnabled() ? 1
+        : frameBuilder && frameBuilder->isDeferredEnabled() ? 2 : 0;
+    model::RenderResourceKey key{pose.world, reinterpret_cast<uintptr_t>(&client),
+        reinterpret_cast<uintptr_t>(textures.get()), reinterpret_cast<uintptr_t>(buffers.get()),
+        reinterpret_cast<uintptr_t>(frameBuilder), lighting};
+    std::lock_guard lock(cacheMutex); // also keeps returned GunVisual alive for the whole draw
+    if (!key.ready()) {
+        // Live world, but a graphics/pipeline transition can temporarily withdraw services.
+        // Do not create a failed cache entry or submit through absent native services.
+        if (!waitingForResources) logger().info("[gun-render] world={} resource services not ready; GPU work deferred", session);
+        waitingForResources = true;
+        return pose.puttingAway;
+    }
+    waitingForResources = false;
+    if (!resourceKey || *resourceKey != key) {
+        releaseResources("world/pipeline/resource-owner change");
+        resourceKey = key;
+        ++resourceSerial;
+        logger().info("[gun-gpu] bind world={} serial={} rtx={} deferred={}", key.world, resourceSerial,
+            lighting == 1, lighting == 2);
+    }
+    ++counters.hooks;
+    if (counters.lastPose != pose.revision) ++counters.poseChanges;
+    counters.lastPose = pose.revision;
+    counters.animationFrame = pose.frame;
+    auto elapsed = std::chrono::duration<double>(std::chrono::steady_clock::now() - counters.start).count();
+    if (elapsed >= 1) {
+        logger().info("[gun-render] rtx={} deferred={} seconds={:.2f} hooks={} builds={} draws={} poseChanges={} animFrame={} poseRev={} meshRev={} invalidMeshes={} cacheType={} cacheId={} temporary={} cpuPositions={} firstPerson={} path=renderFirstPerson->Mesh::renderMesh trace=call-site-only",
+            lighting == 1, lighting == 2, elapsed, counters.hooks, counters.builds, counters.draws,
+            counters.poseChanges, counters.animationFrame, counters.lastPose, counters.lastMesh, counters.invalidMeshes,
+            counters.cacheType, counters.cacheId, counters.temporary, counters.cpuPositions,
+            static_cast<bool>(screen.isDrawingFirstPersonObjects));
+        counters.start = std::chrono::steady_clock::now();
+        counters.hooks = counters.builds = counters.draws = counters.poseChanges = counters.invalidMeshes = 0;
+    }
     auto* visual = visualFor(screen, client, *gunId);
-    if (!visual || !visual->mesh || !visual->mesh->isValid()) return pose.puttingAway;
+    if (!visual || !visual->mesh || !visual->mesh->isValid()) {
+        ++counters.invalidMeshes;
+        return pose.puttingAway;
+    }
+
+    auto const& meshKey = visual->mesh->mCacheKey.get();
+    counters.cacheType = meshKey.index();
+    counters.cacheId = std::get_if<uint64>(&meshKey) ? std::get<uint64>(meshKey) : 0;
+    counters.temporary = visual->mesh->mTemporary;
+    counters.cpuPositions = visual->mesh->mMeshData->mPositions->size();
 
     bool twoSided = debug::gunTwoSided;
     if (pose.revision != visual->animationRevision || twoSided != visual->meshTwoSided) {
@@ -313,6 +407,7 @@ bool drawGun(ItemInHandRenderer& renderer, BaseActorRenderContext& context) {
         }
         buildMesh(screen, *visual, twoSided);
         visual->animationRevision = pose.revision;
+        counters.lastMesh = pose.revision;
         visual->animated = !pose.pose.empty();
         double ms = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - start).count();
         // Log once per visual after 120 changing poses: CPU bake + tessellation/upload submission,
@@ -391,6 +486,7 @@ bool drawGun(ItemInHandRenderer& renderer, BaseActorRenderContext& context) {
     TextureVariant const& texture = (materialIndex == 4 || materialIndex == 5) ? TextureVariant{} : visual->texture;
     try {
         visual->mesh->renderMesh(screen, *mat, texture, 0, visual->vertexCount, OffscreenCaptureDescription{}, nullptr);
+        ++counters.draws;
     } catch (...) {
         pop(world);
         throw;
@@ -399,6 +495,9 @@ bool drawGun(ItemInHandRenderer& renderer, BaseActorRenderContext& context) {
     return true;
 }
 
+// Deliberately no global Mesh::_renderMesh hook: LL's by-value TextureList is an opaque
+// empty static_vector placeholder, not an ABI-safe native container. Call-site counters
+// above observe only our fully typed renderMesh(..., TextureVariant const&, ...) call.
 LL_TYPE_INSTANCE_HOOK(
     FirstPersonGunHook,
     ll::memory::HookPriority::Normal,
@@ -433,9 +532,36 @@ void disable() {
     if (hooked) FirstPersonGunHook::unhook();
     hooked = false;
     std::lock_guard lock(cacheMutex);
-    cache.clear();
-    for (auto& slot : materials) slot.reset();
-    loggedRevision = -1;
+    releaseResources("mod disable");
+}
+
+void releaseWorld(IClientInstance const* client) {
+    std::lock_guard lock(cacheMutex);
+    if (resourceKey && resourceKey->client == reinterpret_cast<uintptr_t>(client)) releaseResources("world exit");
+}
+
+void diagnoseFrame() {
+    static auto start = std::chrono::steady_clock::now();
+    static uint64_t frames = 0;
+    auto session = shooter::worldToken();
+    if (!session) {
+        start = std::chrono::steady_clock::now();
+        frames = 0;
+        return;
+    }
+    ++frames;
+    auto now = std::chrono::steady_clock::now();
+    auto seconds = std::chrono::duration<double>(now - start).count();
+    if (seconds < 1) return;
+    auto pose = anim::snapshot();
+    if (model::canUseGunRenderResources(session, pose.world, pose.gun.has_value())) {
+        auto* builder = renderDragonFrameBuilder();
+        logger().info("[anim-frame] world={} frames={} seconds={:.2f} animFrame={} poseRev={} pipelinePresent={} rtx={} deferred={}",
+            pose.world, frames, seconds, pose.frame, pose.revision,
+            builder != nullptr, builder && builder->isRayTracingEnabled(), builder && builder->isDeferredEnabled());
+    }
+    start = now;
+    frames = 0;
 }
 
 } // namespace tacz::client::render

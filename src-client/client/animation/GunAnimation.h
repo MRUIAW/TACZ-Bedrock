@@ -23,6 +23,7 @@ bool actionsBlocked();
 void clear();
 
 struct Snapshot {
+    uint64_t frame = 0;
     uint64_t world = 0;
     std::optional<pack::ResourceId> gun;
     bool puttingAway = false;

@@ -313,6 +313,7 @@ void update() {
     pose.erase("camera");
     pose.erase("constraint");
     std::lock_guard lock(mutex);
+    ++published.frame;
     if (pose != published.pose || currentGun != publishedGun || hand.puttingAway != published.puttingAway || published.world != world) {
         published.world = world;
         published.gun = currentGun;

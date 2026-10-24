@@ -8,6 +8,106 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 Versioning rule for this project: the patch number goes up by 1 for each small item or test
 round, the minor number goes up by 1 for each finished feature or phase.
 
+## [0.3.10] - 2026-10-24
+
+### Fixed
+
+- 0.3.9 crashed at the main menu before any world tests could run. The 19:46:23, 19:47:21
+  and 19:49:48 traces all point to GunMeshTraceHook forwarding `origin` at the old
+  `GunRenderer.cpp:505`; all three minidumps identify `std::bad_variant_access`. LL's client
+  header declares Mesh::_renderMesh's by-value TextureList using `brstd::static_vector`, but
+  defines that container as an empty placeholder, not the native container ABI. The detour
+  therefore corrupted the texture argument even when its gun-only diagnostic branch was
+  skipped. Generic menu meshes also use that globally hooked function. This was not a null
+  player/resource service or a world-exit cleanup crash.
+- Removed the global `_renderMesh` hook completely, including install/uninstall and native
+  metadata/call counters. Keep RTX diagnostics at our own fully typed Mesh::renderMesh call
+  site, which takes its TextureVariant by const reference; no guessed container layout,
+  per-mode bypass or catch-and-continue workaround.
+- World-session/snapshot checks now precede client, player and GPU service queries in gun
+  rendering and heartbeat diagnostics. Gameplay queries likewise stop before global client
+  lookup when no world session exists; recorded client identity is atomic for input readers.
+  A live world with a temporarily incomplete graphics pipeline defers cache creation instead
+  of caching a failure or submitting through absent services.
+- Reviewed all remaining native hooks against the installed 26.51.1 client SDK headers:
+  MinecraftGame::$update `void()`, ClientInstance::_requestLeaveGameImpl `void(bool,bool)`,
+  ItemInHandRenderer::renderFirstPerson `void(BaseActorRenderContext&, Matrix const&,
+  ItemContextFlags)`. Added compile-time signature checks; ItemContextFlags is a fully defined
+  uchar enum, not an opaque by-value class. Matching a declaration alone does not make an
+  empty SDK container ABI-safe. Leave cleanup requires an active matching recorded session;
+  GPU release uses already-owned cache state, never a menu-time global-client query.
+
+### Validation / still pending
+
+- 92 tests / 21,839 assertions pass, including menu/stale-snapshot and incomplete-pipeline
+  guards. Native detour ABI behavior requires Minecraft to test; unit tests do not simulate it.
+- Server/client release builds passed; `scripts/deploy-client.sh` deployed the 0.3.10 client
+  with Minecraft closed. Main-menu and gameplay validation are pending; no commit was made.
+- The 0.3.9 texture-lifetime fix and safe `[anim-frame]` / `[gun-render]` / `[gun-gpu]`
+  diagnostics remain. Native-call/metadata fields are intentionally no longer emitted;
+  `[gun-render]` now says `trace=call-site-only`. RTX animation remains unresolved.
+- 0.3.9's in-game feature checklist was blocked by this startup crash; no pink-texture or RTX
+  result is claimed. First re-test main menu for 10 seconds, then all world/RTX checks.
+  Evidence and the hook/lifecycle audit: `docs/CRASH-0.3.10.md`.
+
+## [0.3.9] - 2026-10-24
+
+### 0.3.8 in-game results
+
+- Passed: world entry while holding a gun (no crash, draw plays), normal-looking walk/sprint
+  rate, blocked left click/R/H during put-away, gun -> empty hand/item/gun and fast scrolling.
+  Re-entering after quitting during put-away had correct animation but a magenta gun texture.
+  Newly reported pre-existing issue: Ray Tracing shows a static gun despite playing sounds;
+  other graphics modes animate.
+- Measured in newest run `2026-10-24.16.log`, not theoretical Java speeds:
+
+  | Time / movement | Speed blocks/s | Java delta/tick | Native delta/tick | Distance phase / controller cycles/s | Stable track sample |
+  | --- | ---: | ---: | ---: | ---: | ---: |
+  | 19:07:05.542 walk | 4.135 | 0.12457 | 0.20762 | 1.2405 / 1.2442 | 0.99 s |
+  | 19:07:41.305 run | 5.393 | 0.16216 | 0.27026 | 1.6180 / 1.6251 | 1.00 s |
+  | 19:07:42.305 run | 5.537 | 0.16627 | 0.27712 | 1.6611 / 1.6621 | 1.00 s |
+  | 19:07:43.310 run | 5.584 | 0.16835 | 0.28058 | 1.6751 / 1.6843 | 1.00 s |
+
+  Native/Java is 1.66663-1.66669 in these windows: native distance phase would be about
+  66.67% higher; Java-normalized input is about 40% lower than native. This validates the
+  distance-unit cause in these stable samples, not a universal ratio: other logged windows
+  (including ones with zero stable-track sampling) differ substantially. These measurements
+  do not establish a general Bedrock speed increase over Java; no speed compensation added.
+
+### Fixed
+
+- Cross-world GPU cache ownership: GunRenderer previously cached textures/meshes/materials
+  until mod disable, and a cached display bypassed PNG upload on subsequent world joins.
+  The log shows world generations 3 -> 5 -> 7 but only one upload in generation 3. Animation
+  snapshots own no GPU handles; the stale renderer cache, not the retained Lua VM, was the
+  cause-level lifetime error. It also affects the ordinary-held-gun exit path, not just
+  mid-put-away exits (the latter was the in-game reproduction; the former still needs testing).
+- Release meshes, TexturePtrs, Raw group textures and materials before request-leave tears
+  down the world; use the original weakly held texture group, not a newly looked-up group.
+  Exit callbacks compare the recorded client identity instead of depending on a still-registered
+  global primary client. Start-join/loaded events and a world/client/group/buffer/pipeline cache
+  key provide additional invalidation. Runtime texture names include a world/cache serial.
+  `[gun-gpu]` logs bind/create/release once per event. This is code-fixed, not yet game-validated.
+
+### RTX investigation — not fixed yet
+
+- Added low-rate `[anim-frame]` heartbeat independent of hand rendering and `[gun-render]`
+  counters for hand-hook calls, mesh builds, draw submissions, native Mesh::_renderMesh calls,
+  pose/mesh revisions, validity failures, cache keys and render metadata, labelled by the actual
+  FrameBuilder RTX/deferred state. The native trace hook forwards all arguments unchanged.
+- Checked LL Mesh/FrameBuilder/RenderMetadata/BVH/RTX headers and Lamium CellMesh/GhostRenderer.
+  Existing logs cannot distinguish skipped hand rendering, invalid meshes and stale backend
+  geometry; most BVH/RTX implementation types are opaque. No RTX root cause or API impossibility
+  has been established. No speculative BLAS/cache-key/temporary flag or alternate rendering
+  workaround was shipped. The normal Buffered tessellation/draw behavior remains unchanged.
+
+### Validation
+
+- 90 tests / 21,825 assertions pass, including cross-world/address-reuse/pipeline cache keys.
+- Server/client release builds passed; `scripts/deploy-client.sh` deployed the 0.3.9 client
+  with Minecraft closed. No 0.3.9 commit was made; GPU/game checks are still pending.
+- Runtime checks and remaining RTX investigation: `docs/RENDER-0.3.9.md`.
+
 ## [0.3.8] - 2026-10-24
 
 ### Fixed

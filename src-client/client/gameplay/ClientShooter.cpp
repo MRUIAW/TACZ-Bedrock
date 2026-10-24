@@ -12,11 +12,13 @@
 #include <stdexcept>
 #include <string>
 #include <vector>
+#include <type_traits>
 
 #include "ll/api/event/EventBus.h"
 #include "ll/api/event/ListenerBase.h"
 #include "ll/api/event/client/ClientExitLevelEvent.h"
 #include "ll/api/event/client/ClientJoinLevelEvent.h"
+#include "ll/api/event/client/ClientStartJoinLevelEvent.h"
 #include "ll/api/event/input/KeyInputEvent.h"
 #include "ll/api/event/input/MouseInputEvent.h"
 #include "ll/api/event/world/ClientLevelTickEvent.h"
@@ -33,6 +35,7 @@
 
 #include "client/sound/GunSound.h"
 #include "client/animation/GunAnimation.h"
+#include "client/render/GunRenderer.h"
 #include "gun/ShootRules.h"
 #include "gun/ClientWorldSession.h"
 #include "mod/TaczMod.h"
@@ -60,6 +63,12 @@ std::atomic<bool> fireSelectPressed{false};
 std::atomic<bool> inspectPressed{false};
 std::array<std::atomic<bool>, 3> actionKeyDown{}; // rising edges, not OS key repeat
 gun::ClientWorldSession worldSession;
+std::atomic<IClientInstance const*> joinedClient{nullptr}; // identity only; input callbacks also read it
+
+using FrameSignature = void (MinecraftGame::*)();
+using LeaveSignature = void (ClientInstance::*)(bool, bool);
+static_assert(std::is_same_v<decltype(&MinecraftGame::$update), FrameSignature>);
+static_assert(std::is_same_v<decltype(&ClientInstance::_requestLeaveGameImpl), LeaveSignature>);
 
 // Server-reported reload state (TACZ's synced RELOAD_STATE_KEY). Written by the packet handler.
 std::mutex                          serverStateMutex;
@@ -112,8 +121,9 @@ struct HeldGun {
 };
 
 std::optional<HeldGun> heldGun(bool predict = false) {
+    if (!worldSession.current()) return std::nullopt;
     auto client = ll::service::getClientInstance();
-    if (!client) return std::nullopt;
+    if (!client || &*client != joinedClient.load()) return std::nullopt;
     auto* player = client->getLocalPlayer();
     if (!player) return std::nullopt;
     auto state = nbt::readGun(player->getSelectedItem());
@@ -130,8 +140,9 @@ std::optional<HeldGun> heldGun(bool predict = false) {
 }
 
 bool inGameplay() {
+    if (!worldSession.current()) return false;
     auto client = ll::service::getClientInstance();
-    return worldSession.current() && client && client->getLocalPlayer() && client->getScreenName().starts_with("hud_screen");
+    return client && &*client == joinedClient.load() && client->getLocalPlayer() && client->getScreenName().starts_with("hud_screen");
 }
 
 std::optional<pack::ResourceId> displaySound(HeldGun const& gun, std::string const& key) {
@@ -265,12 +276,14 @@ void frame() {
         pendingShots.clear();
         anim::clear();
     }
-    auto client = ll::service::getClientInstance();
-    auto* player = client ? client->getLocalPlayer() : nullptr;
     // LocalPlayer may already exist while its inventory/network is still loading. Draw
     // notifications and session initialization start only after onPlayerLoaded, not merely
     // on the first non-null player observed from MinecraftGame::update.
-    if (!worldSession.current() || !player) return;
+    if (!worldSession.current()) return;
+    auto client = ll::service::getClientInstance();
+    if (!client || &*client != joinedClient.load()) return;
+    auto* player = client->getLocalPlayer();
+    if (!player) return;
     auto gun = heldGun(true);
     if (anim::held(gun ? std::optional{gun->state.gunId} : std::nullopt, player->getSelectedItemSlot())) {
         net::DrawPacket{}.sendToServer();
@@ -370,6 +383,7 @@ LL_TYPE_INSTANCE_HOOK(ShooterFrameHook, ll::memory::HookPriority::Normal, Minecr
     try {
         frame();
         anim::update();
+        render::diagnoseFrame();
     } catch (std::exception const& e) {
         logger().error("Shooter frame failed: {}", e.what());
     } catch (...) {
@@ -377,8 +391,31 @@ LL_TYPE_INSTANCE_HOOK(ShooterFrameHook, ll::memory::HookPriority::Normal, Minecr
     }
 }
 
+void endWorld(IClientInstance const* client) {
+    if (!worldSession.current() || !client || joinedClient.load() != client) return;
+    // Do not look up the primary client here: it can already have been detached from the
+    // global service when exit callbacks arrive. Request-leave runs before that teardown.
+    sound::stopAnimation();
+    worldSession.close();
+    render::releaseWorld(client);
+    joinedClient = nullptr;
+    triggerDown = false;
+    resetPending = true;
+    for (auto& down : actionKeyDown) down = false;
+    logger().info("[world] exit: queued work invalidated; GPU cache released");
+}
+
+// Covers both synchronous and async leave requests before native world/resource teardown;
+// ClientExitLevelEvent remains an idempotent fallback (not all leave paths logged it in 0.3.8).
+LL_TYPE_INSTANCE_HOOK(LeaveWorldHook, ll::memory::HookPriority::Normal, ClientInstance,
+    &ClientInstance::_requestLeaveGameImpl, void, bool switchScreen, bool sync) {
+    endWorld(this);
+    origin(switchScreen, sync);
+}
+
 bool                                  hooked = false;
-std::array<ll::event::ListenerPtr, 5> listeners;
+bool leaveHooked = false;
+std::array<ll::event::ListenerPtr, 6> listeners;
 
 } // namespace
 
@@ -432,16 +469,7 @@ void enable() {
     });
 
     listeners[2] = bus.emplaceListener<ll::event::ClientExitLevelEvent>([](ll::event::ClientExitLevelEvent& event) {
-        auto client = ll::service::getClientInstance();
-        if (!client || &*client != &event.self()) return;
-        // Emitted BEFORE onLevelExit's origin: stop handles on their owning live engine,
-        // then invalidate all work. The next frame only destroys registry-free data.
-        sound::stopAnimation();
-        worldSession.close();
-        logger().info("[world] exit: queued work invalidated");
-        triggerDown  = false;
-        resetPending = true;
-        for (auto& down : actionKeyDown) down = false;
+        endWorld(&event.self());
     });
     listeners[3] = bus.emplaceListener<ll::event::ClientLevelTickEvent>([](ll::event::ClientLevelTickEvent&) {
         anim::captureMovementTick();
@@ -449,18 +477,28 @@ void enable() {
     listeners[4] = bus.emplaceListener<ll::event::ClientJoinLevelEvent>([](ll::event::ClientJoinLevelEvent& event) {
         auto client = ll::service::getClientInstance();
         if (!client || &*client != &event.self()) return;
+        // Also retire a previous generation if a native transfer bypassed the leave event.
+        endWorld(joinedClient.load());
+        joinedClient = &event.self();
         auto world = worldSession.open();
         resetPending = true;
         logger().info("[world] local player loaded: generation {}", world);
     });
+    listeners[5] = bus.emplaceListener<ll::event::ClientStartJoinLevelEvent>([](ll::event::ClientStartJoinLevelEvent& event) {
+        endWorld(&event.self());
+    });
 
     hooked = ShooterFrameHook::hook() == 0;
+    leaveHooked = LeaveWorldHook::hook() == 0;
+    if (!leaveHooked) logger().warn("Cannot hook request-leave; event and GPU-generation fallbacks remain active");
     if (!hooked) logger().warn("Cannot hook MinecraftGame::update; guns cannot fire");
 }
 
 void disable() {
     if (hooked) ShooterFrameHook::unhook();
+    if (leaveHooked) LeaveWorldHook::unhook();
     hooked = false;
+    leaveHooked = false;
     auto& bus = ll::event::EventBus::getInstance();
     for (auto& listener : listeners) {
         if (listener) bus.removeListener(listener);
@@ -469,6 +507,7 @@ void disable() {
     triggerDown  = false;
     sound::stopAnimation();
     worldSession.close();
+    joinedClient = nullptr;
     resetPending = true;
     anim::clear();
 }
