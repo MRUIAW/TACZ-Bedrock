@@ -318,4 +318,16 @@ std::vector<Vertex> bake(GeoModel const& model, VisitFn const& visit, animation:
     return out;
 }
 
+std::vector<Vertex> boxVertices(glm::vec3 origin, glm::vec3 size, glm::vec2 uv,
+    glm::vec2 textureSize, float inflate, bool mirror) {
+    std::vector<Quad> quads;
+    boxCube(quads, origin, size, inflate, mirror, uv, textureSize);
+    std::vector<Vertex> out;
+    out.reserve(24);
+    for (auto const& quad : quads) {
+        for (int i = 0; i < 4; ++i) out.push_back({quad.pos[i] / 16.0f, quad.uv[i], quad.normal});
+    }
+    return out;
+}
+
 } // namespace tacz::model

@@ -8,6 +8,61 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 Versioning rule for this project: the patch number goes up by 1 for each small item or test
 round, the minor number goes up by 1 for each finished feature or phase.
 
+## [0.3.11] - 2026-10-25
+
+### Added
+
+- First-person player arms at TACZ's `lefthand_pos` / `righthand_pos`. Cache each root-to-node
+  path; apply the same current gun pose, then Z+180 degrees as LeftHandRender/RightHandRender
+  do. Keep vanilla arm-part pivots, 4-wide/3-wide dimensions and distinct modern left-arm UVs;
+  no extra left reflection, body scale or vanilla idle/swing motion. Draw after the gun on its
+  shared positioning stack, including the outgoing gun's retained put-away pose.
+- Standard wide/slim 64x64 and standard-layout 128x128 local skins, including sleeve layers
+  inflated by 0.25 pixels. Read the local player's SerializedSkinRef only on its initialized
+  owning thread; copy validated RGBA bytes, never retain Player/native skin/image pointers.
+  A 1 Hz probe detects changes (up to one second latency) without per-frame image copies.
+  Persona, animated/nonstandard geometry/images, or unavailable skin owners use the installed
+  game's Steve/Alex PNG, not a guessed Persona atlas. Fallback reason/layout/source are logged.
+- Four cached 24-vertex arm/layer meshes per skin change; per-pose work only updates matrices
+  and submits at most four draws. Skin textures use unique Raw world/resource/skin serials;
+  existing RenderResourceKey release clears arm meshes/materials/texture through the original
+  weak TextureGroup, including world exit and pipeline changes. No new native hooks.
+- `[arm-perf]` after 120 frames reports CPU mean/max, skin-probe mean, build/upload total,
+  matrix/draw mean and counts; GPU execution is explicitly not timed. `[arm-gpu]` identifies
+  skin creation, fallback, material readiness and release. Pure AK47 two-path matrix benchmark:
+  about 0.00029-0.00040 ms/frame (no game/skin/GPU); game cost is pending the next runtime test.
+
+### Fixed
+
+- Do not draw vanilla hands/items over a partially completed TACZ draw when skin rendering
+  fails; valid current gun sessions own the first-person pass. Menu/stale sessions still pass
+  through. No additional ItemStack copy or global menu-time client/skin lookup.
+
+### Not yet
+
+- `camera` and `constraint` effects deferred to 0.3.12. Camera needs coordinated world/hand
+  camera consumption without changing actual player rotation; a post-setup matrix edit is not
+  established to reach all Bedrock render paths. Constraint needs the not-yet-implemented aim
+  weight. Both channels remain excluded from ordinary geometry animation, as before.
+- RTX static gun investigation parked by user decision; `docs/RTX-0.3.10.md` is retained.
+  This is not an RTX fix. No cache-key/BLAS experiment or opaque-by-value detour was added.
+- Native arbitrary/Persona geometry, animated skin atlases, legacy 64x32 skins, armor sleeves,
+  and Java skin-layer toggle UI are not implemented. Unsupported skins fall back; if even the
+  installed default image is unavailable, skip arms with a warning rather than use stale skin.
+- Bedrock alpha-test/blend moving-block materials replace Java entitySolid/entityTranslucent;
+  only base-arm texels are forced opaque in our private copy. Lighting, partial-alpha sleeves
+  and skin/mount alignment require game validation. No full player-body/jacket is rendered.
+
+### Validation
+
+- 97 tests / 42,607 assertions pass: geometry/UVs/normals/slim/sleeves, ancestor transform
+  order/visibility, zero/nonfinite scale, skin admission/alpha/hash and animated AK47 placement.
+- Server/client release builds passed; the deploy script successfully installed 0.3.11 with
+  Minecraft closed. Deployed DLL/PDB/manifest hashes match the client output. Game appearance,
+  skin ownership/material behavior and `[arm-perf]` timing await runtime validation.
+- Inherited 0.3.10 runtime results and investigation notes are included in this uncommitted
+  round. No new commit. See `docs/ARMS-0.3.11.md` for evidence, limitations and runtime checks.
+
 ## [0.3.10] - 2026-10-24
 
 ### Fixed
@@ -49,6 +104,20 @@ round, the minor number goes up by 1 for each finished feature or phase.
 - 0.3.9's in-game feature checklist was blocked by this startup crash; no pink-texture or RTX
   result is claimed. First re-test main menu for 10 seconds, then all world/RTX checks.
   Evidence and the hook/lifecycle audit: `docs/CRASH-0.3.10.md`.
+
+### Follow-up runtime results
+
+- User validated 0.3.10: no main-menu, join/leave or world-switch crash; no pink texture after
+  quitting mid-put-away, quitting while holding, or A -> B -> A. RTX-off actions, gun/item
+  switches and fast scrolling all passed. RTX-on gun remains visible but static, with audio.
+- Latest run `2026-10-24.22.log` confirms pose publishing, hand-hook calls, mesh rebuilds and
+  call-site draw returns under both modes, with zero invalid meshes. In world 3, RTX-on:
+  3,290 hooks / 3,275 builds / 3,289 draws over 40.03 logged seconds; RTX-off:
+  778 / 777 / 777 over 6.02 seconds. Both mode changes release/recreate GPU cache resources.
+- RTX backend consumption/cache invalidation is not established by those CPU counters.
+  That investigation shipped no speculative RTX code or deployment; detailed findings/diagnostics:
+  `docs/RTX-0.3.10.md`. Follow-up results/analysis remain uncommitted after the approved
+  combined 0.3.9/0.3.10 commit `1ee753c`.
 
 ## [0.3.9] - 2026-10-24
 

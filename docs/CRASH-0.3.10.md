@@ -129,3 +129,10 @@ client with Minecraft closed. The agent has not launched the game or verified st
 5. RTX off: repeat all actions plus gun -> hand/item/gun and fast scroll regression tests.
 6. Return to the menu and wait another 10 seconds; diagnostics/resources from the old world
    must stop. Pipeline changes in-world may log `GPU work deferred` until services are ready.
+
+## User validation after deployment
+
+The user reports all crash and pink-texture checks above passed, including ordinary holding
+exit, mid-put-away exit and A -> B -> A. RTX-off actions/switching/fast scrolling also passed.
+RTX-on still renders a static gun with working audio. The subsequent `.22.log` investigation
+is in `RTX-0.3.10.md`; this is not an RTX fix claim.

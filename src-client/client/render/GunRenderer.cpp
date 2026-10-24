@@ -73,6 +73,7 @@
 #include "debug/RenderDebug.h"
 #include "client/animation/GunAnimation.h"
 #include "client/gameplay/ClientShooter.h"
+#include "client/render/PlayerArms.h"
 #include "model/GeoModel.h"
 #include "model/GunModelRules.h"
 #include "model/RenderResourceKey.h"
@@ -92,10 +93,11 @@ ll::io::Logger& logger() { return TaczMod::getInstance().getSelf().getLogger(); 
 
 // Everything needed to draw one gun display, built on first use on the render thread.
 struct GunVisual {
-    bool                              failed = false; // logged once, then the gun falls back to vanilla
+    bool                              failed = false; // logged once; retry after resource-scope refresh
     glm::mat4                         transform{1.0f};
     std::vector<model::Vertex>        vertices; // baked rest pose, kept to rebuild the mesh
     model::GeoModel                   model;
+    ArmPaths                          armPaths;
     uint64_t                          animationRevision = 0;
     bool                              animated = false;
     size_t                            measuredFrames = 0;
@@ -151,6 +153,7 @@ bool waitingForResources = false;
 // Caller holds cacheMutex. TexturePtr is released before asking its ORIGINAL group to
 // unload our Raw resource. Never query a new world's group to release an old name.
 void releaseResources(char const* reason) {
+    releasePlayerArms(reason);
     for (auto& [id, visual] : cache) {
         visual.mesh.reset();
         visual.texture = {};
@@ -254,6 +257,7 @@ GunVisual* visualFor(ScreenContext& screen, IClientInstance& client, pack::Resou
 
         visual.model     = model::parseGeoModel(pack::parseJsonText(*modelText));
         auto const& geo  = visual.model;
+        visual.armPaths = {geo.path(geo.find("lefthand_pos")), geo.path(geo.find("righthand_pos"))};
         visual.transform = model::firstPersonIdleTransform(geo);
         model::GunRenderState state;
         visual.vertices = model::bake(geo, [&](model::Bone const& bone, model::Bone const* parent) {
@@ -487,6 +491,10 @@ bool drawGun(ItemInHandRenderer& renderer, BaseActorRenderContext& context) {
     try {
         visual->mesh->renderMesh(screen, *mat, texture, 0, visual->vertexCount, OffscreenCaptureDescription{}, nullptr);
         ++counters.draws;
+        // TACZ delegates skin draws until AFTER the gun's draw, on the same captured pose
+        // stack. Arms keep their own texture/material and append only their bone matrices.
+        drawPlayerArms(screen, client, *player, visual->model, visual->armPaths, pose.pose,
+            session, resourceSerial, lighting == 1);
     } catch (...) {
         pop(world);
         throw;
@@ -515,7 +523,10 @@ LL_TYPE_INSTANCE_HOOK(
     } catch (...) {
         logger().error("First-person gun render failed");
     }
-    if (anim::snapshot().puttingAway) return; // never leak the incoming item on render failure
+    auto pose = anim::snapshot();
+    // A gun draw may already have succeeded before a skin draw fails. Do not draw vanilla
+    // arms/items over it. Menu/stale snapshots still pass through to the native renderer.
+    if (model::canUseGunRenderResources(shooter::worldToken(), pose.world, pose.gun.has_value())) return;
     origin(context, previousProjection, flags);
 }
 

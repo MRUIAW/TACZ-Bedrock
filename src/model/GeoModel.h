@@ -73,6 +73,11 @@ struct Vertex {
     glm::vec3 normal;
 };
 
+// Java ModelPart box convention: pixel origin, dimensions and UV offsets; no pivot.
+// Used for the neutral vanilla player arm, not a Bedrock JSON coordinate conversion.
+std::vector<Vertex> boxVertices(glm::vec3 origin, glm::vec3 size, glm::vec2 uv,
+    glm::vec2 textureSize, float inflate = 0, bool mirror = false);
+
 enum class Visit { Draw, Hide };
 
 // Decides per bone whether it (and its subtree) is drawn. `parent` is null for roots.
