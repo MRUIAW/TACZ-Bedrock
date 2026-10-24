@@ -35,6 +35,7 @@
 
 #include "client/sound/GunSound.h"
 #include "client/animation/GunAnimation.h"
+#include "client/gameplay/ClientAim.h"
 #include "client/render/GunRenderer.h"
 #include "gun/ShootRules.h"
 #include "gun/ClientWorldSession.h"
@@ -274,6 +275,7 @@ void frame() {
         reloadTypePublished = 0;
         reloadLockedAt.reset();
         pendingShots.clear();
+        aim::clear();
         anim::clear();
     }
     // LocalPlayer may already exist while its inventory/network is still loading. Draw
@@ -285,7 +287,8 @@ void frame() {
     auto* player = client->getLocalPlayer();
     if (!player) return;
     auto gun = heldGun(true);
-    if (anim::held(gun ? std::optional{gun->state.gunId} : std::nullopt, player->getSelectedItemSlot())) {
+    bool selectionChanged = anim::held(gun ? std::optional{gun->state.gunId} : std::nullopt, player->getSelectedItemSlot());
+    if (selectionChanged) {
         net::DrawPacket{}.sendToServer();
         pendingShots.clear(); // do not kick the newly selected gun with an old burst
         reloadLockedAt.reset();
@@ -298,6 +301,10 @@ void frame() {
         reloadTypePublished = 0;
         reloadCancelRequested = false;
     }
+    auto const* display = gun && gun->entry->index.display
+        ? TaczMod::getInstance().gunPacks().gunDisplay(*gun->entry->index.display) : nullptr;
+    aim::frame(*client, *player, gun ? std::optional{gun->state.gunId} : std::nullopt,
+        gun ? &gun->entry->data : nullptr, display, selectionChanged, anim::aimAllowed());
     applyServerReloadState();
     // tickStateLock: a request the server never answered stops blocking after 250 ms.
     if (reloadLockedAt && Clock::now() - *reloadLockedAt > std::chrono::milliseconds(250) && !gun::isReloading(reloadType)) {
@@ -447,6 +454,11 @@ void enable() {
     auto& bus = ll::event::EventBus::getInstance();
 
     listeners[0] = bus.emplaceListener<ll::event::input::MouseInputEvent>([](ll::event::input::MouseInputEvent& event) {
+        if (event.actionButtonId() == MouseAction::ActionRight) {
+            bool gameplay = inGameplay();
+            if (aim::mouse(event.buttonData() == MouseAction::DataDown, gameplay, gameplay && heldGun().has_value())) event.cancel();
+            return;
+        }
         if (event.actionButtonId() != MouseAction::ActionLeft) return;
         bool down = event.buttonData() == MouseAction::DataDown;
         if (!down) triggerDown = false; // always release, even if the gun was put away meanwhile
@@ -472,6 +484,7 @@ void enable() {
         endWorld(&event.self());
     });
     listeners[3] = bus.emplaceListener<ll::event::ClientLevelTickEvent>([](ll::event::ClientLevelTickEvent&) {
+        aim::tick();
         anim::captureMovementTick();
     });
     listeners[4] = bus.emplaceListener<ll::event::ClientJoinLevelEvent>([](ll::event::ClientJoinLevelEvent& event) {
@@ -489,12 +502,14 @@ void enable() {
     });
 
     hooked = ShooterFrameHook::hook() == 0;
+    aim::enable();
     leaveHooked = LeaveWorldHook::hook() == 0;
     if (!leaveHooked) logger().warn("Cannot hook request-leave; event and GPU-generation fallbacks remain active");
     if (!hooked) logger().warn("Cannot hook MinecraftGame::update; guns cannot fire");
 }
 
 void disable() {
+    aim::disable();
     if (hooked) ShooterFrameHook::unhook();
     if (leaveHooked) LeaveWorldHook::unhook();
     hooked = false;

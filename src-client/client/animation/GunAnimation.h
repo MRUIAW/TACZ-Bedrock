@@ -20,6 +20,7 @@ void fireSelect();
 void movementTick();
 void captureMovementTick(); // capture each real tick, even with multiple ticks per frame
 bool actionsBlocked();
+bool aimAllowed(); // Java blocks put-away, not the draw/reload animation itself
 void clear();
 
 struct Snapshot {

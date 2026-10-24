@@ -31,6 +31,7 @@ struct ScriptApi {
     gun::ReloadStateType reloadState  = gun::ReloadStateType::NotReloading;
     int64_t              reloadTimeMs = 0; // since the reload started
     int64_t              nowMs        = 0;
+    float                aimingProgress = 0;
 
     // Removes up to n rounds of the gun's ammo from the shooter's inventory; returns how many.
     std::function<int(int)> extractAmmo;

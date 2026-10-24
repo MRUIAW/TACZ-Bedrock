@@ -10,6 +10,21 @@
 // Gun action packets, mirroring TACZ's ClientMessagePlayerShoot / ClientMessagePlayerFireSelect.
 namespace tacz::net {
 
+// ClientMessagePlayerAim: state only, never client-supplied progress/duration/inaccuracy.
+class AimPacket final : public ll::network::PacketBase<AimPacket> {
+public:
+    bool aiming = false;
+    AimPacket() = default;
+    explicit AimPacket(bool value) : aiming(value) {}
+    void write(BinaryStream& stream) const override { stream.writeBool(aiming, nullptr, nullptr); }
+    Bedrock::Result<void> read(ReadOnlyBinaryStream& stream) override {
+        auto value = stream.getBool();
+        if (!value) return nonstd::make_unexpected(value.error());
+        aiming = *value;
+        return {};
+    }
+};
+
 // Selection notification only. The server reads its own selected ItemStack and never trusts
 // a client-supplied gun id, duration or clock. Tick/action observations are the fallback.
 class DrawPacket final : public ll::network::PacketBase<DrawPacket> {

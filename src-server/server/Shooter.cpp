@@ -7,6 +7,8 @@
 #include <mutex>
 #include <optional>
 #include <unordered_map>
+#include <type_traits>
+#include <cmath>
 
 #include "ll/api/event/EventBus.h"
 #include "ll/api/event/ListenerBase.h"
@@ -23,10 +25,15 @@
 #include "mc/world/actor/Actor.h"
 #include "mc/world/actor/player/Player.h"
 #include "mc/world/level/Level.h"
+#include "mc/world/attribute/AttributeInstance.h"
+#include "mc/world/attribute/AttributeModifier.h"
+#include "mc/world/attribute/MutableAttributeWithContext.h"
+#include "mc/world/attribute/SharedAttributes.h"
 
 #include "gun/Reload.h"
 #include "gun/DrawRules.h"
 #include "gun/ShootRules.h"
+#include "model/Aiming.h"
 #include "lua/GunLogic.h"
 #include "mod/TaczMod.h"
 #include "nbt/AmmoItem.h"
@@ -47,6 +54,9 @@ int64_t serverNowMs() {
 
 // ShooterDataHolder, reduced to what is implemented.
 struct ShooterState {
+    bool isAiming = false;
+    float aimingProgress = 0;
+    int64_t aimingTimestamp = -1;
     gun::HandSelection selection;
     gun::DrawCooldown draw;
     std::optional<int64_t> clockOffset; // server ms - client ms, set on the first trigger pull
@@ -108,6 +118,7 @@ lua::ScriptApi scriptApi(Player& player, nbt::GunItemState const& item, pack::Gu
     api.nowMs          = serverNowMs();
     api.reloadTimeMs   = s.reloadStartedMs < 0 ? 0 : api.nowMs - s.reloadStartedMs;
     api.shooterKey     = keyOf(player);
+    api.aimingProgress = s.aimingProgress;
     auto ammoId        = entry.data.ammoId;
     api.extractAmmo    = [&player, ammoId](int n) { return ammoId ? nbt::extractAmmo(player, *ammoId, n) : 0; };
     api.inventoryHasAmmo = [&player, ammoId] { return ammoId && nbt::countAmmo(player, *ammoId) > 0; };
@@ -130,6 +141,9 @@ void observeSelection(Player& player, ShooterState& s) {
     s.remaining = 0;
     s.lastShot.reset();
     s.lastShotServerMs = -1;
+    s.isAiming = false;
+    s.aimingProgress = 0;
+    s.aimingTimestamp = serverNowMs();
     auto entry = item ? gunEntry(item->gunId) : nullptr;
     s.draw.select(serverNowMs(), entry ? gun::animationMillis(entry->data.putAwayTime) : 0);
     s.selection = next;
@@ -155,9 +169,8 @@ bool fireRound(Player& player, ShooterState& s) {
     item->barrel = ammo.barrel;
     nbt::writeSelectedGun(player, *item);
 
-    // Aiming is not implemented yet, so the aim inaccuracy never applies.
     auto  delta      = player.getPosDelta();
-    auto  type       = gun::inaccuracyType(false, player.isSneaking(), glm::length(glm::dvec3{delta.x, delta.y, delta.z}));
+    auto  type       = gun::inaccuracyType(model::fullyAimed(s.aimingProgress), player.isSneaking(), glm::length(glm::dvec3{delta.x, delta.y, delta.z}));
     float inaccuracy = gun::inaccuracy(data, s.mode, type);
     bullet::fire(player, data, s.mode, inaccuracy);
     return true;
@@ -333,6 +346,53 @@ void tickReload(Player& player, ShooterState& s) {
     }
 }
 
+// All native value arguments here are fully defined SDK types, never an opaque container.
+static_assert(sizeof(AttributeModificationContext) == 8);
+static_assert(sizeof(MutableAttributeWithContext) == 16);
+static_assert(sizeof(mce::UUID) == 16);
+static_assert(std::is_same_v<decltype(&Actor::getMutableAttribute), MutableAttributeWithContext (Actor::*)(Attribute const&)>);
+static_assert(std::is_same_v<decltype(&Mob::$setSprinting), void (Mob::*)(bool)>);
+using AddModifier = void (AttributeInstance::*)(AttributeModifier const&, AttributeModificationContext);
+static_assert(std::is_same_v<decltype(static_cast<AddModifier>(&AttributeInstance::addModifier)), AddModifier>);
+
+mce::UUID const& speedModifierId() {
+    static auto id = mce::UUID::fromString("4d5696ae-a7c5-c59c-80e9-2a2dc8373c46");
+    return id; // TACZ EXTRA_SPEED_MODIFIER_UUID; transient, not a base-value overwrite
+}
+void applyMovement(Player& player, std::optional<float> amount) {
+    auto attribute = player.getMutableAttribute(SharedAttributes::MOVEMENT_SPEED());
+    auto* instance = attribute.mInstance->mPtr;
+    if (!instance || !attribute.mContext->mAttributeMap) return;
+    auto const& modifiers = instance->mModifierList.get();
+    auto existing = std::find_if(modifiers.begin(), modifiers.end(), [](auto const& m) { return m.mId.get() == speedModifierId(); });
+    if (!amount || *amount == 0) {
+        if (existing != modifiers.end()) instance->removeModifier(speedModifierId(), attribute.mContext.get());
+        return;
+    }
+    if (existing != modifiers.end() && existing->mAmount == *amount) return;
+    if (existing != modifiers.end()) instance->removeModifier(speedModifierId(), attribute.mContext.get());
+    AttributeModifier modifier{speedModifierId(), "TACZ extra gun speed", *amount,
+        AttributeModifierOperation::OperationMultiplyTotal, AttributeOperands::OperandCurrent, false};
+    instance->addModifier(modifier, attribute.mContext.get());
+}
+void tickAim(Player& player, ShooterState& s) {
+    auto item = nbt::readGun(player.getSelectedItem());
+    auto entry = item ? gunEntry(item->gunId) : nullptr;
+    auto now = serverNowMs();
+    if (!entry || !player.isAlive() || player.isSpectator()) {
+        s.isAiming = false;
+        s.aimingProgress = 0;
+        applyMovement(player, {});
+    } else {
+        s.aimingProgress = model::advanceAimProgress(s.aimingProgress, s.isAiming,
+            s.aimingTimestamp < 0 ? 50 : std::max<int64_t>(0, now - s.aimingTimestamp),
+            model::effectiveAdsTime(entry->data.aimTime)); // ads cache base until attachments are implemented
+        if (s.isAiming || (gun::isReloading(s.reloadState) && !gun::isReloadFinishing(s.reloadState))) player.setSprinting(false);
+        applyMovement(player, model::movementModifier(entry->data.movementSpeed, s.isAiming, gun::isReloading(s.reloadState)));
+    }
+    s.aimingTimestamp = now;
+}
+
 void tick(Level& level) {
     std::lock_guard lock(mutex);
     // Establish timing even for players who have not shot/reloaded yet.
@@ -348,6 +408,7 @@ void tick(Level& level) {
             continue;
         }
         auto& player = *static_cast<Player*>(actor);
+        tickAim(player, s);
         while (s.remaining > 0 && now >= s.nextRound) {
             if (!fireRound(player, s)) {
                 s.remaining = 0;
@@ -359,6 +420,21 @@ void tick(Level& level) {
         tickReload(player, s);
     }
 }
+
+class AimHandler final : public ll::network::PacketHandlerBase<AimHandler, net::AimPacket> {
+public:
+    void handlePacket(NetworkIdentifier const& netId, NetEventCallback&, net::AimPacket const& packet) const {
+        auto* player = senderOf(netId, packet.mSenderSubId);
+        if (!player) return;
+        std::lock_guard lock(mutex);
+        auto& s = stateOf(*player);
+        observeSelection(*player, s);
+        auto item = nbt::readGun(player->getSelectedItem());
+        s.isAiming = packet.aiming && player->isAlive() && !player->isSpectator() && item && gunEntry(item->gunId);
+        if (s.isAiming) player->setSprinting(false);
+        logger().info("[ads-server] {} aiming={} progress={:.3f}", player->getRealName(), s.isAiming, s.aimingProgress);
+    }
+};
 
 class ShootHandler final : public ll::network::PacketHandlerBase<ShootHandler, net::ShootPacket> {
 public:
@@ -448,6 +524,14 @@ void disable() {
         listener = nullptr;
     }
     std::lock_guard lock(mutex);
+    // A hot-disable must not leave our transient modifier on living players. Empty/menu
+    // state never asks for a level; a stopping world destroys its nonserialized modifiers.
+    if (!states.empty()) {
+        if (auto level = ll::service::getLevel()) level->forEachPlayer([](Player& player) {
+            applyMovement(player, {});
+            return true;
+        });
+    }
     states.clear();
     logic.reset();
 }

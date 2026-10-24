@@ -380,6 +380,52 @@ TEST_CASE("Animation VM: real default and AK47 draw idle shoot reload inspect wa
     }
 }
 
+TEST_CASE("Animation VM: default and AK47 consume real ADS context for aim start loop end and aiming walk") {
+    std::vector<std::unique_ptr<pack::PackSource>> sources;
+    sources.push_back(pack::openFolderPack(std::filesystem::path(TACZ_DEFAULT_PACK_DIR)));
+    pack::GunPackRegistry packs;
+    packs.load(std::move(sources), [](auto const&) {}, [](auto const&) {});
+    auto display = packs.gunDisplay({"tacz","ak47_display"});
+    REQUIRE(display);
+    auto clips = pack::loadGunAnimations(packs, *display);
+    REQUIRE(clips.contains("walk_aiming"));
+    // The bundled AK47 has no aim_start/aim/aim_end prototypes. TACZ allows pack authors
+    // to provide them; test those optional state-machine branches without inventing
+    // animations in the shipped gun pack. Physical ADS comes from the view-node blend.
+    auto optionalAds = animation::parseAnimationFile(pack::parseJsonText(R"({"animations":{
+        "aim_start":{"animation_length":0.1,"bones":{"root":{"scale":1}}},
+        "aim":{"animation_length":0.1,"bones":{"root":{"scale":1}}},
+        "aim_end":{"animation_length":0.1,"bones":{"root":{"scale":1}}}
+    }})"));
+    clips.merge(optionalAds);
+    for (auto script : {"default_state_machine", "ak47_state_machine"}) {
+        CAPTURE(script);
+        lua::AnimationContext ctx;
+        ctx.ammo = ctx.maxAmmo = 30; ctx.barrel = ctx.onGround = true;
+        std::vector<std::string> warnings;
+        lua::AnimationStateMachine m(packs, clips, {"tacz",script}, ctx, [&](auto const& w) { warnings.push_back(w); });
+        REQUIRE(m.initialize(0));
+        REQUIRE(m.trigger("draw"));
+        for (int i = 0; i <= 120; ++i) m.update(i/60.0);
+        auto ads = m.controller().getTrack(0,8), movement = m.controller().getTrack(2,0);
+        ctx.aiming = true; ctx.aimingProgress = .25f;
+        m.update(2.01);
+        CHECK(m.controller().info(ads).name == "aim_start");
+        ctx.aimingProgress = 1;
+        for (int i = 122; i <= 300; ++i) m.update(i/60.0);
+        CHECK(m.controller().info(ads).name == "aim");
+        ctx.inputUp = true;
+        REQUIRE(m.trigger("walk"));
+        m.update(5.001);
+        CHECK(m.controller().info(movement).name == "walk_aiming");
+        ctx.aiming = false; ctx.aimingProgress = .75f;
+        m.update(5.01);
+        CHECK(m.controller().info(ads).name == "aim_end");
+        CHECK(m.healthy());
+        CHECK(warnings.empty());
+    }
+}
+
 TEST_CASE("Animation VM: all real default-pack gun state machines initialize and accept action inputs") {
     std::vector<std::unique_ptr<pack::PackSource>> sources;
     sources.push_back(pack::openFolderPack(std::filesystem::path(TACZ_DEFAULT_PACK_DIR)));

@@ -22,6 +22,8 @@ struct AnimationContext {
     bool inputAvailable = false;
     float moveMagnitude = 0;
     bool onGround = false, crouching = false, sprinting = false, movingSlowly = false;
+    bool aiming = false;
+    float aimingProgress = 0;
     bool hideCrossHair = false;
     std::vector<int> shells; // requested ejection windows; rendering deferred
     nlohmann::json params = nlohmann::json::object();

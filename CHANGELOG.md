@@ -8,6 +8,58 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 Versioning rule for this project: the patch number goes up by 1 for each small item or test
 round, the minor number goes up by 1 for each finished feature or phase.
 
+## [0.3.13] - 2026-10-25
+
+### Added
+
+- Desktop right-button ADS, default hold-to-aim as Java TACZ. Both mouse edges consume
+  vanilla use/place while holding a gun; a consumed release stays consumed after a switch.
+  `mods/tacz/config/aim.json` supports `hold_to_aim: false` for toggle (restart to apply).
+  Hold pre-input resumes after switching; selection/put-away, death/spectator, UI/focus loss
+  and world exit reset/cancel as appropriate. Reload is not an ADS prohibition; aim cancels
+  sprint locally and on the server. Drawing itself does not block aim, matching LocalPlayerAim.
+- Client/server tick-time aiming progress with `aim_time` (base `ads` cache value), +1 ms per
+  real tick, clamp/reversal/zero-duration behavior and interpolated client progress. A state-only
+  aim packet resolves the authoritative player's held gun; clients never choose progress,
+  duration or accuracy. Full server progress alone enables AIM inaccuracy, including burst
+  rounds. Expose real progress to ModernKineticGunScriptAPI's Lua view.
+- Wire AnimationContext `isAiming` / `getAimingProgress`, allowing pack state machines to select
+  aim_start/aim/aim_end and walk_aiming. Optional aim clips are not fabricated: bundled AK47
+  lacks aim_start/aim/aim_end, but has walk_aiming; physical ADS uses idle_view -> iron_view.
+- Rigid inverse-view translation/quaternion blend on the shared gun/arm draw matrix. Separate
+  TACZ second-order dynamics for view placement, world FOV and hand/model FOV, evaluated without
+  background worker threads. World FOV uses `2*atan(tan(base/2)/(1+(iron_zoom-1)*progress))`.
+  Gun/arm projection lerps toward `zoom_model_fov`, preserving aspect/depth and restoring stacks
+  on exceptions. Missing iron_view explicitly retains idle placement.
+- World FOV hook at Lamium's `LevelRendererPlayer::getFov(float,bool) const` point; mouse
+  sensitivity uses `_applyTurnDelta(Vec2 const&)` and TACZ default MDV133. Signature assertions
+  against the installed 26.51.1 headers, primitive/reference arguments only, no opaque-by-value
+  detour. Menu/stale worlds pass through before any client/player/level lookup.
+- Server-side transient movement-speed modifier for movement_speed.base/aim/reload (reload
+  takes precedence); no base attribute overwrite. Remove on leaving guns/death and hot-disable,
+  never serialize it. Use typed native attribute/context/UUID APIs and checked signatures.
+
+### Validation
+
+- 105 tests / 42,822 assertions pass: progress/timing/cache override, FOV/sensitivity,
+  deterministic smoother, view blend, projection invariants, full-aim accuracy and speed
+  priority; real default/AK47 Lua ADS transitions with optional clip fixtures.
+- Release builds/deployment and final artifact checks are recorded in `docs/ADS-0.3.13.md`.
+  No in-game ADS test was run by the agent; morning runtime acceptance remains required.
+
+### Not yet
+
+- Scope/attachment ADS modifiers and view selection, crawl/touch/controller, configuration UI,
+  weight-speed modifier and third-person synchronized aim animation. Unmodified gun aim_time /
+  iron_zoom / zoom_model_fov are used, not guessed attachment behavior.
+- Camera recoil (0.3.14), camera/constraint bones (0.3.15), HUD/crosshair/hit marker (0.3.16),
+  pixel-copy skin fix (0.3.17) and once-built gun geometry (0.3.18) remain separate tasks.
+  Skin still falls back to Steve/Alex. RTX static internal gun animation is still unresolved;
+  per-draw ADS matrices are not an RTX geometry-cache fix.
+- Bedrock FOV/movement replication, hook composition with Lamium and visual sight alignment
+  across graphics modes need game testing. FOV smoothing uses bounded deterministic catch-up,
+  clamped view weight and immediate no-world/UI reset rather than Java's unsynchronized workers.
+
 ## [0.3.12] - 2026-10-25
 
 ### Runtime follow-up and diagnostics — skin still falls back to Steve/Alex

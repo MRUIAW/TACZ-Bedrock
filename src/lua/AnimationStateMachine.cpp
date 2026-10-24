@@ -295,8 +295,10 @@ struct AnimationStateMachine::Impl {
         a["getStateMachineParams"] = [this](AnimationContext&) { return params; };
         a["getNbtAccessor"] = [](AnimationContext& c) { return NbtView{&c, {}}; };
         a["getAttachment"] = [](AnimationContext&, std::string const&) { return "tacz:empty"; };
-        for (auto key : {"isAiming", "isCrawl", "shouldSlide", "isOverHeat", "isCharging"}) a[key] = [](AnimationContext&) { return false; };
-        for (auto key : {"getAimingProgress", "getHeatProgress", "getChargeProgress", "getMaxCharge", "getChargeThreshold"}) a[key] = [](AnimationContext&) { return 0.f; };
+        a["isAiming"] = [](AnimationContext& c) { return c.aiming; };
+        a["getAimingProgress"] = [](AnimationContext& c) { return c.aimingProgress; };
+        for (auto key : {"isCrawl", "shouldSlide", "isOverHeat", "isCharging"}) a[key] = [](AnimationContext&) { return false; };
+        for (auto key : {"getHeatProgress", "getChargeProgress", "getMaxCharge", "getChargeThreshold"}) a[key] = [](AnimationContext&) { return 0.f; };
 
         auto n = lua.new_usertype<NbtView>("LuaNbtAccessor", sol::no_constructor);
         n["contains"] = [](NbtView& v, std::string const& key, sol::optional<double> type) {

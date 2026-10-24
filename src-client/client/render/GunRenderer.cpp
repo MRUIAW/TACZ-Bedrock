@@ -73,11 +73,13 @@
 #include "debug/RenderDebug.h"
 #include "client/animation/GunAnimation.h"
 #include "client/gameplay/ClientShooter.h"
+#include "client/gameplay/ClientAim.h"
 #include "client/render/PlayerArms.h"
 #include "client/render/SkinTextureSource.h"
 #include "model/GeoModel.h"
 #include "model/GunModelRules.h"
 #include "model/RenderResourceKey.h"
+#include "model/Aiming.h"
 #include "mod/TaczMod.h"
 #include "nbt/GunNbt.h"
 #include "pack/GunPackParser.h"
@@ -96,6 +98,9 @@ ll::io::Logger& logger() { return TaczMod::getInstance().getSelf().getLogger(); 
 struct GunVisual {
     bool                              failed = false; // logged once; retry after resource-scope refresh
     glm::mat4                         transform{1.0f};
+    glm::mat4                         idleView{1}, ironView{1};
+    model::AimDynamics                modelFov{.5f, 1.2f, .5f};
+    std::optional<std::chrono::steady_clock::time_point> modelFovAt;
     std::vector<model::Vertex>        vertices; // baked rest pose, kept to rebuild the mesh
     model::GeoModel                   model;
     ArmPaths                          armPaths;
@@ -260,6 +265,10 @@ GunVisual* visualFor(ScreenContext& screen, IClientInstance& client, pack::Resou
         auto const& geo  = visual.model;
         visual.armPaths = {geo.path(geo.find("lefthand_pos")), geo.path(geo.find("righthand_pos"))};
         visual.transform = model::firstPersonIdleTransform(geo);
+        visual.idleView = model::positioningInverse(geo, geo.path(geo.find("idle_view")));
+        int iron = geo.find("iron_view");
+        visual.ironView = iron >= 0 ? model::positioningInverse(geo, geo.path(iron)) : visual.idleView;
+        if (iron < 0) logger().warn("[ads] {} has no iron_view; retaining idle placement", displayId.toString());
         model::GunRenderState state;
         visual.vertices = model::bake(geo, [&](model::Bone const& bone, model::Bone const* parent) {
             return model::gunVisibility(bone, parent, state);
@@ -484,6 +493,29 @@ bool drawGun(ItemInHandRenderer& renderer, BaseActorRenderContext& context) {
     // rotation (logged in 0.2.2: it equals the camera basis), so multiplying onto it places the
     // gun in view space. push() copies the top. Bind the ref directly: a temporary
     // MatrixStackRef would pop in its destructor, and the manual pop below would then underflow.
+    auto aiming = aim::snapshot();
+    bool sameAimGun = !pose.puttingAway && aiming.world == session && aiming.gun == gunId;
+    auto progress = sameAimGun ? aiming.progress : 0.f;
+    auto viewProgress = sameAimGun ? aiming.viewProgress : 0.f;
+    visual->transform = model::firstPersonAimTransform(visual->idleView, visual->ironView, viewProgress);
+    // The gun and arms share our existing first-person pass, not the world's projection.
+    // Push/restore even when a draw throws; preserve aspect/depth/off-centre projection terms.
+    auto projection = camera.projectionMatrixStack->push(false);
+    struct ProjectionScope {
+        MatrixStack::MatrixStackRef& value;
+        ~ProjectionScope() { pop(value); }
+    } projectionScope{projection};
+    projection.stack->_isDirty = true;
+    auto baseModelFov = model::projectionFov(projection.mat->_m.get());
+    if (baseModelFov > 0) {
+        auto now = std::chrono::steady_clock::now();
+        if (!visual->modelFovAt || now - *visual->modelFovAt > std::chrono::seconds(1)) visual->modelFov.reset(baseModelFov);
+        double dt = visual->modelFovAt ? std::chrono::duration<double>(now - *visual->modelFovAt).count() : 0;
+        auto desired = std::lerp(baseModelFov, sameAimGun ? aiming.zoomModelFov : baseModelFov, progress);
+        auto fov = visual->modelFov.update(desired, dt);
+        visual->modelFovAt = now;
+        projection.mat->_m = model::withModelFov(projection.mat->_m.get(), fov);
+    }
     auto world            = camera.worldMatrixStack->push(false);
     world.stack->_isDirty = true;
     world.mat->_m         = world.mat->_m.get() * visual->transform;

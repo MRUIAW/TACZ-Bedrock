@@ -22,6 +22,7 @@
 #include "mc/world/item/ItemStack.h"
 
 #include "client/gameplay/ClientShooter.h"
+#include "client/gameplay/ClientAim.h"
 #include "client/sound/GunSound.h"
 #include "lua/AnimationStateMachine.h"
 #include "gun/DrawRules.h"
@@ -138,6 +139,9 @@ void refresh() {
         c.reloadState = static_cast<int>(shooter::reloadState());
     }
     c.timestamp = timestamp();
+    auto aiming = aim::snapshot();
+    c.aiming = !hand.puttingAway && aiming.gun == currentGun && aiming.aiming;
+    c.aimingProgress = !hand.puttingAway && aiming.gun == currentGun ? aiming.progress : 0;
     c.putAwayTime = data.putAwayTime;
     c.partialTicks = client->getFrameAlpha();
     c.crouching = player->isSneaking();
@@ -394,6 +398,7 @@ void captureMovementTick() {
 }
 
 bool actionsBlocked() { return hand.blocked(static_cast<int64_t>(nowSeconds() * 1000)); }
+bool aimAllowed() { return currentGun && !hand.puttingAway && hand.visible == hand.selected; }
 
 Snapshot snapshot() {
     std::lock_guard lock(mutex);

@@ -158,6 +158,8 @@ struct GunLogic::Impl {
             &ScriptApi::useInventoryAmmo,
             "getFireMode",
             &ScriptApi::getFireMode,
+            "getAimingProgress",
+            [](ScriptApi& a) { return a.aimingProgress; },
             "getCurrentTimestamp",
             [](ScriptApi& a) { return a.nowMs; },
             "getScriptParams",
