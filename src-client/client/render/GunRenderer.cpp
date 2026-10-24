@@ -127,12 +127,6 @@ auto& cache     = *new std::map<pack::ResourceId, GunVisual>;
 auto& materials = *new std::array<std::optional<mce::MaterialPtr>, MaterialCount>;
 int   loggedRevision = -1;
 
-std::optional<pack::ResourceId> heldGunId(Player const& player) {
-    auto const& tag = player.getSelectedItem().mUserData;
-    if (!tag || !tag->contains(nbt::GunId, Tag::String)) return std::nullopt;
-    return pack::ResourceId::parse(static_cast<std::string const&>((*tag)[nbt::GunId]));
-}
-
 // Decodes a pack PNG and uploads it under a Raw (in-memory) resource location.
 bool uploadTexture(IClientInstance& client, std::string const& png, std::string const& name, GunVisual& visual) {
     int   w = 0, h = 0, channels = 0;
@@ -300,15 +294,15 @@ bool drawGun(ItemInHandRenderer& renderer, BaseActorRenderContext& context) {
     auto& client = context.mClientInstance;
     auto* player = client.getLocalPlayer();
     if (!player) return false;
-    auto gunId = heldGunId(*player);
+    auto pose = anim::snapshot();
+    auto gunId = pose.gun;
     if (!gunId) return false;
 
     auto& screen = context.mScreenContext;
     auto* visual = visualFor(screen, client, *gunId);
-    if (!visual || !visual->mesh || !visual->mesh->isValid()) return false;
+    if (!visual || !visual->mesh || !visual->mesh->isValid()) return pose.puttingAway;
 
     bool twoSided = debug::gunTwoSided;
-    auto pose = anim::snapshot(*gunId);
     if (pose.revision != visual->animationRevision || twoSided != visual->meshTwoSided) {
         auto start = std::chrono::steady_clock::now();
         if (!pose.pose.empty() || visual->animated) {
@@ -422,6 +416,7 @@ LL_TYPE_INSTANCE_HOOK(
     } catch (...) {
         logger().error("First-person gun render failed");
     }
+    if (anim::snapshot().puttingAway) return; // never leak the incoming item on render failure
     origin(context, previousProjection, flags);
 }
 

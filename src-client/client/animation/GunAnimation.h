@@ -18,12 +18,17 @@ void cancelReload();
 void inspect();
 void fireSelect();
 void movementTick();
+void captureMovementTick(); // capture each real tick, even with multiple ticks per frame
+bool actionsBlocked();
 void clear();
 
 struct Snapshot {
+    uint64_t world = 0;
+    std::optional<pack::ResourceId> gun;
+    bool puttingAway = false;
     animation::Pose pose;
     uint64_t        revision = 0;
 };
-Snapshot snapshot(pack::ResourceId const& gun);
+Snapshot snapshot();
 
 } // namespace tacz::client::anim

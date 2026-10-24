@@ -8,6 +8,8 @@
 #include "lua/AnimationStateMachine.h"
 #include "pack/GunAnimations.h"
 #include "pack/GunPackParser.h"
+#include "model/WalkDistance.h"
+#include "gun/DrawRules.h"
 
 using namespace tacz;
 namespace {
@@ -208,6 +210,100 @@ TEST_CASE("Animation VM: debug override completes and returns to the live state 
 }
 
 #ifdef TACZ_DEFAULT_PACK_DIR
+TEST_CASE("Animation VM: Java-distance walk and sprint phase rates at 30, 60 and 144 FPS") {
+    std::vector<std::unique_ptr<pack::PackSource>> sources;
+    sources.push_back(pack::openFolderPack(std::filesystem::path(TACZ_DEFAULT_PACK_DIR)));
+    pack::GunPackRegistry packs;
+    packs.load(std::move(sources), [](auto const&) {}, [](auto const&) {});
+    auto display = packs.gunDisplay({"tacz","ak47_display"});
+    REQUIRE(display);
+    auto clips = pack::loadGunAnimations(packs, *display);
+    for (int fps : {30, 60, 144}) for (bool sprint : {false, true}) {
+        CAPTURE(fps);
+        CAPTURE(sprint);
+        lua::AnimationContext ctx;
+        ctx.ammo = ctx.maxAmmo = 30;
+        ctx.barrel = ctx.onGround = ctx.ammoToConsume = ctx.inputAvailable = ctx.inputUp = true;
+        ctx.moveMagnitude = 1;
+        ctx.sprinting = sprint;
+        lua::AnimationStateMachine m(packs, clips, {"tacz","ak47_state_machine"}, ctx);
+        REQUIRE(m.initialize(0));
+        REQUIRE(m.trigger("draw"));
+        animation::WalkDistance walk;
+        int tick = 0;
+        double speed = sprint ? 5.612 : 4.317;
+        double previousPhase = 0, cycles = 0, seconds = 0;
+        bool measured = false;
+        for (int frame = 0; frame <= fps * 8; ++frame) {
+            double now = frame / static_cast<double>(fps);
+            int targetTick = static_cast<int>(now * 20 + 1e-6);
+            ctx.timestamp = static_cast<int64_t>(now * 1000);
+            m.setTime(now);
+            while (tick < targetTick) {
+                ++tick;
+                walk.tick(speed / 20);
+                ctx.walkDist = walk.predicted(0);
+                m.trigger(std::string(lua::movementInput(ctx)));
+            }
+            ctx.walkDist = walk.predicted(static_cast<float>(now * 20 - targetTick));
+            m.update(now);
+            auto track = m.controller().info(m.controller().getTrack(2,0));
+            if (now < 4) continue; // draw/run_start/cross-fade must finish first
+            REQUIRE(track.name == (sprint ? "run" : "walk_forward"));
+            double phase = track.progress / clips.at(track.name).duration;
+            if (measured) {
+                double delta = phase - previousPhase;
+                if (delta < -.5) delta += 1;
+                cycles += delta;
+                seconds += 1.0 / fps;
+            }
+            measured = true;
+            previousPhase = phase;
+        }
+        CHECK(cycles / seconds == doctest::Approx(speed * .3).epsilon(.001));
+        CHECK(m.healthy());
+    }
+}
+
+TEST_CASE("Animation VM: retained AK47 controller continues put-away after exit until latest-target handoff") {
+    std::vector<std::unique_ptr<pack::PackSource>> sources;
+    sources.push_back(pack::openFolderPack(std::filesystem::path(TACZ_DEFAULT_PACK_DIR)));
+    pack::GunPackRegistry packs;
+    packs.load(std::move(sources), [](auto const&) {}, [](auto const&) {});
+    auto display = packs.gunDisplay({"tacz","ak47_display"});
+    REQUIRE(display);
+    auto clips = pack::loadGunAnimations(packs, *display);
+    lua::AnimationContext ctx;
+    ctx.ammo = ctx.maxAmmo = 30; ctx.barrel = ctx.onGround = true; ctx.putAwayTime = .57f;
+    lua::AnimationStateMachine m(packs, clips, {"tacz","ak47_state_machine"}, ctx);
+    REQUIRE(m.initialize(0));
+    REQUIRE(m.trigger("draw"));
+    m.update(1); m.update(2);
+    gun::HandSwitch hand;
+    gun::HandSelection ak{pack::ResourceId{"tacz","ak47"},0};
+    hand.select(ak, 0, 0, 400);
+    REQUIRE(hand.select({std::nullopt,1}, 2000, gun::animationMillis(ctx.putAwayTime), 0) == gun::HandSwitch::Event::PutAway);
+    m.setTime(2);
+    REQUIRE(m.trigger("put_away"));
+    m.exit();
+    auto main = m.controller().getTrack(0,9);
+    double start = m.controller().info(main).progress;
+    m.update(2.1);
+    CHECK(m.controller().info(main).name == "put_away");
+    CHECK(m.controller().info(main).progress > start);
+    hand.select({pack::ResourceId{"tacz","m4a1"},2}, 2200, 570, 500);
+    hand.select(ak, 2300, 570, 400);
+    CHECK(hand.revealAt == 2620);
+    CHECK(hand.visible == ak);
+    CHECK(hand.advance(2619) == gun::HandSwitch::Event::None);
+    m.update(2.619);
+    CHECK(m.controller().info(main).holding);
+    CHECK(m.healthy());
+    CHECK(hand.advance(2620) == gun::HandSwitch::Event::Reveal);
+    CHECK(hand.visible == ak);
+    CHECK(hand.drawUntil == 3020);
+}
+
 TEST_CASE("Animation VM: real default and AK47 draw idle shoot reload inspect walk run sequence") {
     std::vector<std::unique_ptr<pack::PackSource>> sources;
     sources.push_back(pack::openFolderPack(std::filesystem::path(TACZ_DEFAULT_PACK_DIR)));

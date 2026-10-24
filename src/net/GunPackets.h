@@ -10,6 +10,14 @@
 // Gun action packets, mirroring TACZ's ClientMessagePlayerShoot / ClientMessagePlayerFireSelect.
 namespace tacz::net {
 
+// Selection notification only. The server reads its own selected ItemStack and never trusts
+// a client-supplied gun id, duration or clock. Tick/action observations are the fallback.
+class DrawPacket final : public ll::network::PacketBase<DrawPacket> {
+public:
+    void write(BinaryStream&) const override {}
+    Bedrock::Result<void> read(ReadOnlyBinaryStream&) override { return {}; }
+};
+
 // Client -> server: the trigger was pulled. `timestamp` is the client's own clock in ms; the
 // server compares it with the previous shot for the rate limit, as TACZ does.
 class ShootPacket final : public ll::network::PacketBase<ShootPacket> {

@@ -8,6 +8,99 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 Versioning rule for this project: the patch number goes up by 1 for each small item or test
 round, the minor number goes up by 1 for each finished feature or phase.
 
+## [0.3.8] - 2026-10-24
+
+### Fixed
+
+- 0.3.7 crashed on world entry before its other features could be tested. Both
+  `trace_2026-10-24_18-25-54.log` and `trace_2026-10-24_18-28-10.log` point to the new
+  `GunAnimation.cpp:123` ItemStack snapshot copy from refresh -> reveal -> held -> frame.
+  The copy constructor resolves the thread-local ItemRegistry after MinecraftGame::update's
+  registry scope has unwound. ItemRegistryRef::_lockRegistry finds no live registry and
+  deliberately writes `0xDEADC0DE` to address zero. This is a new 0.3.7 regression, not a
+  walk-distance/draw-timestamp arithmetic fault or an absent LocalPlayer.
+- Animation snapshots now own only parsed gun state and a deep copy of user NBT. No client
+  animation ItemStack is constructed, copied or retained, and Lua NBT reads never follow the
+  incoming inventory slot or require a live player. Put-away still retains its old VM/data.
+- Explicit client-world lifetime: initialize selections and send draw notifications only after
+  ClientJoinLevelEvent (onPlayerLoaded); invalidate work on ClientExitLevelEvent. Clear queued
+  inputs/reload replies on transition, tag reload/debug/tick/render snapshots with a world
+  generation, and reject stale work across leave/rejoin, including reused engine addresses.
+- Stop tracked animation audio before onLevelExit tears down the world. Handles are bound to
+  their original non-owning engine reference and world generation; cleanup never looks up a
+  new engine to stop old numeric handles, or acquires an engine when nothing was played.
+- Server selection/draw timestamps were reviewed: they retain value data only, with state
+  cleared on disconnect/server stop; no corresponding new registry-lifetime defect was found.
+
+### Validation
+
+- Both release variants build; all 88 tests / 21,816 assertions pass, including new unloaded,
+  leave/rejoin and stale-work generation tests. The native registry assertion itself needs
+  Minecraft to reproduce; these tests do not claim to simulate the engine.
+- The 0.3.8 client was built and deployed by `scripts/deploy-client.sh` to the LeviLauncher
+  test installation with the game closed. No commit was made.
+- Crash evidence and the lifecycle review: `docs/CRASH-0.3.8.md`. First re-test entry into the
+  affected world, then the full 0.3.7 movement/put-away checklist. Gameplay is not yet verified.
+
+## [0.3.7] - 2026-10-24
+
+### 0.3.6 in-game results
+
+- Passed: draw when switching back, standing idle sway, smooth run_end, inspect and its
+  interruption, inspect blocked during reload, reload animation/sound sync, and replayed draw
+  after switching away/back. Walk/sprint cycles looked faster than Java TACZ.
+
+### Fixed
+
+- Walk-distance input now has an explicit Java definition: capture each actual client tick's
+  horizontal displacement, accumulate `distance * 0.6F`, then expose
+  `current + (current - previous) * partialTicks`. 0.3.6 fed Bedrock's
+  `ActorMovement::getPredictedWalkDist` directly into Java's distance-driven Lua phase without
+  establishing equivalent units. Java 1.20.1 Entity.java:734 and TACZ
+  GunAnimationStateContext.java:327-341 define the new computation. The native getter's scale
+  and Bedrock's actual walking/sprinting speeds are still unmeasured: no claim of an exact
+  5/3 excess rate, or that all of the reported difference has been isolated to this input.
+- Kept the Java controller's post-seek frame advancement: each script update overwrites phase,
+  so this is not another accumulating 1x cycle. Movement inputs remain tick-driven; queued
+  ticks now retain individual displacement and movement classifications below 20 FPS.
+- About once per second while moving, `[walk-rate]` logs physical speed, Java/native distance
+  delta per tick, distance-derived phase rate, and sampled normalized walk/run controller rate.
+  Flat-ground theory: 4.317 blocks/s gives 0.12951 Java units/tick and 1.2951 cycles/s;
+  5.612 gives 0.16836 and 1.6836. These are examples, not Bedrock measurements.
+
+### Added
+
+- Retain one old gun ItemStack snapshot and Lua/controller instance during put-away, suppressing
+  the incoming vanilla hand/item even if the retained mesh fails. Old ammo/NBT stays attached
+  to that snapshot; movement still follows the player. Trigger put_away, exit Lua states, keep
+  updating/rendering the controller, then reveal only the latest selection and start its draw.
+  Rapid scrolling replaces the pending target, never queues VMs or restarts the exit timer.
+- Draw/put-away display sounds; animation sounds are handle-tracked and stopped at handoff,
+  without stopping gunshots or unrelated game sounds. Shoot/reload/inspect/fire-select are
+  locally blocked during retention and the new gun's visible draw.
+- Server draw cooldown after LivingEntityDrawGun: carry `min(elapsed draw, previous put-away)`
+  into a future draw timestamp; preserve it across switches during put-away; use the Java
+  5 ms cooldown window. Observe authoritative selected slots on ticks, selection notifications
+  and actions; switching cancels old bursts/reloads. The client cannot submit durations/IDs.
+- Computation, rapid-scroll, return-to-old-slot, clear/world-exit and cooldown carry-over tests,
+  plus real AK47 Lua phase-rate tests at 30/60/144 FPS and controller playback after exit:
+  86 cases / 21,799 assertions passed. Server and client release builds passed; the 0.3.7
+  client was deployed with `scripts/deploy-client.sh` to the LeviLauncher test installation.
+
+### Divergences / validation pending
+
+- The active Java retention caller is bundled SimpleBedrockModel 2.2.2 FirstPersonRenderHandler,
+  not LocalPlayerDraw's commented-out keep/doPutAway/scheduled draw calls or TACZ's commented
+  equip-retention mixin. SBM reveals on the first START tick after the duration; TACZ's +50 ms
+  is a separate state-machine reinitialization guard. This port deliberately retains duration
+  **plus a fixed 50 ms**, then hands off on a frame, as requested (AK47: 570 + 50 = 620 ms).
+  The client waits for the full visible new draw, even when Java's server formula ends sooner.
+- Endpoint displacement per tick approximates Java's sum of Entity.move displacements; a
+  teleport/correction can enter the distance sample. Riding, teleports and unusual movement
+  need further testing. No movement-speed multiplier was added to hide Bedrock/Java differences.
+- Visual/sound suppression, actual native scale, multiplayer ordering and 0.3.7 game feel still
+  require in-game testing. Details, source evidence and test checklist: `docs/ANIMATION-0.3.7.md`.
+
 ## [0.3.6] - 2026-10-24
 
 ### Added

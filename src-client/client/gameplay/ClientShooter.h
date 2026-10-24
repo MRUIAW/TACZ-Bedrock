@@ -1,5 +1,7 @@
 #pragma once
 
+#include <cstdint>
+
 #include "gun/Reload.h"
 
 // Client side of gun operation, after TACZ's ShootKey / LocalPlayerShoot / LocalPlayerFireSelect
@@ -10,6 +12,9 @@
 // animation's sound keyframes via the Lua animation controller) and tells the server, which
 // decides and reports the reload state. H inspects the held gun.
 namespace tacz::client::shooter {
+
+// Zero outside ClientJoinLevelEvent..ClientExitLevelEvent; changes on every rejoin.
+uint64_t worldToken();
 
 void enable();
 void disable();

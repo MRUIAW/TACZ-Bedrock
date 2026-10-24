@@ -25,6 +25,7 @@
 #include "mc/world/level/Level.h"
 
 #include "gun/Reload.h"
+#include "gun/DrawRules.h"
 #include "gun/ShootRules.h"
 #include "lua/GunLogic.h"
 #include "mod/TaczMod.h"
@@ -46,6 +47,8 @@ int64_t serverNowMs() {
 
 // ShooterDataHolder, reduced to what is implemented.
 struct ShooterState {
+    gun::HandSelection selection;
+    gun::DrawCooldown draw;
     std::optional<int64_t> clockOffset; // server ms - client ms, set on the first trigger pull
     std::optional<int64_t> lastShot;    // client timestamp of the last accepted trigger pull
     int64_t                lastShotServerMs = -1;
@@ -115,6 +118,27 @@ void sendReloadState(Player& player, gun::ReloadState state) {
     net::ReloadStatePacket{static_cast<int>(state.type), state.countDown}.sendTo(player);
 }
 
+void stopReload(Player& player, ShooterState& s, char const* why);
+
+// Called from tick and every action, before using a previous gun's state. Slot is part of
+// identity so switching between two stacks of the same GunId still starts a fresh draw.
+void observeSelection(Player& player, ShooterState& s) {
+    auto item = nbt::readGun(player.getSelectedItem());
+    gun::HandSelection next{item ? std::optional{item->gunId} : std::nullopt, player.getSelectedItemSlot()};
+    if (next == s.selection) return;
+    stopReload(player, s, "weapon switched");
+    s.remaining = 0;
+    s.lastShot.reset();
+    s.lastShotServerMs = -1;
+    auto entry = item ? gunEntry(item->gunId) : nullptr;
+    s.draw.select(serverNowMs(), entry ? gun::animationMillis(entry->data.putAwayTime) : 0);
+    s.selection = next;
+}
+
+bool drawing(ShooterState const& s, pack::GunEntry const& entry) {
+    return s.draw.remaining(serverNowMs(), gun::animationMillis(entry.data.drawTime)) > 0;
+}
+
 // One round of the trigger pull: ammo, then the bullets. False ends the pull (TACZ's cycle
 // task returns false when the shooter died, switched weapon or ran dry).
 bool fireRound(Player& player, ShooterState& s) {
@@ -149,6 +173,8 @@ char const* handleShoot(Player& player, int64_t timestamp) {
 
     std::lock_guard lock(mutex);
     auto&           s = stateOf(player);
+    observeSelection(player, s);
+    if (drawing(s, *entry)) return "IS_DRAWING";
     if (s.remaining > 0) return "COOL_DOWN";
     if (gun::serverCooldownMs(data, item->fireMode, timestamp, s.lastShot) > 0) return "COOL_DOWN";
 
@@ -216,6 +242,8 @@ char const* handleReload(Player& player) {
 
     std::lock_guard lock(mutex);
     auto&           s = stateOf(player);
+    observeSelection(player, s);
+    if (drawing(s, *entry)) return "IS_DRAWING";
     if (gun::isReloading(s.reloadState)) return "ALREADY_RELOADING";
     // getShootCoolDown() != 0 at the server's own clock.
     if (s.lastShotServerMs >= 0 && gun::triggerIntervalMs(data, item->fireMode) - (serverNowMs() - s.lastShotServerMs) - 5 > 0) {
@@ -269,6 +297,7 @@ void handleCancelReload(Player& player) {
     if (!entry) return;
     std::lock_guard lock(mutex);
     auto&           s = stateOf(player);
+    observeSelection(player, s);
     if (!gun::isReloading(s.reloadState)) return;
     auto api = scriptApi(player, *item, *entry, s);
     gunLogic().interruptReload(api);
@@ -306,6 +335,11 @@ void tickReload(Player& player, ShooterState& s) {
 
 void tick(Level& level) {
     std::lock_guard lock(mutex);
+    // Establish timing even for players who have not shot/reloaded yet.
+    level.forEachPlayer([&](Player& player) {
+        observeSelection(player, stateOf(player));
+        return true;
+    });
     auto            now = Clock::now();
     for (auto& [id, s] : states) {
         Actor* actor = level.fetchEntity(ActorUniqueID{id}, false);
@@ -338,6 +372,16 @@ public:
     }
 };
 
+class DrawHandler final : public ll::network::PacketHandlerBase<DrawHandler, net::DrawPacket> {
+public:
+    void handlePacket(NetworkIdentifier const& netId, NetEventCallback&, net::DrawPacket const& packet) const {
+        auto player = senderOf(netId, packet.mSenderSubId);
+        if (!player) return;
+        std::lock_guard lock(mutex);
+        observeSelection(*player, stateOf(*player));
+    }
+};
+
 class FireSelectHandler final : public ll::network::PacketHandlerBase<FireSelectHandler, net::FireSelectPacket> {
 public:
     void handlePacket(NetworkIdentifier const& netId, NetEventCallback&, net::FireSelectPacket const& packet) const {
@@ -347,6 +391,10 @@ public:
         if (!item) return;
         auto const* entry = gunEntry(item->gunId);
         if (!entry) return;
+        std::lock_guard lock(mutex);
+        auto& s = stateOf(*player);
+        observeSelection(*player, s);
+        if (drawing(s, *entry) || gun::isReloading(s.reloadState)) return;
         item->fireMode = gun::nextFireMode(entry->data.fireModes, item->fireMode);
         nbt::writeSelectedGun(*player, *item);
         logger().info("[shoot] {} fire mode -> {}", player->getRealName(), nbt::fireModeName(item->fireMode));
