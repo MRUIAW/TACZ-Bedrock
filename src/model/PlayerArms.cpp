@@ -45,10 +45,17 @@ std::optional<glm::mat4> playerArmTransform(GeoModel const& model, std::span<int
 
 bool isClassicArmSkin(uint32_t width, uint32_t height, size_t bytes, bool persona,
     bool animated, std::string_view geometry) {
-    return !persona && !animated && (width == 64 || width == 128) && height == width
-        && bytes == static_cast<size_t>(width) * height * 4
-        && (geometry == "geometry.humanoid.custom" || geometry == "geometry.humanoid.customSlim"
-            || geometry == "geometry.humanoid" || geometry == "geometry.humanoid.slim");
+    return !persona && !animated && renderArmSkinLayout(width, height, geometry).has_value()
+        && bytes == static_cast<size_t>(width) * height * 4;
+}
+
+std::optional<bool> renderArmSkinLayout(uint32_t width, uint32_t height, std::string_view geometry) {
+    if ((width != 64 && width != 128) || height != width) return std::nullopt;
+    // These two identifiers/layouts are verified in the installed vanilla geometry.json.
+    // Do not admit unverified aliases or a square Persona atlas by dimensions alone.
+    if (geometry == "geometry.humanoid.customSlim") return true;
+    if (geometry == "geometry.humanoid.custom") return false;
+    return std::nullopt;
 }
 
 void makeArmSkinBaseOpaque(std::span<uint8_t> rgba, uint32_t width, uint32_t height) {

@@ -8,6 +8,78 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 Versioning rule for this project: the patch number goes up by 1 for each small item or test
 round, the minor number goes up by 1 for each finished feature or phase.
 
+## [0.3.12] - 2026-10-25
+
+### Runtime follow-up and diagnostics — skin still falls back to Steve/Alex
+
+- User tested deployed 0.3.12: arms still show default Steve; no crash reported, no other
+  acceptance results supplied. `2026-10-25.4.log` proves the update hook installed at load,
+  fired at least 53 times and matched the local skin. All 15 selection records fall back:
+  7 expired weak texture snapshots, 8 unverified layouts with an empty native default-mesh
+  field. There are zero borrowed-handle binds. This is NOT evidence of a missed enable-time
+  event, nor of failed identity matching, nor a malformed 64x64 RGBA image.
+- `ClientSkinInfoData::mDefaultMeshName` was wrongly treated as actual skin layout metadata:
+  it is empty in every observed selection. A one-time weak texture snapshot also does not
+  establish the final vanilla renderer binding. Do not relax layout checks or pin old GPU
+  textures as a speculative workaround. Exact update timestamps/unique owners were not logged.
+- Added diagnostic-only update events (first 128, total count at disable), snapshot identity
+  addresses/shared-owner match kind, update-time texture/handle/loading state, and one actual
+  draw-return/source record per selection. World attribution reads only the atomic session
+  token, with no main-menu client/level service query. Selection/rendering policy is unchanged.
+- No verified draw-time/current-repository skin lookup or neutral native arm-render contract
+  was found in the installed SDK. Version stays 0.3.12; diagnostic draft is not deployed and
+  no 0.3.13 fix is claimed. Evidence, safe-API audit and next options: `docs/SKIN-0.3.13.md`.
+
+### Changed (observer implementation, not a completed skin fix)
+
+- Replace the first-person arm skin's render-thread serialized-image read with a weak observer
+  of native `ClientSkinInfoData::updateSkin`. Correlate its input/stored shared-owner identities
+  with `LocalPlayer::mSkin`, then borrow the game's existing typed `mce::ClientTexture` handle.
+  No custom-skin pixel copy/re-upload, fabricated resource location, thread-check bypass or
+  dereference of `SerializedSkinImpl::mObject`. Hook/thunk signatures are compile-time checked
+  against the installed 26.51.1 client headers; arguments are references/pointers only.
+- Both latest 0.3.11 logs rejected all six observed arm skin creations at the old combined
+  `skin-owner-thread-unavailable` check, BEFORE image inspection. The broken access boundary,
+  not an established RGBA/size rejection, explains the default skins. Those logs cannot tell
+  null owner, unset debug marker and different thread apart. New `[arm-skin]` diagnostics split
+  these and report native input image metadata, GPU dimensions, geometry, update/revision and
+  texture availability; log only selection/owner/state changes, not every probe/frame.
+- Admit only loaded/nonmissing handles with 64/128 square textures and native-reported
+  `geometry.humanoid.custom` / `geometry.humanoid.customSlim`, whose classic arm UVs were checked
+  in the installed vanilla geometry. Preserve Steve/Alex fallback with an explicit reason.
+  Persona's composed atlas/layout is NOT established from the SDK/assets; square dimensions
+  alone are not sufficient, and general Persona/custom-geometry support is not claimed.
+- Observe updates from mod load (including dressing-room updates), retaining only weak
+  identities/texture references and metadata outside a draw. No menu-time world service query.
+  Existing world/pipeline/resource release drops borrowed handles without unloading the engine's
+  texture; only our owned default texture is unloaded. Texture-only changes reuse arm meshes;
+  a slim/wide change or invalid mesh rebuilds them. Unchanged fallback avoids repeated PNG I/O.
+
+### 0.3.11 runtime results
+
+- User tested idle/walk/shoot/reload/inspect/put-away: arms animate correctly, no crash reported.
+  Persona AND imported classic skins instead showed Steve/Alex; this prompted the skin fix.
+- With RTX on, cached arm geometry plus per-draw matrices animates while the CPU-baked/rebuilt
+  gun stays static. Strong additional support for the reused-geometry/BLAS cache hypothesis,
+  not proof of the exact backend cache key. RTX remains parked; no RTX fix/experiment here.
+- Real 120-frame arm CPU means: RTX on 0.032 ms, off 0.028–0.034 ms; each sample reports four
+  mesh builds / 480 draw returns. GPU execution is not timed. See `docs/RTX-0.3.10.md`.
+- Approved 0.3.11 work committed separately as `ce8c25b`.
+
+### Validation / limitations
+
+- 98 tests / 42,627 assertions pass, including GPU-layout admission without CPU image bytes
+  and rejection of unknown/Persona geometry, legacy/nonsquare/unverified dimensions/aliases.
+- Server/client release builds passed. Initial deployment was blocked by the running game;
+  after closing it, 0.3.12 deployed successfully with DLL/PDB/manifest and both packs verified.
+  User tested: arms animate, no crash reported, skin still falls back to Steve. The additional
+  diagnostic-only logging above was built/tested but not separately deployed at that point.
+  Unit tests do not validate engine hook behavior or Persona composition.
+- Skin detection remains 1 Hz. No animation-atlas handling, arbitrary geometry, legacy 64x32
+  UV conversion or Persona piece/tint/geometry reconstruction. Borrowed pixels are not modified
+  to force base alpha; unusual alpha skins need game validation. Camera/constraint remain
+  deferred and are not part of this skin-only patch (supersedes 0.3.11's planned version).
+
 ## [0.3.11] - 2026-10-25
 
 ### Added

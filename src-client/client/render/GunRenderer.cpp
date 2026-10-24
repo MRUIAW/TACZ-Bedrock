@@ -74,6 +74,7 @@
 #include "client/animation/GunAnimation.h"
 #include "client/gameplay/ClientShooter.h"
 #include "client/render/PlayerArms.h"
+#include "client/render/SkinTextureSource.h"
 #include "model/GeoModel.h"
 #include "model/GunModelRules.h"
 #include "model/RenderResourceKey.h"
@@ -535,11 +536,13 @@ bool hooked = false;
 } // namespace
 
 void enable() {
+    enableSkinTextureSource(); // idempotent, including mod re-enable
     hooked = FirstPersonGunHook::hook() == 0;
     if (!hooked) logger().warn("Cannot hook first-person rendering; guns will look like their vanilla item");
 }
 
 void disable() {
+    disableSkinTextureSource();
     if (hooked) FirstPersonGunHook::unhook();
     hooked = false;
     std::lock_guard lock(cacheMutex);

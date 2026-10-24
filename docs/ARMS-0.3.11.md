@@ -1,5 +1,12 @@
 # 0.3.11 first-person arms
 
+Follow-up (2026-10-25): user verified arm animation for idle/walk/shoot/reload/inspect/put-away,
+including RTX-on arms while the gun remains static; no crash reported. Both Persona and
+imported classic skins incorrectly showed defaults. Approved 0.3.11 was committed as
+`ce8c25b`. The implementation/validation-pending notes below describe that historical release;
+the replacement skin path and current acceptance checks are in `SKIN-0.3.12.md`, and the new
+RTX evidence is in `RTX-0.3.10.md`. Camera/constraint remain deferred beyond this skin patch.
+
 ## Reference behavior
 
 Studied the local TACZ source, not just gun-pack placeholder cubes:

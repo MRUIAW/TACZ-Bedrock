@@ -1,4 +1,5 @@
 #include "client/render/PlayerArms.h"
+#include "client/render/SkinTextureSource.h"
 
 #include <algorithm>
 #include <chrono>
@@ -6,7 +7,6 @@
 #include <fstream>
 #include <memory>
 #include <optional>
-#include <thread>
 #include <variant>
 
 #include <Windows.h>
@@ -35,6 +35,7 @@
 #include "mc/deps/core_graphics/TextureSetLayerType.h"
 #include "mc/deps/core_graphics/enums/PrimitiveMode.h"
 #include "mc/deps/minecraft_renderer/renderer/BedrockTexture.h"
+#include "mc/deps/minecraft_renderer/renderer/BedrockTextureData.h"
 #include "mc/deps/minecraft_renderer/renderer/MaterialPtr.h"
 #include "mc/deps/minecraft_renderer/renderer/Mesh.h"
 #include "mc/deps/minecraft_renderer/renderer/TexturePtr.h"
@@ -43,9 +44,6 @@
 #include "mc/deps/minecraft_renderer/resources/OffscreenCaptureDescription.h"
 #include "mc/deps/renderer/Camera.h"
 #include "mc/deps/renderer/MatrixStack.h"
-#include "mc/world/actor/player/AnimatedImageData.h"
-#include "mc/world/actor/player/SerializedSkinImpl.h"
-#include "mc/world/actor/player/SerializedSkinRef.h"
 #include "mc/world/level/block/BlockRenderLayer.h"
 #include "mc/world/level/block/BrightnessPair.h"
 #include "mc/world/level/block/actor/BlockActorRendererId.h"
@@ -66,35 +64,6 @@ struct SkinPixels {
     bool slim = false, fallback = false;
     char const* reason = "classic";
 };
-
-// Read only on the skin's owning thread. Hold the shared wrapper only for this read;
-// no Player, SerializedSkinRef, native image or registry-bound object survives the call.
-SkinPixels readSkin(LocalPlayer& player) {
-    SkinPixels out;
-    auto const& ref = player.mSkin.get();
-    if (!ref) { out.reason = "skin-not-ready"; return out; }
-    auto owner = ref->mSkinImpl.get();
-    if (!owner || !owner->mThreadIdInitialized || owner->mThreadId != std::this_thread::get_id()) {
-        out.reason = "skin-owner-thread-unavailable";
-        return out;
-    }
-    auto const& skin = owner->mObject;
-    auto arm = skin.mArmSizeType;
-    auto const& geometry = skin.mDefaultGeometryName.get();
-    out.slim = arm == SharedTypes::persona::ArmSizeType::Slim
-        || geometry == "geometry.humanoid.customSlim" || geometry == "geometry.humanoid.slim";
-    auto const& image = skin.mSkinImage.get();
-    if (image.imageFormat != mce::ImageFormat::RGBA8Unorm || image.mDepth > 1
-        || !model::isClassicArmSkin(image.mWidth, image.mHeight, image.mImageBytes.size(),
-            skin.mIsPersona, !skin.mSkinAnimatedImages->empty(), geometry)) {
-        out.reason = skin.mIsPersona ? "persona" : "nonstandard-or-animated-skin";
-        return out;
-    }
-    out.width = image.mWidth;
-    out.height = image.mHeight;
-    out.rgba.assign(image.mImageBytes.cbegin(), image.mImageBytes.cend());
-    return out;
-}
 
 // Read the installed game's own default texture; no Mojang image is redistributed and no
 // working-directory/launcher-profile path is assumed. Only used on skin selection changes
@@ -131,6 +100,14 @@ struct ArmCache {
     Texture texture;
     std::unique_ptr<ResourceLocation> location;
     std::weak_ptr<mce::TextureGroup> owner;
+    std::weak_ptr<BedrockTextureData const> borrowedData;
+    uintptr_t borrowedBlock = 0;
+    uint64_t borrowedRevision = 0;
+    bool textureReady = false;
+    std::optional<bool> meshSlim;
+    std::weak_ptr<void> loggedSkinOwner;
+    std::string skinLogKey;
+    bool skinDrawLogged = false;
     uint64_t hash = 0;
     bool slim = false, fallback = false;
     uint32_t width = 0;
@@ -146,11 +123,38 @@ uint64_t skinSerial = 0;
 
 void dropTexture(ArmCache& a) {
     a.texture = {};
+    a.textureReady = false;
+    a.borrowedData.reset();
+    a.borrowedBlock = 0;
+    a.borrowedRevision = 0;
     if (a.location) {
         if (auto owner = a.owner.lock()) owner->unloadTexture(*a.location, false);
         a.location.reset();
     }
     a.owner.reset();
+}
+
+void ensureArmMeshes(ScreenContext& screen, ArmCache& a) {
+    bool valid = std::all_of(a.meshes.begin(), a.meshes.end(), [](auto const& mesh) { return mesh && mesh->isValid(); });
+    if (a.meshSlim == a.slim && valid) return;
+    auto start = Clock::now();
+    for (int side = 0; side < 2; ++side) for (int layer = 0; layer < 2; ++layer) {
+        auto vertices = model::playerArmVertices(side == 0 ? model::Arm::Left : model::Arm::Right, a.slim, layer != 0);
+        Tessellator batch(screen.tessellator.mBufferResourceService);
+        batch.begin({}, mce::PrimitiveMode::QuadList, 24, false);
+        batch.color(1, 1, 1, 1);
+        for (auto const& vertex : vertices) {
+            batch.mNextUV[0] = vertex.uv;
+            batch.mNextUV[1] = glm::vec2{1, 1};
+            batch.mNextNormal = glm::vec4(vertex.normal, 0);
+            batch.vertex(vertex.pos.x, vertex.pos.y, vertex.pos.z);
+        }
+        a.meshes[side * 2 + layer].emplace(batch.end(Tessellator::UploadMode::Buffered,
+            "tacz player arm", SupplementaryFieldAutoGenerationMode{}));
+        ++a.builds;
+    }
+    a.meshSlim = a.slim;
+    a.buildMs += msSince(start);
 }
 
 void probeSkin(ScreenContext& screen, IClientInstance& client, LocalPlayer& player,
@@ -159,7 +163,62 @@ void probeSkin(ScreenContext& screen, IClientInstance& client, LocalPlayer& play
     auto now = Clock::now();
     if (now < a.nextProbe) return;
     a.nextProbe = now + std::chrono::seconds(1);
-    auto skin = readSkin(player);
+    auto source = findRenderSkinTexture(player);
+    uint32_t width = source.texture ? source.texture->mTextureDescription->mWidth : 0;
+    uint32_t height = source.texture ? source.texture->mTextureDescription->mHeight : 0;
+    auto layout = model::renderArmSkinLayout(width, height, source.geometry);
+    char const* reason = !source.refPresent ? "skin-ref-missing" : !source.ownerPresent ? "skin-owner-missing"
+        : !source.revision ? "renderer-texture-not-observed" : !source.texture ? "renderer-texture-expired"
+        : source.texture->mIsMissingTexture == IsMissingTexture::Yes ? "renderer-missing-texture"
+        : !(static_cast<unsigned>(source.texture->mTextureLoadState) & static_cast<unsigned>(TextureLoadState::LoadedBit)) ? "renderer-texture-pending"
+        : !source.texture->mClientTexture.get() ? "renderer-texture-no-handle"
+        : !layout ? "unverified-renderer-arm-layout" : "renderer-handle";
+    bool borrowed = std::string_view(reason) == "renderer-handle";
+    auto logKey = fmt::format("{}:{}:{}:{}:{}:{}", source.revision, reason, width, height, source.geometry, source.ownerState);
+    bool sameOwner = !a.loggedSkinOwner.owner_before(source.skinOwner) && !source.skinOwner.owner_before(a.loggedSkinOwner);
+    if (a.skinLogKey != logKey || !sameOwner) {
+        a.skinLogKey = logKey;
+        a.loggedSkinOwner = source.skinOwner;
+        a.skinDrawLogged = false;
+        a.missingLogged = false;
+        logger().info("[arm-skin] world={} revision={} observedUpdates={} source={} reason={} ref={} owner={} ownerState={} ownerThreadHash={} renderThread={} renderThreadHash={} updateThread={} imageProvided={} input={}x{} depth={} format={} bytes={} gpu={}x{} geometry={} (CPU image not read by arms)",
+            world, source.revision, source.updatesSeen, borrowed ? "renderer-handle" : "default", reason, source.refPresent,
+            source.ownerPresent, source.ownerState, source.ownerThreadHash, GetCurrentThreadId(), source.renderThreadHash,
+            source.updateThread, source.imageProvided, source.inputWidth, source.inputHeight, source.inputDepth, source.inputFormat,
+            source.inputBytes, width, height, source.geometry);
+        logger().info("[arm-skin-match] world={} revision={} match={} localOwner={:#x} inputOwner={:#x} storedOwner={:#x} info={:#x} dataAtUpdate={:#x} blockAtUpdate={:#x} dataNow={:#x} (snapshot addresses only; match uses shared control blocks)",
+            world, source.revision, source.matchKind, source.localIdentity, source.inputIdentity, source.storedIdentity,
+            source.infoIdentity, source.textureIdentityAtUpdate, source.handleIdentityAtUpdate,
+            reinterpret_cast<uintptr_t>(source.texture.get()));
+    }
+    if (borrowed) {
+        auto block = reinterpret_cast<uintptr_t>(source.texture->mClientTexture->mResourcePointerBlock.get());
+        if (!a.textureReady || a.fallback || a.borrowedRevision != source.revision || a.borrowedBlock != block
+            || a.borrowedData.lock() != source.texture) {
+            dropTexture(a); // unloads only our own Raw fallback, NEVER the engine's skin
+            a.texture = source.texture->mClientTexture.get(); // fully typed shared resource handle
+            a.borrowedData = source.texture;
+            a.borrowedBlock = block;
+            a.borrowedRevision = source.revision;
+            a.textureReady = true;
+            a.slim = *layout;
+            a.width = width;
+            a.fallback = false;
+            a.frames = a.builds = a.draws = 0;
+            a.totalMs = a.probeMs = a.buildMs = a.drawMs = a.maxMs = 0;
+            logger().info("[arm-gpu] bind world={} resourceSerial={} source=renderer-handle revision={} layout={} image={}x{} upload=false",
+                world, resourceSerial, source.revision, a.slim ? "slim" : "wide", width, height);
+        }
+        ensureArmMeshes(screen, a);
+        return;
+    }
+    SkinPixels skin;
+    skin.reason = reason;
+    skin.slim = source.geometry == "geometry.humanoid.customSlim";
+    if (a.textureReady && a.location && a.fallback && a.slim == skin.slim) {
+        ensureArmMeshes(screen, a);
+        return; // unchanged fallback needs neither PNG I/O nor another upload
+    }
     if (skin.rgba.empty() && !readDefault(skin)) {
         // Do not retain a previous user's skin if both current and default are unavailable.
         dropTexture(a);
@@ -169,12 +228,9 @@ void probeSkin(ScreenContext& screen, IClientInstance& client, LocalPlayer& play
     }
     model::makeArmSkinBaseOpaque(skin.rgba, skin.width, skin.height);
     auto hash = model::armSkinHash(skin.rgba);
-    bool meshesValid = std::all_of(a.meshes.begin(), a.meshes.end(), [](auto const& mesh) {
-        return mesh && mesh->isValid();
-    });
     bool same = a.location && hash == a.hash && skin.width == a.width
-        && skin.slim == a.slim && skin.fallback == a.fallback && meshesValid;
-    if (same) return;
+        && skin.slim == a.slim && a.fallback;
+    if (same) { ensureArmMeshes(screen, a); return; }
     a.frames = a.builds = a.draws = 0;
     a.totalMs = a.probeMs = a.buildMs = a.drawMs = a.maxMs = 0;
     auto start = Clock::now();
@@ -194,25 +250,11 @@ void probeSkin(ScreenContext& screen, IClientInstance& client, LocalPlayer& play
     a.width = skin.width;
     a.slim = skin.slim;
     a.fallback = skin.fallback;
+    a.textureReady = true;
     a.missingLogged = false;
-    // At most four tiny 24-vertex meshes per skin change; NEVER per pose revision.
-    for (int side = 0; side < 2; ++side) for (int layer = 0; layer < 2; ++layer) {
-        auto vertices = model::playerArmVertices(side == 0 ? model::Arm::Left : model::Arm::Right, a.slim, layer != 0);
-        Tessellator batch(screen.tessellator.mBufferResourceService);
-        batch.begin({}, mce::PrimitiveMode::QuadList, 24, false);
-        batch.color(1, 1, 1, 1);
-        for (auto const& vertex : vertices) {
-            batch.mNextUV[0] = vertex.uv;
-            batch.mNextUV[1] = glm::vec2{1, 1}; // block-material light UVs
-            batch.mNextNormal = glm::vec4(vertex.normal, 0);
-            batch.vertex(vertex.pos.x, vertex.pos.y, vertex.pos.z);
-        }
-        a.meshes[side * 2 + layer].emplace(batch.end(Tessellator::UploadMode::Buffered,
-            "tacz player arm", SupplementaryFieldAutoGenerationMode{}));
-        ++a.builds;
-    }
     a.buildMs += msSince(start);
-    logger().info("[arm-gpu] create world={} resourceSerial={} skinSerial={} layout={} source={} reason={} image={}x{} meshes=4 vertices=96 (cached, matrix-only animation)",
+    ensureArmMeshes(screen, a);
+    logger().info("[arm-gpu] create world={} resourceSerial={} skinSerial={} layout={} source={} reason={} image={}x{} (cached meshes, matrix-only animation)",
         world, resourceSerial, skinSerial, a.slim ? "slim" : "wide", a.fallback ? "default" : "local-skin",
         skin.reason, skin.width, skin.height);
 }
@@ -245,7 +287,7 @@ void drawPlayerArms(ScreenContext& screen, IClientInstance& client, LocalPlayer&
     probeSkin(screen, client, player, world, resourceSerial);
     auto& a = *cache;
     if (a.frames < 120) a.probeMs += msSince(probeStart);
-    if (!a.location) return;
+    if (!a.textureReady) return;
     auto* light = client.getLightTexture();
     auto& dispatch = client.getBlockEntityRenderDispatcher();
     auto* moving = static_cast<MovingBlockActorRenderer*>(dispatch.mRenderers.get()[BlockActorRendererId::MovingBlock].get());
@@ -276,6 +318,13 @@ void drawPlayerArms(ScreenContext& screen, IClientInstance& client, LocalPlayer&
                 auto const& mesh = a.meshes[side * 2 + layer];
                 if (!mat || !mat->mRenderMaterialInfoPtr || !mesh || !mesh->isValid()) continue;
                 mesh->renderMesh(screen, *mat, a.texture, 0, 24, OffscreenCaptureDescription{}, nullptr);
+                if (!a.skinDrawLogged) {
+                    logger().info("[arm-skin-draw] world={} resourceSerial={} source={} revision={} fallbackSerial={} ownedDefault={} variant={} borrowedBlock={:#x} draw-returned=true selection='{}'",
+                        world, resourceSerial, a.fallback ? "default" : "renderer-handle", a.borrowedRevision,
+                        a.fallback ? skinSerial : 0, static_cast<bool>(a.location), a.texture.index(), a.borrowedBlock,
+                        a.skinLogKey);
+                    a.skinDrawLogged = true;
+                }
                 ++a.draws;
             }
         } catch (...) { pop(worldMatrix); throw; } // stack ownership, not exception suppression

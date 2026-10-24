@@ -119,6 +119,28 @@ TEST_CASE("Arms: classic image admission and opaque base do not corrupt sleeve a
     }
 }
 
+TEST_CASE("Arms: renderer handle layout does not require CPU pixels or guess Persona UVs from size") {
+    for (uint32_t size : {64u, 128u}) {
+        auto wide = model::renderArmSkinLayout(size, size, "geometry.humanoid.custom");
+        auto slim = model::renderArmSkinLayout(size, size, "geometry.humanoid.customSlim");
+        REQUIRE(wide.has_value());
+        REQUIRE(slim.has_value());
+        CHECK_FALSE(*wide);
+        CHECK(*slim);
+        // No byte-count / image-format parameter: an already-loaded GPU skin is not rejected
+        // merely because the serialized CPU image was withdrawn/compressed/on another thread.
+        CHECK_FALSE(model::renderArmSkinLayout(size, size, "geometry.persona"));
+        CHECK_FALSE(model::renderArmSkinLayout(size, size, "geometry.custom.creature"));
+        CHECK_FALSE(model::renderArmSkinLayout(size, size, ""));
+    }
+    CHECK_FALSE(model::renderArmSkinLayout(64, 64, "geometry.humanoid").has_value());
+    CHECK_FALSE(model::renderArmSkinLayout(64, 64, "geometry.humanoid.slim").has_value());
+    CHECK_FALSE(model::renderArmSkinLayout(0, 0, "geometry.humanoid.custom"));
+    CHECK_FALSE(model::renderArmSkinLayout(64, 32, "geometry.humanoid.custom"));
+    CHECK_FALSE(model::renderArmSkinLayout(256, 256, "geometry.humanoid.custom"));
+    CHECK_FALSE(model::renderArmSkinLayout(64, 128, "geometry.humanoid.customSlim"));
+}
+
 #ifdef TACZ_DEFAULT_PACK_DIR
 TEST_CASE("Arms: AK47 slim arm placement matches TACZ's hand placeholder before and after animation") {
     std::vector<std::unique_ptr<pack::PackSource>> sources;

@@ -3,6 +3,37 @@
 Status (2026-10-25): parked by user decision. The historical analysis below predates the
 separate 0.3.11 arms work (`ARMS-0.3.11.md`); that release does not claim an RTX fix.
 
+## 0.3.11 runtime follow-up: arms animate, gun remains static
+
+User tested RTX off/on after the implementation below: first-person arms correctly follow
+idle, walking, shooting, reload, inspect and put-away; no crash reported. Under RTX the **arms
+animate while the gun remains static**. This is the user's game observation, not an agent run.
+Both Persona and imported classic arm skins fell back to defaults (tracked separately in
+`SKIN-0.3.12.md`). Approved 0.3.11 code/docs were committed as `ce8c25b`.
+
+The meaningful difference is unchanged cached arm geometry + per-draw bone/world matrices,
+versus gun poses baked into vertices and uploaded via mesh reconstruction on each pose.
+The gun uses `optional<Mesh>::emplace` in reused cache storage: this is not merely editing one
+existing vertex array, and a new C++ construction does not establish a fresh backend identity.
+The arm result strongly supports hypothesis 1 below: per-draw transforms reach the RT path,
+while geometry/BLAS associated with a reused mesh identity may remain stale. It does **not**
+prove the exact backend cache key, a specific buffer/BLAS lifetime, or exclude classification
+and metadata differences. No new RTX hook, cache-key experiment or render-path fix is made
+in 0.3.12. RTX work remains parked for the planner's separate task.
+
+Latest evidence (`logs/2026-10-25.log` and `2026-10-25.1.log`):
+
+- RTX on, prior log line 122: arm CPU totalMean **0.032 ms**, max 0.571 ms,
+  probeMean 0.007 ms, buildUploadTotal 0.111 ms, matrixDrawMean 0.023 ms.
+- RTX off: totalMean **0.028–0.034 ms** across the recorded 120-frame samples; newest log
+  line 125: 0.034 ms, max 0.448 ms, probeMean 0.006 ms, buildUploadTotal 0.117 ms,
+  matrixDrawMean 0.026 ms.
+- Each sample: **4 builds / 480 draw returns in 120 frames**, consistent with four cached
+  arm/layer meshes and matrix-only animation. These are CPU submission timings, NOT GPU/DXR
+  execution timings; counters alone do not prove visible animation or BLAS refresh.
+
+The remaining sections are the earlier 0.3.10 investigation, not a new 0.3.12 implementation.
+
 ## Outcome / scope
 
 Approved combined 0.3.9/0.3.10 commit: `1ee753c` on `feat/milestone-1` (no amend/push).

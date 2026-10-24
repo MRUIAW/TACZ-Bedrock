@@ -23,6 +23,10 @@ std::optional<glm::mat4> playerArmTransform(GeoModel const& model, std::span<int
 bool isClassicArmSkin(uint32_t width, uint32_t height, size_t bytes, bool persona,
     bool animated, std::string_view geometry);
 
+// GPU textures need neither RGBA CPU bytes nor access to SerializedSkinImpl. Dimensions
+// alone do NOT prove a Persona atlas has classic UVs: require a known renderer geometry.
+std::optional<bool> renderArmSkinLayout(uint32_t width, uint32_t height, std::string_view geometry);
+
 // Java uses entitySolid for the base arm. Preserve sleeve alpha, force only base-arm texels
 // opaque so our alpha-test base pass has the same treatment, without changing the player's skin.
 void makeArmSkinBaseOpaque(std::span<uint8_t> rgba, uint32_t width, uint32_t height);

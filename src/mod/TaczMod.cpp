@@ -9,6 +9,7 @@
 #include "client/ClientProbe.h"
 #include "client/gameplay/ClientShooter.h"
 #include "client/render/GunRenderer.h"
+#include "client/render/SkinTextureSource.h"
 #endif
 
 namespace tacz {
@@ -21,6 +22,9 @@ TaczMod& TaczMod::getInstance() {
 bool TaczMod::load() {
 #ifdef TACZ_CLIENT
     getSelf().getLogger().info("Loading TACZ {} (client)...", TACZ_VERSION);
+    // Capture weak native skin identities before the dressing room / world initializes.
+    // This observer never queries client/world services or uploads anything at the menu.
+    client::render::enableSkinTextureSource();
 #else
     getSelf().getLogger().info("Loading TACZ {} (server)...", TACZ_VERSION);
 #endif
