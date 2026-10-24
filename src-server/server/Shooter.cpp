@@ -54,6 +54,7 @@ int64_t serverNowMs() {
 
 // ShooterDataHolder, reduced to what is implemented.
 struct ShooterState {
+    unsigned recoilLookSamples = 0;
     bool isAiming = false;
     float aimingProgress = 0;
     int64_t aimingTimestamp = -1;
@@ -227,6 +228,13 @@ char const* handleShoot(Player& player, int64_t timestamp) {
     s.remaining        = cycles;
     // CycleTaskHelper runs the first round right away; the rest follow on server ticks.
     if (fireRound(player, s)) {
+        // Bounded observation only: actual authoritative look used for this shot, not a
+        // client recoil/rotation override. Compare triggerTs with [recoil-shot] in tests.
+        if (s.recoilLookSamples++ < 8) {
+            auto const& rotation = player.getRotation();
+            logger().info("[recoil-server-look] {} triggerTs={} rotation=({:.6f},{:.6f}) aim={:.3f} rotationSource=server-player (observe; compare client traces, no forced server recoil)",
+                player.getRealName(), timestamp, rotation.x, rotation.z, s.aimingProgress);
+        }
         --s.remaining;
         s.nextRound = Clock::now() + s.period;
     } else {

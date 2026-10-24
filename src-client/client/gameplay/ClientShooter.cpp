@@ -36,6 +36,7 @@
 #include "client/sound/GunSound.h"
 #include "client/animation/GunAnimation.h"
 #include "client/gameplay/ClientAim.h"
+#include "client/gameplay/ClientRecoil.h"
 #include "client/render/GunRenderer.h"
 #include "gun/ShootRules.h"
 #include "gun/ClientWorldSession.h"
@@ -98,6 +99,7 @@ struct PendingShot {
     Clock::time_point due;
     std::optional<pack::ResourceId> sound;
     float             pitch;
+    int64_t triggerTimestamp;
 };
 std::vector<PendingShot> pendingShots;
 
@@ -209,14 +211,16 @@ bool shoot(HeldGun const& gun, int64_t now, bool chained) {
     shotTimestamp      = systemNowMs();
     lastShot           = shotAt;
     net::ShootPacket{shotAt}.sendToServer();
+    recoil::shot(data.recoil, gun.state.gunId, shotAt);
     anim::shoot();
 
-    // Burst: one packet, `count` rounds; the client only plays the sounds.
+    // Burst: one packet, `count` authoritative rounds; client follow-ups predict only
+    // presentation (animation, sound and camera recoil), not damage/ammo consumption.
     auto shootSound = displaySound(gun, "shoot");
     if (shootSound) sound::play(*shootSound, 0.8f, soundPitch());
     int  burst  = mode == pack::FireMode::Burst ? std::min(std::max(data.burst.count, 1), rounds) : 1;
     auto period = std::chrono::milliseconds(gun::burstShootIntervalMs(data));
-    for (int i = 1; i < burst; ++i) pendingShots.push_back({Clock::now() + period * i, shootSound, soundPitch()});
+    for (int i = 1; i < burst; ++i) pendingShots.push_back({Clock::now() + period * i, shootSound, soundPitch(), shotAt});
     return true;
 }
 
@@ -276,6 +280,7 @@ void frame() {
         reloadLockedAt.reset();
         pendingShots.clear();
         aim::clear();
+        recoil::clear();
         anim::clear();
     }
     // LocalPlayer may already exist while its inventory/network is still loading. Draw
@@ -289,6 +294,7 @@ void frame() {
     auto gun = heldGun(true);
     bool selectionChanged = anim::held(gun ? std::optional{gun->state.gunId} : std::nullopt, player->getSelectedItemSlot());
     if (selectionChanged) {
+        recoil::clear();
         net::DrawPacket{}.sendToServer();
         pendingShots.clear(); // do not kick the newly selected gun with an old burst
         reloadLockedAt.reset();
@@ -321,6 +327,7 @@ void frame() {
             continue;
         }
         if (pendingShots[i].sound) sound::play(*pendingShots[i].sound, 0.8f, pendingShots[i].pitch);
+        if (gun) recoil::shot(gun->entry->data.recoil, gun->state.gunId, pendingShots[i].triggerTimestamp, true);
         anim::shoot();
         pendingShots.erase(pendingShots.begin() + static_cast<std::ptrdiff_t>(i));
     }
@@ -383,12 +390,22 @@ public:
     }
 };
 
+void updateCameraRecoil() {
+    if (!worldSession.current()) { recoil::clear(); return; }
+    auto client = ll::service::getClientInstance();
+    if (!client || &*client != joinedClient.load()) { recoil::clear(); return; }
+    auto* player = client->getLocalPlayer();
+    if (player) recoil::update(*client, *player);
+    else recoil::clear();
+}
+
 // Main-thread, frame-accurate adapter. This is OUTSIDE MinecraftGame::update's native
 // registry scopes; animations must not construct engine inventory objects here.
 LL_TYPE_INSTANCE_HOOK(ShooterFrameHook, ll::memory::HookPriority::Normal, MinecraftGame, &MinecraftGame::$update, void) {
     origin();
     try {
         frame();
+        updateCameraRecoil();
         anim::update();
         render::diagnoseFrame();
     } catch (std::exception const& e) {
@@ -404,6 +421,7 @@ void endWorld(IClientInstance const* client) {
     // global service when exit callbacks arrive. Request-leave runs before that teardown.
     sound::stopAnimation();
     worldSession.close();
+    recoil::requestClear();
     render::releaseWorld(client);
     joinedClient = nullptr;
     triggerDown = false;
@@ -503,6 +521,7 @@ void enable() {
 
     hooked = ShooterFrameHook::hook() == 0;
     aim::enable();
+    recoil::enable();
     leaveHooked = LeaveWorldHook::hook() == 0;
     if (!leaveHooked) logger().warn("Cannot hook request-leave; event and GPU-generation fallbacks remain active");
     if (!hooked) logger().warn("Cannot hook MinecraftGame::update; guns cannot fire");
@@ -512,6 +531,7 @@ void disable() {
     aim::disable();
     if (hooked) ShooterFrameHook::unhook();
     if (leaveHooked) LeaveWorldHook::unhook();
+    recoil::disable();
     hooked = false;
     leaveHooked = false;
     auto& bus = ll::event::EventBus::getInstance();

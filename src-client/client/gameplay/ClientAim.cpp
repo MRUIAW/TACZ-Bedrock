@@ -16,6 +16,7 @@
 #include "mc/client/renderer/game/LevelRendererPlayer.h"
 #include "mc/deps/core/math/Vec2.h"
 #include "client/gameplay/ClientShooter.h"
+#include "client/gameplay/ClientRecoil.h"
 #include "model/Aiming.h"
 #include "mod/TaczMod.h"
 #include "net/GunPackets.h"
@@ -90,6 +91,9 @@ LL_TYPE_INSTANCE_HOOK(AimFovHook, ll::memory::HookPriority::Normal, LevelRendere
 }
 LL_TYPE_INSTANCE_HOOK(AimSensitivityHook, ll::memory::HookPriority::Normal, LocalPlayer,
     &LocalPlayer::_applyTurnDelta, void, Vec2 const& delta) {
+    // Camera recoil is already in degrees with its own ADS modifier, NOT mouse motion.
+    // Scope is tied to this exact player/call and restores automatically on exceptions.
+    if (recoil::isApplyingTurn(*this)) { origin(delta); return; }
     if (!shooter::worldToken()) { origin(delta); return; }
     auto state = snapshot();
     if (!state.world || !state.gun || state.player != reinterpret_cast<uintptr_t>(this)) { origin(delta); return; }

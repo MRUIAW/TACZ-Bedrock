@@ -8,6 +8,50 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 Versioning rule for this project: the patch number goes up by 1 for each small item or test
 round, the minor number goes up by 1 for each finished feature or phase.
 
+## [0.3.14] - 2026-10-25
+
+### Added
+
+- Camera recoil following TACZ GunRecoil + CameraSetupEvent: natural cubic splines (Commons
+  Math 3 SplineInterpolator's zero endpoint second derivatives), sorted keyframes, per-shot
+  uniform range samples, initial (0,0), and time*1000+30 ms knots. This is neither Catmull-Rom
+  nor a 30 ms dead zone. Preserve natural spline overshoot rather than clamp curve values.
+- Each client-accepted shot, including scheduled burst rounds, replaces the current pitch/yaw
+  curves and resets their previous samples to zero. Per frame apply negative curve-value
+  differences to the actual local look through `LocalPlayer::_applyTurnDelta(Vec2 const&)`,
+  after MinecraftGame::update. Already-applied rotation stays; older recovery tails are not
+  summed. No added spring, automatic centering, server-forced kick or fabricated input packet.
+- Snapshot ADS progress and iron_zoom per shot for `1-aim+aim/min(sqrt(zoom),1.5)`; crawl and
+  attachment multipliers remain neutral 1 until those systems exist. A scoped player-specific
+  thread-local marker bypasses only 0.3.13's MDV mouse sensitivity during programmatic turns;
+  normal mouse motion keeps MDV scaling. Native turn/focus signatures are compile-time checked
+  against the installed 26.51.1 client headers; no opaque-by-value detour.
+- Guard against missing/stale world/client/player/gun, UI, death/spectator, put-away, focus loss
+  and leave/disable; discard pending curves without undoing real rotation or replaying a stale
+  tail. Malformed axes warn once and are disabled independently instead of throwing into the
+  native frame; absent axes are normal. Bounded shot/look and server-angle traces support the
+  morning check of actual view rotation, client-input propagation and any snap-back.
+
+### Validation
+
+- 113 tests / 44,106 assertions pass. Includes an independent AK47 Commons Math formula table,
+  seeded randomization bounds/reproducibility, +30 ms/sorting, natural cubic/domain behavior,
+  modifiers, timestep deltas, invalid axes, replacement overlap and no synthetic recovery.
+- Final builds/deployment verification: `docs/RECOIL-0.3.14.md`. No in-game run by the agent;
+  actual rotation magnitude, native clamp/turn behavior and server persistence remain runtime
+  acceptance items, not facts established by compiling or reading PlayerAuthInput's fields.
+
+### Not yet
+
+- Attachment RecoilModifier evaluation, crawling pose detection, scopes, third-person recoil,
+  touch/controller and detached-camera compatibility. The ordinary native turn path is used;
+  another mod's zoom/freecam may modify or redirect it and needs compatibility testing.
+- Intentional Java behavior: out-of-domain frames do not force a terminal sample; a stall
+  skipping the endpoint may leave a small unapplied return. New shots discard old tails,
+  so sustained fire can leave accumulated climb. No non-TACZ recovery workaround was added.
+- Camera/constraint bones, HUD/crosshair/hit marker, pixel-copy skin fix and once-built gun
+  rendering remain later tasks. Skin fallback and RTX static internal geometry are unchanged.
+
 ## [0.3.13] - 2026-10-25
 
 ### Added
