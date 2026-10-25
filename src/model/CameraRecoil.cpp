@@ -5,6 +5,7 @@
 #include <stdexcept>
 
 namespace tacz::model {
+RecoilDelta bedrockRecoilTurn(RecoilDelta look) { return {-look.pitch, look.yaw}; }
 RecoilSpline::RecoilSpline(std::vector<double> timesMs, std::vector<double> values) : times(std::move(timesMs)) {
     auto count = times.size();
     if (count < 3 || count != values.size()) throw std::invalid_argument("natural spline requires >=3 equal-sized knots/values");

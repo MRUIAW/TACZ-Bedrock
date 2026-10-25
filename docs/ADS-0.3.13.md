@@ -1,5 +1,12 @@
 # 0.3.13 — aiming (ADS)
 
+User acceptance after 0.3.14: right-click interception, hold/release, smooth iron-sight
+placement, world FOV zoom, slightly reduced sensitivity, no stuck aim after switching/focus
+loss, and world switching passed. RTX honors whole-gun ADS placement. Remaining reported
+issues (model size/offset, excessive aimed sway, sprint flicker, crosshair and reload pose)
+are investigated in `ADS-CAMERA-0.3.15.md`; this historical implementation is not the final
+projection/constraint contract.
+
 Baseline: **`a940642`**, approved 0.3.12 observer + diagnostics. Skin still falls back to
 Steve/Alex; this patch is ADS only. The historically named `SKIN-0.3.13.md` remains a skin
 investigation, not this release's objective. No camera recoil/constraint/HUD/skin/RTX fix here.

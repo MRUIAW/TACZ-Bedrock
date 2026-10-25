@@ -8,6 +8,7 @@
 #include <glm/gtc/quaternion.hpp>
 
 #include "pack/GunPackParser.h"
+#include "model/FunctionalBones.h"
 
 namespace tacz::animation {
 namespace {
@@ -188,7 +189,17 @@ void compose(Pose const& source, Pose& pose, bool blend) {
             if (!src) continue;
             auto value = *src;
             auto& target = type == ChannelType::Translation ? bone.translation : type == ChannelType::Rotation ? bone.rotation : bone.scale;
-            if (blend && target) {
+            if (name == "constraint" && type != ChannelType::Scale) {
+                // Listener values are coefficients. Rotation uses positive DEGREES before
+                // max blending; retain radians in Pose so transitions keep their ABI.
+                if (type == ChannelType::Rotation) {
+                    for (int i=0;i<3;++i) value[i] = glm::radians(model::positiveDegrees(value[i]));
+                }
+                if (blend) value = glm::max(value, target.value_or(glm::vec3(0)));
+            } else if (name == "camera" && type == ChannelType::Rotation && blend) {
+                auto q = model::blendCameraRotation(model::cameraBoneRotation(target.value_or(glm::vec3(0))), model::cameraBoneRotation(value));
+                value = model::quaternionAngles(q)*glm::vec3(1,1,-1);
+            } else if (blend && target) {
                 if (type == ChannelType::Scale) value *= *target;
                 else if (type == ChannelType::Rotation) {
                     // ModelRotateListener reads the existing additionalQuaternion back as Euler

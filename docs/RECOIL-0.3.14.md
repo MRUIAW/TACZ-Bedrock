@@ -1,5 +1,12 @@
 # 0.3.14 camera recoil
 
+**User test correction (0.3.15):** shoot animation and native pitch limits passed, but recoil
+kicked DOWN. `2026-10-25.5.log:191–202` proves native input pitch is negated, yaw preserved,
+and actor rotation receives the camera result on the next native frame. The original adapter
+below assumed actual-look-delta == native-turn-delta, so its pitch sign was wrong; its
+immediate-no-change warning was also misleading. 0.3.15 fixes the mapping, adds per-axis
+tests and burst totals. See `ADS-CAMERA-0.3.15.md`. No silent rewrite of these historical results.
+
 Parent ADS commit: `e7475b3`. Only overnight task 2 is implemented; no camera/constraint bone,
 HUD, skin or RTX-geometry work. No game launch or new user runtime result is claimed.
 

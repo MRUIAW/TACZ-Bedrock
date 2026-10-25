@@ -13,7 +13,7 @@ float effectiveAdsTime(float gunSeconds, std::optional<float> cachedAds = {});
 bool fullyAimed(float progress);
 float magnificationToFov(float baseDegrees, float magnification);
 float aimingFov(float baseDegrees, float zoom, float progress);
-float aimingSensitivity(float baseDegrees, float zoom, float progress);
+float aimingSensitivity(float baseDegrees, float zoom, float progress, float screenDistance = 1.33f, float multiplier = 1.f);
 float movementModifier(pack::MoveSpeed const& speed, bool aiming, bool reloading);
 
 // Java SecondOrderDynamics: same k1/k2/k3, 0.05 simulation step, ~6 ms cadence,

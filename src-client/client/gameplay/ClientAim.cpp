@@ -14,6 +14,9 @@
 #include "mc/client/game/MinecraftGame.h"
 #include "mc/client/player/LocalPlayer.h"
 #include "mc/client/renderer/game/LevelRendererPlayer.h"
+#include "mc/client/entity/systems/ClientInputUpdateSystem.h"
+#include "mc/entity/components/MoveInputComponent.h"
+#include "mc/deps/ecs/gamerefs_entity/EntityContext.h"
 #include "mc/deps/core/math/Vec2.h"
 #include "client/gameplay/ClientShooter.h"
 #include "client/gameplay/ClientRecoil.h"
@@ -35,6 +38,9 @@ static_assert(std::is_same_v<decltype(&LocalPlayer::$setSprinting), void (LocalP
 std::atomic<bool> rightDown{false}, swallowed{false}, focusReset{false};
 std::atomic<unsigned> togglePresses{0};
 bool holdToAim = true; // read from our own config at enable, before callbacks install
+float screenDistance = 1.33f, sensitivityMultiplier = 1.f;
+std::atomic<uintptr_t> sprintInput{0}, sprintPlayer{0};
+bool sprintHooked = false, inputHooked = false;
 bool toggled = false, target = false, tickValid = false;
 bool loggedFull = false;
 float previous = 0, current = 0, adsSeconds = .2f;
@@ -99,9 +105,32 @@ LL_TYPE_INSTANCE_HOOK(AimSensitivityHook, ll::memory::HookPriority::Normal, Loca
     if (!state.world || !state.gun || state.player != reinterpret_cast<uintptr_t>(this)) { origin(delta); return; }
     float base;
     { std::lock_guard lock(cameraMutex); base = lastBaseFov; }
-    auto scale = model::aimingSensitivity(base, state.ironZoom, state.progress);
+    auto scale = model::aimingSensitivity(base, state.ironZoom, state.progress, screenDistance, sensitivityMultiplier);
     Vec2 applied{delta.x * scale, delta.z * scale};
     origin(applied);
+}
+using InputSignature = void (*)(MovementAbilitiesComponent const&, MobEffectsComponent const&, ActorDataFlagComponent const&,
+    ActorOwnerComponent&, MoveInputComponent&, Optional<PassengerComponent const>, Optional<WasInWaterFlagComponent const>);
+static_assert(std::is_same_v<decltype(&ClientInputUpdateSystem::inputHandlerUpdatePlayerState), InputSignature>);
+LL_STATIC_HOOK(AimSprintInput, ll::memory::HookPriority::Normal,
+    &ClientInputUpdateSystem::inputHandlerUpdatePlayerState, void,
+    MovementAbilitiesComponent const& abilities, MobEffectsComponent const& effects, ActorDataFlagComponent const& flags,
+    ActorOwnerComponent& actor, MoveInputComponent& input, Optional<PassengerComponent const> riding,
+    Optional<WasInWaterFlagComponent const> water) {
+    auto suppress = [&] {
+        if (!shooter::worldToken() || sprintInput.load() != reinterpret_cast<uintptr_t>(&input)) return;
+        input.mInputState->mFlagValues->set(static_cast<size_t>(MoveInputState::Flag::SprintDown),false);
+        input.mRawInputState->mFlagValues->set(static_cast<size_t>(MoveInputState::Flag::SprintDown),false);
+        input.mFlagValues->set(static_cast<size_t>(MoveInputComponent::Flag::Sprinting),false);
+    };
+    suppress();
+    origin(abilities,effects,flags,actor,input,riding,water);
+    suppress(); // covers double-tap sprint computed from forward movement
+}
+LL_TYPE_INSTANCE_HOOK(AimSprintState, ll::memory::HookPriority::Normal, LocalPlayer,
+    &LocalPlayer::$setSprinting, void, bool value) {
+    if (shooter::worldToken() && sprintPlayer.load() == reinterpret_cast<uintptr_t>(this)) value = false;
+    origin(value);
 }
 LL_TYPE_INSTANCE_HOOK(AimFocusHook, ll::memory::HookPriority::Normal, MinecraftGame,
     &MinecraftGame::$onAppFocusLost, void) {
@@ -151,7 +180,13 @@ void frame(IClientInstance& client, LocalPlayer& player, std::optional<pack::Res
         cameraWorld = 0;
         fovAt.reset(); // UI/put-away must not resurrect a previous zoom on re-entry
     }
-    if (target) player.setSprinting(false);
+    // Suppress both the extracted request AND attempts to re-enter sprint between frames.
+    auto reload = shooter::reloadState();
+    bool blockSprint = usable && (target || (gun::isReloading(reload) && !gun::isReloadFinishing(reload)));
+    sprintPlayer = blockSprint ? reinterpret_cast<uintptr_t>(&player) : 0;
+    auto input = player.getEntityContext().tryGetComponent<MoveInputComponent>();
+    sprintInput = blockSprint && input ? reinterpret_cast<uintptr_t>(&*input) : 0;
+    if (blockSprint) player.setSprinting(false);
     float progress = std::lerp(previous, current, std::clamp(client.getFrameAlpha(), 0.f, 1.f));
     float visual = view.update(progress, elapsed);
     if (progress >= 1 && !loggedFull && gun) {
@@ -184,6 +219,7 @@ Snapshot snapshot() {
     return published.world == world ? published : Snapshot{};
 }
 void clear() {
+    sprintInput = sprintPlayer = 0;
     rightDown = swallowed = false;
     togglePresses = 0;
     focusReset = false;
@@ -198,17 +234,25 @@ void clear() {
 void enable() {
     clear();
     holdToAim = true;
+    screenDistance = 1.33f; sensitivityMultiplier = 1.f;
     auto& mod = TaczMod::getInstance();
     try {
         auto path = mod.getSelf().getModDir() / "config" / "aim.json";
+        nlohmann::json config = nlohmann::json::object();
         if (std::ifstream input{path}; input) {
-            auto config = nlohmann::json::parse(input);
+            config = nlohmann::json::parse(input);
             holdToAim = config.value("hold_to_aim", true);
-        } else {
-            std::filesystem::create_directories(path.parent_path());
-            std::ofstream output{path};
-            output << "{\n  \"hold_to_aim\": true\n}\n";
+            screenDistance = config.value("screen_distance_coefficient",1.33f);
+            sensitivityMultiplier = config.value("zoom_sensitivity_base_multiplier",1.f);
         }
+        if (!std::isfinite(screenDistance) || screenDistance <= 0) screenDistance = 1.33f;
+        sensitivityMultiplier = std::isfinite(sensitivityMultiplier) ? std::clamp(sensitivityMultiplier,0.f,2.f) : 1.f;
+        config["hold_to_aim"] = holdToAim;
+        config["screen_distance_coefficient"] = screenDistance;
+        config["zoom_sensitivity_base_multiplier"] = sensitivityMultiplier;
+        std::filesystem::create_directories(path.parent_path());
+        std::ofstream output{path};
+        output << config.dump(2) << '\n'; // preserve unrelated user keys, migrate old config
     } catch (std::exception const& e) {
         holdToAim = true;
         mod.getSelf().getLogger().warn("[ads] config unavailable; hold-to-aim default: {}", e.what());
@@ -216,10 +260,16 @@ void enable() {
     fovHooked = AimFovHook::hook() == 0;
     turnHooked = AimSensitivityHook::hook() == 0;
     focusHooked = AimFocusHook::hook() == 0;
+    sprintHooked = AimSprintState::hook() == 0;
+    inputHooked = AimSprintInput::hook() == 0;
+    mod.getSelf().getLogger().info("[ads-input] sprintHooks={}/{} MDV={} zoomSensitivity={}",sprintHooked,inputHooked,screenDistance,sensitivityMultiplier);
     mod.getSelf().getLogger().info("[ads] holdToAim={} worldFovHook={} sensitivityHook={} focusHook={}",
         holdToAim, fovHooked, turnHooked, focusHooked);
 }
 void disable() {
+    if (inputHooked) AimSprintInput::unhook();
+    if (sprintHooked) AimSprintState::unhook();
+    inputHooked = sprintHooked = false;
     if (fovHooked) AimFovHook::unhook();
     if (turnHooked) AimSensitivityHook::unhook();
     if (focusHooked) AimFocusHook::unhook();

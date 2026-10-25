@@ -8,6 +8,72 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 Versioning rule for this project: the patch number goes up by 1 for each small item or test
 round, the minor number goes up by 1 for each finished feature or phase.
 
+## [0.3.15] - 2026-10-25
+
+### User-tested baseline
+
+- 0.3.13/0.3.14: right-click interception, hold/release ADS, smooth iron-sight placement,
+  world FOV zoom, lower aiming sensitivity, shooting animation, pitch clamp, switch/focus aim
+  reset and world switching passed. User confirmed RTX honors whole-gun ADS placement while
+  baked internal gun animation remains static (`docs/RTX-0.3.10.md`). Not an agent-run test.
+
+### Fixed / Added
+
+- Inverted recoil: runtime traces prove native turn negates pitch but preserves yaw, with
+  next-frame camera-to-actor copy. Map TACZ actor-angle deltas to `(-pitch,yaw)` native input;
+  preserve Java's yaw left/right convention. Remove misleading immediate-no-change warning;
+  add per-axis tests and one diagnostic summary per settled/cancelled burst, separating
+  intended/submitted/observed angle totals. Native clamps and ADS MDV bypass remain intact.
+- Model-only ADS FOV: 45 was already parsed correctly for AK47, but late Camera projection
+  stack edits had no established RenderDragon consumption. Use `inverse(Pnative)*Pmodel`
+  in the shared draw transform instead, mathematically the same clip-space projection,
+  increasing model size at 70 ->45 without changing world zoom. Keep Java's existing inverse
+  sight transform; add origin clip-coordinate and optical-axis NDC diagnostics, no guessed
+  hand offset. Native per-pass projection and lighting/RTX equivalence still need validation.
+- `constraint`: reference translation *16, positive-degree rotation coefficients, component
+  max blending and model-dependent transition recovery. Ancestor translation/rotation path
+  excludes the constraint's own coefficient channels/scales; apply weighted Rx/Ry/Rz and
+  direction-basis translation compensation AFTER ADS on the common gun/arm matrix.
+- `camera`: quaternion (x,y,-z), log-space blend and uncapped sqrt(zoom) ADS multiplier.
+  Apply visual-only pitch/yaw/roll before native Camera view-dependency calculation scoped to
+  typed setupCamera; native inverse-view/axes/frustum follow. Apply matching hand quaternion;
+  Bob View gates both. No player rotation/turn/input packet or persistent camera-ECS write.
+  Signature checks and runtime consumer/retained-view diagnostics do not claim a GPU result.
+- Aimed reload follows Java: keep aim/FOV and the ordinary tactical/empty/xmag clip; no separate
+  aim-reload variant exists in AK47. The new ADS constraint compensates the hip-pose movement.
+- Sprint re-entry: clear local sprint input/flags before/after native client input processing
+  and block native setSprinting(true) for that exact live owner during aim/non-finishing reload.
+  This fixes the request source rather than repeatedly clearing sprint only after each frame.
+- Migrate aim.json preserving unrelated keys: `screen_distance_coefficient=1.33` and
+  `zoom_sensitivity_base_multiplier=1.0` (clamped 0–2) in the requested MDV formula.
+- Safely skip only vanilla HudCursorRenderer while ADS progress>.9 (unless show_crosshair),
+  state-machine hideCrossHair or reload; custom HUD/crosshair/hit marker remains deferred.
+- Z-fighting investigation: independent TACZ-formula tests for 25 suspect cover/chamber cubes
+  agree on vertices/face/UV order, including rotated helper pivots and inflate. Read-only
+  `scripts/analyze-ak47-geometry.py` finds source coplanar/near-coplanar overlapping faces;
+  cover2 slope gaps can be ~7.54e-8 blocks. Do not edit source cubes speculatively.
+- Integrated-world `/tacz rdebug freeze <0|1>` freezes the published pose/common transform;
+  `/tacz rdebug depth <0|1|2>` compares native vs model-only .05/16 and .10/16 depth mappings.
+  Default 0, no shared depth clear/material mutation. Log native projection/near/far and
+  material descriptor depth func/write/bias for runtime comparison; GPU state remains unknown.
+
+### Validation
+
+- Server and client release builds passed; **126 tests / 46,949 assertions** passed with no
+  skips, `git diff --check` passed. Deployed `0.3.15 / client`; DLL/PDB/manifest hashes and
+  all 4 resource-pack / 2 behavior-pack files match the final output/source.
+- Final build/test/deploy records, source evidence, decisions and eight-part regression plan:
+  `docs/ADS-CAMERA-0.3.15.md`. No 0.3.15 game launch/acceptance result claimed.
+
+### Not yet
+
+- Z-fighting's exact GPU/material/depth cause or a cause-level cure. Source overlaps are proven,
+  but Java stability vs Bedrock flicker is not explained conclusively. Dedicated render-pass,
+  GPU capture and mesh-once/bone-matrix work are deferred to planned **0.3.19**.
+- RTX baked internal animation, pixel-copy skin fix, custom HUD/hit marker, attachments/crawl,
+  scopes and verified touch/controller/VR/custom camera support. Camera hook consumption,
+  Lamium detached camera coexistence and model projection semantics need in-game acceptance.
+
 ## [0.3.14] - 2026-10-25
 
 ### Added

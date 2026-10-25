@@ -28,6 +28,7 @@ public:
     Controller& operator=(Controller const&) = delete;
 
     void setTime(double now);
+    void setInitialPose(Pose pose); // listener initialValue for model-dependent recovery
     int addTrackLine();
     void ensureTrackLineSize(int size);
     int getTrackLineSize() const;

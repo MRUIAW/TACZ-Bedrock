@@ -390,6 +390,7 @@ GunDisplay parseGunDisplay(nlohmann::json const& j) {
     read(j, "use_default_animation", display.useDefaultAnimation);
     read(j, "iron_zoom", display.ironZoom);
     read(j, "zoom_model_fov", display.zoomModelFov);
+    read(j, "show_crosshair", display.showCrosshair);
     read(j, "enable_transparency", display.enableTransparency);
     if (auto* sounds = object(j, "sounds")) {
         for (auto const& [key, value] : sounds->items()) {

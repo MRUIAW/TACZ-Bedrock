@@ -48,6 +48,7 @@ struct Runner {
     bool transitioning = false;
     double transitionTime = 0, transitionProgress = 0;
     Pose from, recover;
+    Pose const* initial = nullptr;
 
     void hold() { progress = clip->duration + 1e-9; running = false; holding = true; stopped = false; }
     void stop() { progress = clip->duration + 2e-9; running = false; holding = false; stopped = true; }
@@ -78,7 +79,12 @@ struct Runner {
                 BonePose copy = b;
                 for (auto t : {ChannelType::Translation, ChannelType::Rotation, ChannelType::Scale}) {
                     if (auto const& a = value(copy, t)) {
-                        value(pose[name], t) = interpolate(*a, glm::vec3(t == ChannelType::Scale ? 1.f : 0.f), t, alpha);
+                        glm::vec3 end(t == ChannelType::Scale ? 1.f : 0.f);
+                        if (initial) if (auto it = initial->find(name); it != initial->end()) {
+                            BonePose defaults = it->second;
+                            if (auto v = value(defaults,t)) end = *v;
+                        }
+                        value(pose[name], t) = interpolate(*a, end, t, alpha);
                     }
                 }
             }
@@ -158,6 +164,7 @@ struct Controller::Impl {
     AnimationFile const& animations;
     SoundFn sounds;
     double now = 0;
+    Pose initial;
     std::vector<std::vector<int>> lines;
     std::vector<std::unique_ptr<Runner>> tracks;
     std::vector<bool> blending;
@@ -179,6 +186,7 @@ void Controller::setTime(double now) {
     if (!std::isfinite(now)) throw std::invalid_argument("animation clock");
     mImpl->now = now;
 }
+void Controller::setInitialPose(Pose pose) { mImpl->initial = std::move(pose); }
 int Controller::addTrackLine() { int line = getTrackLineSize(); ensureTrackLineSize(line+1); return line; }
 void Controller::ensureTrackLineSize(int size) {
     if (size < 0 || size > 64) throw std::out_of_range("animation line limit (64)");
@@ -220,6 +228,7 @@ void Controller::runAnimation(std::string const& name, int track, bool blend, Pl
     if (it == mImpl->animations.end()) return; // TACZ silently ignores missing prototypes
     if (!std::isfinite(transition)) throw std::invalid_argument("animation transition time");
     auto runner = std::make_unique<Runner>();
+    runner->initial = &mImpl->initial;
     runner->name = name;
     runner->clip = &it->second;
     runner->type = type;

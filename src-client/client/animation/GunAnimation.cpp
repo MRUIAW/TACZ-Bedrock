@@ -27,6 +27,9 @@
 #include "lua/AnimationStateMachine.h"
 #include "gun/DrawRules.h"
 #include "model/WalkDistance.h"
+#include "model/FunctionalBones.h"
+#include "pack/GunPackParser.h"
+#include "debug/RenderDebug.h"
 #include "mod/TaczMod.h"
 #include "nbt/AmmoItem.h"
 #include "nbt/GunItem.h"
@@ -54,6 +57,9 @@ struct Session {
     std::unique_ptr<lua::AnimationStateMachine> machine;
     bool loggedHidden = false;
     bool loggedShell = false;
+    uintptr_t renderClient = 0;
+    bool cameraAllowed = false;
+    float cameraZoom = 1;
     std::string measuredTrack;
     double measuredPhase = 0, measuredAt = 0;
     float measuredWalk = 0;
@@ -120,6 +126,12 @@ void refresh() {
     if (!player) return;
     auto gun = hand.puttingAway ? session->itemState : nbt::readGun(player->getSelectedItem());
     if (!gun || gun->gunId != currentGun) return;
+    session->renderClient = reinterpret_cast<uintptr_t>(&*client);
+    session->cameraAllowed = client->getScreenName().starts_with("hud_screen") && player->isAlive() && !player->isSpectator();
+    if (session->entry->index.display) {
+        auto const* display = TaczMod::getInstance().gunPacks().gunDisplay(*session->entry->index.display);
+        session->cameraZoom = display ? display->ironZoom : 1;
+    }
     auto& c = session->context;
     auto const& data = session->entry->data;
     c.ammo = gun->ammo;
@@ -231,6 +243,13 @@ void reveal() {
         packs, *session->clips, script, session->context,
         [](auto const& msg) { logger().warn("{}", msg); }, playSounds
     );
+    // Listener recovery depends on the actual constraint pivot, not a universal zero.
+    try {
+        if (display->model) if (auto text = packs.readFile(pack::assetPath(*display->model,"geo_models",".json"))) {
+            auto geometry = model::parseGeoModel(pack::parseJsonText(*text));
+            session->machine->controller().setInitialPose(model::functionalInitialPose(geometry));
+        }
+    } catch (std::exception const& e) { logger().warn("[anim] functional-bone recovery defaults unavailable: {}",e.what()); }
     session->machine->initialize(nowSeconds());
     session->machine->trigger("draw");
     sound::playGunSound(*gun, "draw", 1.f, 1.f, true);
@@ -305,7 +324,7 @@ void update() {
         } else session->measuredTrack.clear();
         auto& c = session->context;
         if (c.hideCrossHair != session->loggedHidden) {
-            logger().info("[anim] shouldHideCrossHair={} (stored; crosshair rendering deferred)", c.hideCrossHair);
+            logger().info("[anim] shouldHideCrossHair={}", c.hideCrossHair);
             session->loggedHidden = c.hideCrossHair;
         }
         if (!c.shells.empty()) {
@@ -314,10 +333,14 @@ void update() {
             c.shells.clear();
         }
     }
-    pose.erase("camera");
-    pose.erase("constraint");
     std::lock_guard lock(mutex);
     ++published.frame;
+    published.hideCrosshair = session && session->context.hideCrossHair;
+    published.client = session ? session->renderClient : 0;
+    published.cameraAllowed = session && session->cameraAllowed;
+    published.cameraAim = session ? session->context.aimingProgress : 0;
+    published.cameraZoom = session ? session->cameraZoom : 1;
+    if (debug::freezePose && currentGun == publishedGun && published.world == world) return;
     if (pose != published.pose || currentGun != publishedGun || hand.puttingAway != published.puttingAway || published.world != world) {
         published.world = world;
         published.gun = currentGun;

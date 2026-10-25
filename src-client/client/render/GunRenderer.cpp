@@ -17,6 +17,7 @@
 #include "ll/api/memory/Hook.h"
 
 #include "mc/client/game/IClientInstance.h"
+#include "mc/client/options/IOptionRegistry.h"
 #include "mc/common/Globals.h"
 #include "mc/deps/minecraft_renderer/framebuilder/FrameBuilder.h"
 #include "mc/deps/minecraft_renderer/renderer/BedrockTextureData.h"
@@ -37,6 +38,7 @@
 #include "mc/deps/core/math/Matrix.h"
 #include "mc/deps/core/resource/ResourceFileSystem.h"
 #include "mc/deps/core/resource/ResourceLocation.h"
+#include "mc/deps/core/renderer/RenderMaterialInfo.h"
 #include "mc/deps/core/string/HashedString.h"
 #include "mc/deps/core_graphics/ImageBuffer.h"
 #include "mc/deps/core_graphics/TextureSetLayerType.h"
@@ -44,6 +46,7 @@
 #include "mc/deps/minecraft_renderer/game/ItemContextFlags.h"
 #include "mc/deps/minecraft_renderer/renderer/BedrockTexture.h"
 #include "mc/deps/minecraft_renderer/renderer/MaterialPtr.h"
+#include "mc/deps/minecraft_renderer/renderer/RenderMaterial.h"
 #include "mc/deps/minecraft_renderer/renderer/Mesh.h"
 #include "mc/deps/minecraft_renderer/renderer/MeshData.h"
 #include "mc/deps/minecraft_renderer/renderer/TexturePtr.h"
@@ -80,6 +83,8 @@
 #include "model/GunModelRules.h"
 #include "model/RenderResourceKey.h"
 #include "model/Aiming.h"
+#include "model/FunctionalBones.h"
+#include "client/render/CameraBones.h"
 #include "mod/TaczMod.h"
 #include "nbt/GunNbt.h"
 #include "pack/GunPackParser.h"
@@ -101,6 +106,8 @@ struct GunVisual {
     glm::mat4                         idleView{1}, ironView{1};
     model::AimDynamics                modelFov{.5f, 1.2f, .5f};
     std::optional<std::chrono::steady_clock::time_point> modelFovAt;
+    bool frozen = false;
+    bool loggedAimProjection = false;
     std::vector<model::Vertex>        vertices; // baked rest pose, kept to rebuild the mesh
     model::GeoModel                   model;
     ArmPaths                          armPaths;
@@ -441,7 +448,8 @@ bool drawGun(ItemInHandRenderer& renderer, BaseActorRenderContext& context) {
     auto&       camera        = screen.camera;
 
     int revision = debug::renderRevision;
-    if (revision != loggedRevision) {
+    bool debugChanged = revision != loggedRevision;
+    if (debugChanged) {
         loggedRevision = revision;
         logger().info(
             "Gun render: material {} ({}, {}), two-sided {}, first-person flag {}",
@@ -463,6 +471,13 @@ bool drawGun(ItemInHandRenderer& renderer, BaseActorRenderContext& context) {
         logger().info("World {}", str(camera.worldMatrixStack->stack->back()._m.get()));
         logger().info("Proj {}", str(camera.projectionMatrixStack->stack->back()._m.get()));
         logger().info("Gun transform {}", str(visual->transform));
+        auto const* info = mat ? mat->mRenderMaterialInfoPtr.get() : nullptr;
+        auto const* material = info ? info->mPtr.get() : nullptr;
+        if (material) logger().info("[gun-depth] material={} test={} func={} writeMask={} bias={} slopeBias={} cameraNear={} cameraFar={} (legacy descriptor; GPU pipeline may override)",
+            material->mFullMaterialName.get(),material->depthStencilStateDescription->depthTestEnabled,
+            static_cast<int>(material->depthStencilStateDescription->depthFunc),
+            static_cast<int>(material->depthStencilStateDescription->depthWriteMask),
+            material->mDepthBias,material->mSlopeScaledDepthBias,camera.mZNear,camera.mZFar);
     }
     if (!mat) return true; // keep vanilla hidden so a missing material is obvious in game
 
@@ -497,24 +512,42 @@ bool drawGun(ItemInHandRenderer& renderer, BaseActorRenderContext& context) {
     bool sameAimGun = !pose.puttingAway && aiming.world == session && aiming.gun == gunId;
     auto progress = sameAimGun ? aiming.progress : 0.f;
     auto viewProgress = sameAimGun ? aiming.viewProgress : 0.f;
-    visual->transform = model::firstPersonAimTransform(visual->idleView, visual->ironView, viewProgress);
-    // The gun and arms share our existing first-person pass, not the world's projection.
-    // Push/restore even when a draw throws; preserve aspect/depth/off-centre projection terms.
-    auto projection = camera.projectionMatrixStack->push(false);
-    struct ProjectionScope {
-        MatrixStack::MatrixStackRef& value;
-        ~ProjectionScope() { pop(value); }
-    } projectionScope{projection};
-    projection.stack->_isDirty = true;
-    auto baseModelFov = model::projectionFov(projection.mat->_m.get());
+    auto placement = model::firstPersonAimTransform(visual->idleView, visual->ironView, viewProgress);
+    placement = model::applyConstraint(placement,model::constraintTransform(visual->model,pose.pose),viewProgress);
+    glm::quat cameraRotation{1,0,0,0};
+    if (auto it = pose.pose.find("camera"); client.getOptions().getBobView() && it != pose.pose.end() && it->second.rotation)
+        cameraRotation = model::scaledCameraRotation(model::cameraBoneRotation(*it->second.rotation),progress,sameAimGun ? aiming.ironZoom : 1.f);
+    auto nativeProjection = camera.projectionMatrixStack->top()._m.get();
+    auto baseModelFov = model::projectionFov(nativeProjection);
+    float fov = baseModelFov;
     if (baseModelFov > 0) {
         auto now = std::chrono::steady_clock::now();
         if (!visual->modelFovAt || now - *visual->modelFovAt > std::chrono::seconds(1)) visual->modelFov.reset(baseModelFov);
         double dt = visual->modelFovAt ? std::chrono::duration<double>(now - *visual->modelFovAt).count() : 0;
         auto desired = std::lerp(baseModelFov, sameAimGun ? aiming.zoomModelFov : baseModelFov, progress);
-        auto fov = visual->modelFov.update(desired, dt);
+        fov = visual->modelFov.update(desired, dt);
         visual->modelFovAt = now;
-        projection.mat->_m = model::withModelFov(projection.mat->_m.get(), fov);
+    }
+    // RenderDragon may already have captured the projection for this pass. A temporary
+    // Camera stack edit need not reach renderMesh. P_native * correction == P_model;
+    // place the correction in the consumed per-draw transform (also honored by RTX).
+    auto transform = model::modelProjectionTransform(nativeProjection,fov,debug::gunDepthMode)
+        * glm::mat4_cast(cameraRotation) * placement;
+    if (!debug::freezePose || !visual->frozen) visual->transform = transform;
+    visual->frozen = debug::freezePose;
+    if (progress < .9f) visual->loggedAimProjection = false;
+    if ((progress >= .999f && !visual->loggedAimProjection) || debugChanged) {
+        auto mv = camera.viewMatrixStack->top()._m.get()*camera.worldMatrixStack->top()._m.get()*visual->transform;
+        auto ndc = model::sightProjection(visual->model,pose.pose,mv,nativeProjection);
+        glm::mat4 sight(1);
+        for (int i : visual->model.path(visual->model.find("iron_view"))) {
+            auto it = pose.pose.find(visual->model.bones[i].name);
+            sight *= model::partTransform(visual->model.bones[i],it == pose.pose.end() ? nullptr : &it->second);
+        }
+        auto clip = nativeProjection*mv*sight*glm::vec4(0,0,0,1);
+        logger().info("[ads-projection] world={} nativeFov={:.3f} targetFov={:.3f} modelFov={:.3f} viewProgress={:.4f} ironOriginClip=({:.6f},{:.6f},{:.6f},{:.6f}) sightAxisNDC=({:.6f},{:.6f}) depthMode={} freeze={} nativeP22={:.9g} nativeP32={:.9g} projectionViaModel=true",
+            session,baseModelFov,sameAimGun ? aiming.zoomModelFov : baseModelFov,fov,viewProgress,clip.x,clip.y,clip.z,clip.w,ndc.x,ndc.y,debug::gunDepthMode.load(),debug::freezePose.load(),nativeProjection[2][2],nativeProjection[3][2]);
+        visual->loggedAimProjection = true;
     }
     auto world            = camera.worldMatrixStack->push(false);
     world.stack->_isDirty = true;
@@ -568,12 +601,14 @@ bool hooked = false;
 } // namespace
 
 void enable() {
+    enableCameraBones();
     enableSkinTextureSource(); // idempotent, including mod re-enable
     hooked = FirstPersonGunHook::hook() == 0;
     if (!hooked) logger().warn("Cannot hook first-person rendering; guns will look like their vanilla item");
 }
 
 void disable() {
+    disableCameraBones();
     disableSkinTextureSource();
     if (hooked) FirstPersonGunHook::unhook();
     hooked = false;

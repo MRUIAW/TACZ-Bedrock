@@ -31,6 +31,9 @@ static_assert(std::is_same_v<decltype(&MinecraftGame::$onAppFocusLost), FocusSig
 static_assert(std::is_same_v<decltype(&MinecraftGame::$onAppFocusGained), FocusSignature>);
 
 model::CameraRecoil camera;
+model::RecoilDelta burstLook{}, burstTurn{}, burstObserved{};
+uint64_t burstShots = 0;
+double lastShotMs = 0;
 std::atomic<bool> focused{true}, cancellation{false};
 uint64_t ownerWorld = 0, statsWorld = 0, shots = 0, steps = 0;
 uintptr_t ownerClient = 0, ownerPlayer = 0;
@@ -41,6 +44,12 @@ bool lostHooked = false, gainedHooked = false;
 thread_local LocalPlayer const* programmaticPlayer = nullptr;
 
 ll::io::Logger& logger() { return TaczMod::getInstance().getSelf().getLogger(); }
+void finishBurst(char const* reason) {
+    if (!burstShots) return;
+    logger().info("[recoil-burst] world={} shots={} lookSum=({:.6f},{:.6f}) nativeTurnSum=({:.6f},{:.6f}) observedActorSum=({:.6f},{:.6f}) reason={} (observed includes mouse/clamp/corrections; turn is submitted)",
+        ownerWorld, burstShots, burstLook.pitch, burstLook.yaw, burstTurn.pitch, burstTurn.yaw, burstObserved.pitch, burstObserved.yaw, reason);
+    burstShots = 0; burstLook = {}; burstTurn = {}; burstObserved = {}; lastObserved.reset();
+}
 
 // No client/player/world queries in app/menu callbacks. Invalidation is consumed on the
 // existing game frame thread, and nothing resumes an old recoil tail after focus returns.
@@ -61,6 +70,7 @@ LL_TYPE_INSTANCE_HOOK(RecoilFocusGained, ll::memory::HookPriority::Normal, Minec
 bool isApplyingTurn(LocalPlayer const& player) { return programmaticPlayer == &player; }
 void requestClear() { cancellation = true; }
 void clear() {
+    finishBurst("cancel/clear");
     camera.clear();
     ownerWorld = 0;
     ownerClient = ownerPlayer = 0;
@@ -84,6 +94,9 @@ void shot(pack::GunRecoil const& data, pack::ResourceId const& gun, int64_t trig
             logger().warn("[recoil] {} {} disabled: {}", gun.toString(), axis, error);
     }
     ++shots;
+    if (nowMs()-lastShotMs > 750) finishBurst("gap");
+    lastShotMs = nowMs();
+    ++burstShots;
     if (shots <= 8) logger().info(
         "[recoil-shot] world={} shot={} gun={} triggerTs={} burstRound={} aim={:.3f} ironZoom={:.3f} modifier={:.5f} pitchEndMs={:.1f} yawEndMs={:.1f} pitch30={:.5f} yaw30={:.5f} replacedActive={}",
         world, shots, gun.toString(), triggerTimestamp, burstRound, aiming.progress, aiming.ironZoom, modifier,
@@ -100,7 +113,7 @@ void update(IClientInstance& client, LocalPlayer& player) {
     auto world = shooter::worldToken();
     if (cancellation.exchange(false)) clear();
     if (!world || !focused.load()) { clear(); return; }
-    if (!camera.active()) return;
+    if (!camera.active() && !burstShots) return;
     // The caller has already validated the joined-client identity. Retain no native owner;
     // exact world/client/player and selected gun identities are checked again per frame.
     auto aiming = aim::snapshot();
@@ -113,12 +126,19 @@ void update(IClientInstance& client, LocalPlayer& player) {
     auto const& before = player.getRotation();
     float pitchBefore = before.x, yawBefore = before.z;
     if (!std::isfinite(pitchBefore) || !std::isfinite(yawBefore)) { clear(); return; }
+    if (lastObserved) {
+        burstObserved.pitch += pitchBefore-lastObserved->x;
+        burstObserved.yaw += std::remainder(yawBefore-lastObserved->y,360.f);
+    }
+    lastObserved = glm::vec2(pitchBefore,yawBefore);
+    if (!camera.active()) { if (nowMs()-lastShotMs > 750) finishBurst("settled"); return; }
     auto delta = camera.update(nowMs());
     if (delta.pitch == 0 && delta.yaw == 0) return;
     if (!std::isfinite(delta.pitch) || !std::isfinite(delta.yaw)) { clear(); return; }
     // This is a real local look turn, not a transient projection/view-matrix camera shake.
     // No copy of an ItemStack and no fabricated movement/PlayerAuthInput packet is needed.
-    auto pitchTurn = static_cast<float>(delta.pitch), yawTurn = static_cast<float>(delta.yaw);
+    auto turn = model::bedrockRecoilTurn(delta);
+    auto pitchTurn = static_cast<float>(turn.pitch), yawTurn = static_cast<float>(turn.yaw);
     if (!std::isfinite(pitchTurn) || !std::isfinite(yawTurn)) { clear(); return; }
     struct TurnScope {
         LocalPlayer const* previous;
@@ -129,10 +149,11 @@ void update(IClientInstance& client, LocalPlayer& player) {
         TurnScope unscaled{player};
         player._applyTurnDelta(Vec2{pitchTurn, yawTurn});
     }
+    burstLook.pitch += delta.pitch; burstLook.yaw += delta.yaw;
+    burstTurn.pitch += turn.pitch; burstTurn.yaw += turn.yaw;
     auto const& after = player.getRotation();
-    if (steps == 0 && after.x == pitchBefore && after.z == yawBefore && std::abs(pitchBefore) < 85
-        && std::hypot(delta.pitch, delta.yaw) > .0001)
-        logger().warn("[recoil-look] native turn returned without an immediate actor-rotation change; check detached camera/mod input paths in the runtime trace");
+    // Native camera look is copied to actor rotation NEXT frame (confirmed by 0.3.14
+    // traces). An unchanged immediate actor is not evidence that the turn failed.
     if (++steps <= 12) logger().info(
         "[recoil-look] world={} shot={} frameStep={} requested=({:.6f},{:.6f}) before=({:.6f},{:.6f}) after=({:.6f},{:.6f}) previousObserved=({:.6f},{:.6f}) mdvBypassed=true native-turn=true (degrees; other input/corrections may also change rotation)",
         world, shots, steps, delta.pitch, delta.yaw, pitchBefore, yawBefore, after.x, after.z,

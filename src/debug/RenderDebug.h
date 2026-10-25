@@ -13,6 +13,9 @@ inline std::atomic<int> gunMaterial{6};
 // Draw every quad with both windings, to rule out back-face culling. Off by default: the
 // 0.2.3 test showed no missing faces with single-sided quads.
 inline std::atomic<bool> gunTwoSided{false};
+inline std::atomic<bool> freezePose{false};
+// 0 native depth; 1 isolated GL-style .05..16; 2 isolated .10..16. Diagnostic only.
+inline std::atomic<int> gunDepthMode{0};
 
 // Bumped whenever a setting changes so the renderer logs its state once more.
 inline std::atomic<int> renderRevision{0};

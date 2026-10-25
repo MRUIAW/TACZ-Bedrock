@@ -33,6 +33,9 @@ float cameraRecoilModifier(float aimProgress, float zoom, float crawl = 1.f, flo
 struct RecoilDelta {
     double pitch = 0, yaw = 0; // actual look delta: -(curve value - previous sample), degrees
 };
+// Native _applyTurnDelta negates pitch but preserves yaw when converting look input
+// to camera rotation. Actor rotation is updated on the following native frame.
+RecoilDelta bedrockRecoilTurn(RecoilDelta javaLookDelta);
 
 // CameraSetupEvent has ONE current pair of curves. A new shot replaces the previous pair
 // and zeroes previous samples; it does NOT undo the rotation already applied or sum tails.

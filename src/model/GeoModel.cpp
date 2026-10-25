@@ -256,14 +256,14 @@ GeoModel parseGeoModel(json const& j) {
 }
 
 glm::mat4 partTransform(Bone const& bone, animation::BonePose const* pose) {
-    glm::vec3 offset = pose && pose->translation ? *pose->translation * glm::vec3{1, -1, 1} : glm::vec3{0};
+    glm::vec3 offset = bone.name != "constraint" && pose && pose->translation ? *pose->translation * glm::vec3{1, -1, 1} : glm::vec3{0};
     glm::mat4 m = glm::translate(glm::mat4(1.0f), offset + bone.pivot / 16.0f);
     if (bone.rotation.z != 0) m = glm::rotate(m, bone.rotation.z, {0, 0, 1});
     if (bone.rotation.y != 0) m = glm::rotate(m, bone.rotation.y, {0, 1, 0});
     if (bone.rotation.x != 0) m = glm::rotate(m, bone.rotation.x, {1, 0, 0});
     // BedrockPart: rest rotation, then additionalQuaternion (MathUtil.toQuaternion),
     // then scale. In particular this is NOT Rz(rest.z + animation.z) * ... .
-    if (pose && pose->rotation) {
+    if (bone.name != "camera" && bone.name != "constraint" && pose && pose->rotation) {
         auto r = *pose->rotation;
         m = glm::rotate(m, r.z, {0, 0, 1});
         m = glm::rotate(m, r.y, {0, 1, 0});

@@ -3,6 +3,19 @@
 Status (2026-10-25): parked by user decision. The historical analysis below predates the
 separate 0.3.11 arms work (`ARMS-0.3.11.md`); that release does not claim an RTX fix.
 
+## 0.3.13 / 0.3.14 user acceptance follow-up
+
+The user subsequently confirmed that **RTX honors the whole-gun ADS placement matrix**:
+the gun moves smoothly to iron_view with right-click aim. Baked internal gun animation
+still does not update in RTX. Together with the animated matrix-driven arms above, this
+narrows the unresolved problem to the baked-geometry/backend path rather than all gun
+transforms. It does not identify the BLAS/cache key or prove the reason for z-fighting.
+0.3.15 uses model-only matrix projection equivalence and constraint compensation; neither
+is an RTX geometry-cache fix. The planned mesh-once/bone-matrix render rework is **0.3.19**
+under the latest batch plan, and should revisit both cached geometry and precision/depth.
+
+These are user test results on 0.3.13/0.3.14, not an agent-run 0.3.15 acceptance test.
+
 ## 0.3.11 runtime follow-up: arms animate, gun remains static
 
 User tested RTX off/on after the implementation below: first-person arms correctly follow

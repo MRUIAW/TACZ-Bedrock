@@ -32,11 +32,14 @@ float aimingFov(float baseDegrees, float zoom, float progress) {
     if (!std::isfinite(zoom) || zoom <= 0) zoom = 1;
     return magnificationToFov(baseDegrees, 1.f + (zoom - 1.f) * progressValue(progress));
 }
-float aimingSensitivity(float baseDegrees, float zoom, float progress) {
+float aimingSensitivity(float baseDegrees, float zoom, float progress, float screenDistance, float multiplier) {
     if (!validFov(baseDegrees)) return 1;
     auto current = aimingFov(baseDegrees, zoom, progress);
-    return std::atan(std::tan(glm::radians(current) / 2.f) * 1.33f)
-        / std::atan(std::tan(glm::radians(baseDegrees) / 2.f) * 1.33f);
+    if (!std::isfinite(screenDistance) || screenDistance <= 0) screenDistance = 1.33f;
+    multiplier = std::isfinite(multiplier) ? std::clamp(multiplier, 0.f, 2.f) : 1.f;
+    return std::atan(std::tan(glm::radians(current) / 2.f) * screenDistance)
+        / std::atan(std::tan(glm::radians(baseDegrees) / 2.f) * screenDistance)
+        * (1 + (multiplier - 1) * progressValue(progress));
 }
 float movementModifier(pack::MoveSpeed const& speed, bool aiming, bool reloading) {
     auto amount = reloading ? speed.reload : aiming ? speed.aim : speed.base;

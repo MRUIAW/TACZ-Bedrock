@@ -49,6 +49,7 @@ struct RenderDebugParams {
     int material;
     int twoSided;
 };
+struct RenderToggleParams { int value; };
 
 struct BulletDebugParams {
     int   moveMode;
@@ -104,6 +105,22 @@ void registerCommands() {
             output.success("Animation request sent");
         });
     // /tacz rdebug <material> <twoSided> : first-person gun render diagnostics
+    command.overload<RenderToggleParams>().text("rdebug").text("freeze").required("value")
+        .execute([](CommandOrigin const& origin, CommandOutput& output, RenderToggleParams const& params) {
+            if (params.value < 0 || params.value > 1) return output.error("freeze: 0 or 1");
+            debug::freezePose = params.value != 0;
+            ++debug::renderRevision;
+            if (auto* player = originPlayer(origin)) player->sendMessage("[TACZ] freeze=" + std::to_string(params.value) + " (integrated client only)");
+            output.success("Render pose freeze changed");
+        });
+    command.overload<RenderToggleParams>().text("rdebug").text("depth").required("value")
+        .execute([](CommandOrigin const& origin, CommandOutput& output, RenderToggleParams const& params) {
+            if (params.value < 0 || params.value > 2) return output.error("depth: 0 native, 1 near=.05 far=16, 2 near=.10 far=16");
+            debug::gunDepthMode = params.value;
+            ++debug::renderRevision;
+            if (auto* player = originPlayer(origin)) player->sendMessage("[TACZ] depth=" + std::to_string(params.value) + " (integrated client only; no world depth clear)");
+            output.success("Render depth diagnostic changed");
+        });
     command.overload<RenderDebugParams>()
         .text("rdebug")
         .required("material")

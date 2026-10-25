@@ -28,6 +28,10 @@ struct Snapshot {
     uint64_t world = 0;
     std::optional<pack::ResourceId> gun;
     bool puttingAway = false;
+    bool hideCrosshair = false;
+    uintptr_t client = 0; // comparison-only render owner, also while keeping put-away item
+    bool cameraAllowed = false;
+    float cameraAim = 0, cameraZoom = 1;
     animation::Pose pose;
     uint64_t        revision = 0;
 };
