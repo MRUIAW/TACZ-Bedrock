@@ -17,7 +17,6 @@ struct Snapshot {
     float progress = 0, viewProgress = 0, ironZoom = 1, zoomModelFov = 70;
 };
 void enable();
-bool cameraBonesEnabled(); // immutable enable-time config, independent of walking Bob View
 void disable();
 void clear();
 // Input thread writes atomics only. Return true when vanilla use/place must be swallowed.

@@ -539,7 +539,7 @@ bool drawGun(ItemInHandRenderer& renderer, BaseActorRenderContext& context) {
     auto placement = model::firstPersonAimTransform(visual->idleView, visual->ironView, viewProgress);
     placement = model::applyConstraint(placement,model::constraintTransform(visual->model,pose.pose),viewProgress);
     glm::quat cameraRotation{1,0,0,0};
-    if (auto it = pose.pose.find("camera"); aim::cameraBonesEnabled() && it != pose.pose.end() && it->second.rotation)
+    if (auto it = pose.pose.find("camera"); cameraBonesEnabled(client) && it != pose.pose.end() && it->second.rotation)
         cameraRotation = model::scaledCameraRotation(model::cameraBoneRotation(*it->second.rotation),progress,sameAimGun ? aiming.ironZoom : 1.f);
     auto nativeProjection = camera.projectionMatrixStack->top()._m.get();
     auto baseModelFov = model::projectionFov(nativeProjection);

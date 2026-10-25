@@ -6,11 +6,15 @@
 #include <chrono>
 #include <cmath>
 #include <utility>
+#include <atomic>
+#include <vector>
+#include <string>
 #include "ll/api/memory/Hook.h"
 #include "ll/api/io/Logger.h"
 #include "mc/client/renderer/game/LevelRendererPlayer.h"
 #include "mc/client/game/IClientInstance.h"
 #include "mc/client/options/IOptionRegistry.h"
+#include "mc/options/option_types/Option.h"
 #include "mc/client/gui/controls/renderers/HudCursorRenderer.h"
 #include "mc/client/gui/screens/InGamePlayScreen.h"
 #include "mc/client/player/LocalPlayer.h"
@@ -37,6 +41,9 @@ static_assert(std::is_same_v<decltype(&LevelRendererPlayer::setupCamera),Setup>)
 static_assert(std::is_same_v<decltype(&InGamePlayScreen::$_renderLevelPrep),Prep>);
 static_assert(std::is_same_v<decltype(&InGamePlayScreen::$render),Render>);
 static_assert(std::is_same_v<decltype(&HudCursorRenderer::$render),Cursor>);
+using SaveOption=void (Option::*)(std::vector<std::pair<std::string,std::string>>&);
+static_assert(std::is_same_v<decltype(static_cast<SaveOption>(&Option::save)),SaveOption>);
+static_assert(std::is_same_v<std::underlying_type_t<OptionID>,int>);
 static_assert(entt::type_hash<MinecraftCamera::CameraComponent>::value() == 0x4f6047c7u);
 static_assert(entt::type_hash<MinecraftCamera::RenderCameraComponent>::value() == 0x119e772bu);
 bool setupHooked = false, prepHooked = false, renderHooked = false, cursorHooked = false;
@@ -75,7 +82,7 @@ struct RenderScope {
     }
     ~RenderScope() { restore(); renderScope = previous; }
 };
-void report(uint64_t world, bool bob, glm::vec3 angles) {
+void report(uint64_t world, bool bob, bool shake, glm::vec3 angles) {
     using Clock=std::chrono::steady_clock;
     static uint64_t lastWorld=0;
     static int lastRevision=-1;
@@ -84,9 +91,9 @@ void report(uint64_t world, bool bob, glm::vec3 angles) {
     if (world==lastWorld && lastRevision==debug::renderRevision && now-at<std::chrono::seconds(1)) return;
     lastWorld=world; lastRevision=debug::renderRevision; at=now;
     TaczMod::getInstance().getSelf().getLogger().info(
-        "[camera-bone] world={} entry={} rejected={} noScope={} noCamera={} injected={} restored={} changedBeforeRestore={} bobView={} ownEnabled={} anglesDeg=({:.4f},{:.4f},{:.4f}) peakRollDeg={:.4f} nativeViewOrientationError={:.9g} source=render-camera-component playerLookWrite=false",
+        "[camera-bone] world={} entry={} rejected={} noScope={} noCamera={} injected={} restored={} changedBeforeRestore={} bobView={} cameraShake={} anglesDeg=({:.4f},{:.4f},{:.4f}) peakRollDeg={:.4f} nativeViewOrientationError={:.9g} source=render-camera-component playerLookWrite=false",
         world,counts.entry,counts.rejected,counts.noScope,counts.noCamera,counts.injected,counts.restored,counts.changed,
-        bob,aim::cameraBonesEnabled(),angles.x,angles.y,angles.z,counts.peakRoll,counts.viewOrientationError);
+        bob,shake,angles.x,angles.y,angles.z,counts.peakRoll,counts.viewOrientationError);
     counts.peakRoll=0;
 }
 LL_TYPE_INSTANCE_HOOK(CameraBonePrep,ll::memory::HookPriority::Normal,InGamePlayScreen,
@@ -106,12 +113,13 @@ LL_TYPE_INSTANCE_HOOK(CameraBoneSetup,ll::memory::HookPriority::Normal,LevelRend
     if (!world) { origin(camera,alpha); return; }
     ++counts.entry;
     auto pose = anim::snapshot();
-    if (!aim::cameraBonesEnabled() || pose.world != world || !pose.gun || !pose.cameraAllowed
+    bool shake=cameraBonesEnabled(mClientInstance);
+    if (!shake || pose.world != world || !pose.gun || !pose.cameraAllowed
         || pose.client != reinterpret_cast<uintptr_t>(&mClientInstance) || mClientInstance.getOptions().getPlayerViewPerspective() != 0
         || !mClientInstance.getScreenName().starts_with("hud_screen")) {
         ++counts.rejected;
         counts.viewOrientationError=-1;
-        report(world,mClientInstance.getOptions().getBobView(),{});
+        report(world,mClientInstance.getOptions().getBobView(),shake,{});
         origin(camera,alpha); return;
     }
     auto it = pose.pose.find("camera");
@@ -122,7 +130,7 @@ LL_TYPE_INSTANCE_HOOK(CameraBoneSetup,ll::memory::HookPriority::Normal,LevelRend
     if (animation.x==0 && animation.y==0 && animation.z==0) {
         counts.viewOrientationError=-1;
         origin(camera,alpha);
-        report(world,mClientInstance.getOptions().getBobView(),{});
+        report(world,mClientInstance.getOptions().getBobView(),shake,{});
         return; // no Euler round-trip or component write for an unanimated camera
     }
     if (!renderScope || !prepHooked || !renderHooked) {
@@ -164,7 +172,7 @@ LL_TYPE_INSTANCE_HOOK(CameraBoneSetup,ll::memory::HookPriority::Normal,LevelRend
         for (int c=0;c<3;++c) for (int r=0;r<3;++r)
             counts.viewOrientationError=std::max(counts.viewOrientationError,std::abs(actual[c][r]-expected[c][r]));
     }
-    report(world,mClientInstance.getOptions().getBobView(),angles);
+    report(world,mClientInstance.getOptions().getBobView(),shake,angles);
 }
 LL_TYPE_INSTANCE_HOOK(GunCrosshair,ll::memory::HookPriority::Normal,HudCursorRenderer,
     &HudCursorRenderer::$render,void,MinecraftUIRenderContext& context,IClientInstance& client,UIControl& owner,int pass) {
@@ -182,6 +190,27 @@ LL_TYPE_INSTANCE_HOOK(GunCrosshair,ll::memory::HookPriority::Normal,HudCursorRen
     }
     origin(context,client,owner,pass);
 }
+}
+bool cameraBonesEnabled(IClientInstance& client) {
+    if (!shooter::worldToken()) return false; // no option/client/world lookup on the main menu
+    // SDK OptionID is an empty enum. 1.26.51.01's video.camera_shake and
+    // accessibility.camera_shake both bind 0x23A; validate native save tag too.
+    auto option=client.getOptions().getIfValid(static_cast<OptionID>(0x23a));
+    int state=-1;
+    if (option && *option && (*option)->mImpl && (*option)->mImpl->mSaveTag.get()=="camera_shake") {
+        // Public virtual serialization into a local vector, NOT disk I/O. No
+        // BoolOption downcast, opaque iterator, guessed enum type or retained pointer.
+        std::vector<std::pair<std::string,std::string>> values;
+        (*option)->save(values);
+        for (auto const& [key,value]:values) if (key=="camera_shake") {
+            if (value=="1" || value=="true") state=1;
+            else if (value=="0" || value=="false") state=0;
+        }
+    }
+    static std::atomic<int> last{-2};
+    if (last.exchange(state)!=state) TaczMod::getInstance().getSelf().getLogger().info(
+        "[camera-option] id=570 saveTag=camera_shake value={} (-1=unavailable: disabled) live=true",state);
+    return state==1;
 }
 void enableCameraBones() {
     counts={};

@@ -16,6 +16,10 @@
 #include "mc/client/renderer/game/LevelRendererPlayer.h"
 #include "mc/client/entity/systems/ClientInputUpdateSystem.h"
 #include "mc/entity/components/MoveInputComponent.h"
+#include "mc/entity/components/RawMoveInputComponent.h"
+#include "mc/network/LoopbackPacketSender.h"
+#include "mc/network/packet/PlayerAuthInputPacket.h"
+#include "mc/network/packet/PlayerActionPacket.h"
 #include "mc/deps/ecs/gamerefs_entity/EntityContext.h"
 #include "mc/deps/core/math/Vec2.h"
 #include "client/gameplay/ClientShooter.h"
@@ -41,8 +45,12 @@ std::atomic<unsigned> togglePresses{0};
 bool holdToAim = true; // read from our own config at enable, before callbacks install
 float screenDistance = 1.33f, sensitivityMultiplier = 1.f;
 std::atomic<uintptr_t> sprintInput{0}, sprintPlayer{0};
-bool cameraAnimation = true;
-bool sprintHooked = false, inputHooked = false;
+std::atomic<bool> sprintBlocked{false};
+std::atomic<uintptr_t> sprintSender{0};
+std::atomic<SubClientId> sprintSubId{};
+std::atomic<uint64_t> rawSprintFiltered{0}, authSprintFiltered{0}, actionSprintFiltered{0};
+std::atomic<uint64_t> nativeResumeOffered{0};
+bool sprintHooked = false, inputHooked = false, rawHooked=false, packetHooked=false;
 bool toggled = false, target = false, tickValid = false;
 bool loggedFull = false;
 float previous = 0, current = 0, adsSeconds = .2f;
@@ -114,21 +122,72 @@ LL_TYPE_INSTANCE_HOOK(AimSensitivityHook, ll::memory::HookPriority::Normal, Loca
 using InputSignature = void (*)(MovementAbilitiesComponent const&, MobEffectsComponent const&, ActorDataFlagComponent const&,
     ActorOwnerComponent&, MoveInputComponent&, Optional<PassengerComponent const>, Optional<WasInWaterFlagComponent const>);
 static_assert(std::is_same_v<decltype(&ClientInputUpdateSystem::inputHandlerUpdatePlayerState), InputSignature>);
+static_assert(sizeof(MoveInputComponent)==0x64);
+static_assert(offsetof(MoveInputComponent,mRawInputState)==0x10);
+static_assert(entt::type_hash<MoveInputComponent>::value()==0x018b1887u);
 LL_STATIC_HOOK(AimSprintInput, ll::memory::HookPriority::Normal,
     &ClientInputUpdateSystem::inputHandlerUpdatePlayerState, void,
     MovementAbilitiesComponent const& abilities, MobEffectsComponent const& effects, ActorDataFlagComponent const& flags,
     ActorOwnerComponent& actor, MoveInputComponent& input, Optional<PassengerComponent const> riding,
     Optional<WasInWaterFlagComponent const> water) {
-    if (!shooter::worldToken() || sprintInput.load() != reinterpret_cast<uintptr_t>(&input)) {
+    auto world=shooter::worldToken();
+    if (!world || sprintInput.load() != reinterpret_cast<uintptr_t>(&input)) {
+        origin(abilities,effects,flags,actor,input,riding,water);
+        return;
+    }
+    thread_local model::SprintInputGate gate;
+    thread_local uint64_t gateWorld=0;
+    thread_local uintptr_t gateOwner=0;
+    auto owner=reinterpret_cast<uintptr_t>(&input);
+    if (world!=gateWorld || owner!=gateOwner) { gate={}; gateWorld=world; gateOwner=owner; }
+    bool blocked=sprintBlocked.load();
+    auto decision=gate.sample(blocked,input.mRawInputState->mFlagValues->test(static_cast<size_t>(MoveInputState::Flag::SprintDown)),
+        input.mFlagValues->test(static_cast<size_t>(MoveInputComponent::Flag::Sprinting)));
+    if (!blocked) {
+        if (decision.resumed) ++nativeResumeOffered;
         origin(abilities,effects,flags,actor,input,riding,water);
         return;
     }
     model::withSprintMasked(*input.mRawInputState->mFlagValues,*input.mInputState->mFlagValues,
         static_cast<size_t>(MoveInputState::Flag::SprintDown),[&] {
-        input.mFlagValues->set(static_cast<size_t>(MoveInputComponent::Flag::Sprinting),false);
+        input.mFlagValues->set(static_cast<size_t>(MoveInputComponent::Flag::Sprinting),decision.sprint);
         origin(abilities,effects,flags,actor,input,riding,water);
         input.mFlagValues->set(static_cast<size_t>(MoveInputComponent::Flag::Sprinting),false);
     });
+    // Both native latches are restored for hold/toggle callbacks. Later prediction
+    // and packet consumers have their OWN gates; do not erase intent to stop leaks.
+}
+using RawSignature = void (*)(MovementAbilitiesComponent const&,MoveInputComponent const&,ActorDataFlagComponent const&,
+    RawMoveInputComponent&,Optional<SneakingComponent const>,Optional<WasInWaterFlagComponent const>);
+static_assert(std::is_same_v<decltype(&ClientInputUpdateSystem::extractRawHIDInput),RawSignature>);
+LL_STATIC_HOOK(AimSprintRaw,ll::memory::HookPriority::Normal,&ClientInputUpdateSystem::extractRawHIDInput,void,
+    MovementAbilitiesComponent const& abilities,MoveInputComponent const& input,ActorDataFlagComponent const& flags,
+    RawMoveInputComponent& raw,Optional<SneakingComponent const> sneak,Optional<WasInWaterFlagComponent const> water) {
+    origin(abilities,input,flags,raw,sneak,water);
+    if (!shooter::worldToken() || !sprintBlocked.load() || sprintInput.load()!=reinterpret_cast<uintptr_t>(&input)) return;
+    auto bit=static_cast<size_t>(MoveInputState::Flag::SprintDown);
+    if (raw.mRawInput->mFlagValues->test(bit)) ++rawSprintFiltered;
+    raw.mRawInput->mFlagValues->set(bit,false); // separate native prediction consumer
+}
+using SendSignature=void (LoopbackPacketSender::*)(Packet&);
+static_assert(std::is_same_v<decltype(&LoopbackPacketSender::$sendToServer),SendSignature>);
+LL_TYPE_INSTANCE_HOOK(AimSprintPacket,ll::memory::HookPriority::Normal,LoopbackPacketSender,
+    &LoopbackPacketSender::$sendToServer,void,Packet& packet) {
+    if (shooter::worldToken() && sprintPlayer.load() && sprintSender.load()==reinterpret_cast<uintptr_t>(static_cast<PacketSender*>(this))
+        && packet.mSenderSubId==sprintSubId.load()) {
+        if (packet.getId()==MinecraftPacketIds::PlayerAuthInputPacket) {
+            auto& flags=static_cast<PlayerAuthInputPacket&>(packet).mInputData->mContainer;
+            using Bit=PlayerAuthInputPacketPayload::InputData;
+            auto down=static_cast<size_t>(Bit::SprintDown), sprint=static_cast<size_t>(Bit::Sprinting), start=static_cast<size_t>(Bit::StartSprinting);
+            if (flags.test(down) || flags.test(sprint) || flags.test(start)) ++authSprintFiltered;
+            model::suppressSprintRequests(flags,down,sprint,start);
+        } else if (packet.getId()==MinecraftPacketIds::PlayerAction
+            && static_cast<PlayerActionPacket&>(packet).mAction==PlayerActionType::StartSprinting) {
+            ++actionSprintFiltered;
+            return; // this standalone packet contains only the prohibited start action
+        }
+    }
+    origin(packet); // mutable, fully constructed native packet; no copy/const-cast
 }
 LL_TYPE_INSTANCE_HOOK(AimSprintState, ll::memory::HookPriority::Normal, LocalPlayer,
     &LocalPlayer::$setSprinting, void, bool value) {
@@ -154,7 +213,6 @@ bool mouse(bool down, bool gameplay, bool gunHeld) {
     }
     return true;
 }
-bool cameraBonesEnabled() { return cameraAnimation; }
 void frame(IClientInstance& client, LocalPlayer& player, std::optional<pack::ResourceId> gun,
     pack::GunData const* data, pack::GunDisplay const* display, bool selectionChanged, bool allowed) {
     auto now = Clock::now();
@@ -189,8 +247,20 @@ void frame(IClientInstance& client, LocalPlayer& player, std::optional<pack::Res
     bool blockSprint = usable && (target || (gun::isReloading(reload) && !gun::isReloadFinishing(reload)));
     sprintPlayer = blockSprint ? reinterpret_cast<uintptr_t>(&player) : 0;
     auto input = player.getEntityContext().tryGetComponent<MoveInputComponent>();
-    sprintInput = blockSprint && input ? reinterpret_cast<uintptr_t>(&*input) : 0;
+    sprintInput = usable && input ? reinterpret_cast<uintptr_t>(&*input) : 0;
+    sprintBlocked=blockSprint;
+    sprintSender=blockSprint ? reinterpret_cast<uintptr_t>(&client.getPacketSender()) : 0;
+    sprintSubId=client.getClientSubId();
     if (blockSprint) player.setSprinting(false);
+    static auto sprintLogAt=Clock::now();
+    if (now-sprintLogAt>=std::chrono::seconds(1)) {
+        auto raw=rawSprintFiltered.exchange(0),auth=authSprintFiltered.exchange(0),action=actionSprintFiltered.exchange(0);
+        auto resume=nativeResumeOffered.exchange(0);
+        if (raw || auth || action || resume) TaczMod::getInstance().getSelf().getLogger().info(
+            "[ads-sprint] blocked={} rawRequests={} authPacketsFiltered={} legacyStartsDropped={} nativeResumeOffers={} filteredWireSprintDown/State/Start=false retainedNativeLatch=true",
+            blockSprint,raw,auth,action,resume);
+        sprintLogAt=now;
+    }
     float progress = std::lerp(previous, current, std::clamp(client.getFrameAlpha(), 0.f, 1.f));
     float visual = view.update(progress, elapsed);
     if (progress >= 1 && !loggedFull && gun) {
@@ -224,6 +294,10 @@ Snapshot snapshot() {
 }
 void clear() {
     sprintInput = sprintPlayer = 0;
+    sprintBlocked=false;
+    sprintSender=0;
+    rawSprintFiltered=authSprintFiltered=actionSprintFiltered=0;
+    nativeResumeOffered=0;
     rightDown = swallowed = false;
     togglePresses = 0;
     focusReset = false;
@@ -238,7 +312,6 @@ void clear() {
 void enable() {
     clear();
     holdToAim = true;
-    cameraAnimation = true;
     screenDistance = 1.33f; sensitivityMultiplier = 1.f;
     auto& mod = TaczMod::getInstance();
     try {
@@ -247,14 +320,13 @@ void enable() {
         if (std::ifstream input{path}; input) {
             config = nlohmann::json::parse(input);
             holdToAim = config.value("hold_to_aim", true);
-            cameraAnimation = config.value("camera_bone_animation",true);
             screenDistance = config.value("screen_distance_coefficient",1.33f);
             sensitivityMultiplier = config.value("zoom_sensitivity_base_multiplier",1.f);
         }
         if (!std::isfinite(screenDistance) || screenDistance <= 0) screenDistance = 1.33f;
         sensitivityMultiplier = std::isfinite(sensitivityMultiplier) ? std::clamp(sensitivityMultiplier,0.f,2.f) : 1.f;
         config["hold_to_aim"] = holdToAim;
-        config["camera_bone_animation"] = cameraAnimation;
+        config.erase("camera_bone_animation"); // 0.3.17: one switch, the live game Camera Shake option
         config["screen_distance_coefficient"] = screenDistance;
         config["zoom_sensitivity_base_multiplier"] = sensitivityMultiplier;
         std::filesystem::create_directories(path.parent_path());
@@ -269,11 +341,16 @@ void enable() {
     focusHooked = AimFocusHook::hook() == 0;
     sprintHooked = AimSprintState::hook() == 0;
     inputHooked = AimSprintInput::hook() == 0;
-    mod.getSelf().getLogger().info("[ads-input] sprintHooks={}/{} MDV={} zoomSensitivity={}",sprintHooked,inputHooked,screenDistance,sensitivityMultiplier);
+    rawHooked = AimSprintRaw::hook() == 0;
+    packetHooked = AimSprintPacket::hook() == 0;
+    mod.getSelf().getLogger().info("[ads-input] sprintState/input/raw/packetHooks={}/{}/{}/{} MDV={} zoomSensitivity={}",sprintHooked,inputHooked,rawHooked,packetHooked,screenDistance,sensitivityMultiplier);
     mod.getSelf().getLogger().info("[ads] holdToAim={} worldFovHook={} sensitivityHook={} focusHook={}",
         holdToAim, fovHooked, turnHooked, focusHooked);
 }
 void disable() {
+    if (packetHooked) AimSprintPacket::unhook();
+    if (rawHooked) AimSprintRaw::unhook();
+    packetHooked=rawHooked=false;
     if (inputHooked) AimSprintInput::unhook();
     if (sprintHooked) AimSprintState::unhook();
     inputHooked = sprintHooked = false;

@@ -7,6 +7,7 @@
 #include <mutex>
 #include <optional>
 #include <unordered_map>
+#include <unordered_set>
 #include <type_traits>
 #include <cmath>
 
@@ -16,6 +17,7 @@
 #include "ll/api/event/server/ServerStoppingEvent.h"
 #include "ll/api/event/world/ServerLevelTickEvent.h"
 #include "ll/api/io/Logger.h"
+#include "ll/api/memory/Hook.h"
 #include "ll/api/network/packet/Packet.h"
 #include "ll/api/service/Bedrock.h"
 
@@ -23,6 +25,7 @@
 #include "mc/network/ServerNetworkHandler.h"
 #include "mc/server/ServerPlayer.h"
 #include "mc/world/actor/Actor.h"
+#include "mc/world/actor/Mob.h"
 #include "mc/world/actor/player/Player.h"
 #include "mc/world/level/Level.h"
 #include "mc/world/attribute/AttributeInstance.h"
@@ -82,6 +85,23 @@ struct ShooterState {
 std::mutex                                 mutex;
 std::unordered_map<int64_t, ShooterState> states; // by ActorUniqueID
 std::unique_ptr<lua::GunLogic>             logic;
+// Comparison-only SERVER actor identities. Separate lock: native callbacks may
+// run from inside shooter code already holding mutex. Never dereference an owner.
+std::mutex sprintMutex;
+std::unordered_set<Mob const*> sprintBlockedOwners;
+bool sprintHooked=false;
+void sprintPolicy(Player& player,bool blocked) {
+    std::lock_guard lock(sprintMutex);
+    if (blocked) sprintBlockedOwners.insert(static_cast<Mob*>(&player));
+    else sprintBlockedOwners.erase(static_cast<Mob*>(&player));
+}
+LL_TYPE_INSTANCE_HOOK(ServerAimSprint,ll::memory::HookPriority::Normal,Mob,&Mob::$setSprinting,void,bool value) {
+    if (value) {
+        std::lock_guard lock(sprintMutex);
+        if (sprintBlockedOwners.contains(this)) value=false;
+    }
+    origin(value); // reject native server re-entry, not just the later tick correction
+}
 
 std::array<ll::event::ListenerPtr, 3> listeners;
 
@@ -388,6 +408,7 @@ void tickAim(Player& player, ShooterState& s) {
     auto entry = item ? gunEntry(item->gunId) : nullptr;
     auto now = serverNowMs();
     if (!entry || !player.isAlive() || player.isSpectator()) {
+        sprintPolicy(player,false);
         s.isAiming = false;
         s.aimingProgress = 0;
         applyMovement(player, {});
@@ -395,7 +416,9 @@ void tickAim(Player& player, ShooterState& s) {
         s.aimingProgress = model::advanceAimProgress(s.aimingProgress, s.isAiming,
             s.aimingTimestamp < 0 ? 50 : std::max<int64_t>(0, now - s.aimingTimestamp),
             model::effectiveAdsTime(entry->data.aimTime)); // ads cache base until attachments are implemented
-        if (s.isAiming || (gun::isReloading(s.reloadState) && !gun::isReloadFinishing(s.reloadState))) player.setSprinting(false);
+        bool blocked=s.isAiming || (gun::isReloading(s.reloadState) && !gun::isReloadFinishing(s.reloadState));
+        sprintPolicy(player,blocked);
+        if (blocked) player.setSprinting(false);
         applyMovement(player, model::movementModifier(entry->data.movementSpeed, s.isAiming, gun::isReloading(s.reloadState)));
     }
     s.aimingTimestamp = now;
@@ -439,6 +462,7 @@ public:
         observeSelection(*player, s);
         auto item = nbt::readGun(player->getSelectedItem());
         s.isAiming = packet.aiming && player->isAlive() && !player->isSpectator() && item && gunEntry(item->gunId);
+        sprintPolicy(*player,s.isAiming || (gun::isReloading(s.reloadState) && !gun::isReloadFinishing(s.reloadState)));
         if (s.isAiming) player->setSprinting(false);
         logger().info("[ads-server] {} aiming={} progress={:.3f}", player->getRealName(), s.isAiming, s.aimingProgress);
     }
@@ -508,6 +532,8 @@ public:
 } // namespace
 
 void enable() {
+    sprintHooked=ServerAimSprint::hook()==0;
+    logger().info("[ads-sprint-server] native sprint-state hook={}",sprintHooked);
     auto& bus    = ll::event::EventBus::getInstance();
     listeners[0] = bus.emplaceListener<ll::event::ServerLevelTickEvent>([](ll::event::ServerLevelTickEvent& event) {
         tick(event.level());
@@ -515,17 +541,22 @@ void enable() {
     listeners[1] = bus.emplaceListener<ll::event::PlayerDisconnectEvent>([](ll::event::PlayerDisconnectEvent& event) {
         std::lock_guard lock(mutex);
         auto            key = keyOf(event.self());
+        sprintPolicy(event.self(),false);
         states.erase(key);
         if (logic) logic->clearScriptData(key);
     });
     listeners[2] = bus.emplaceListener<ll::event::ServerStoppingEvent>([](ll::event::ServerStoppingEvent&) {
         std::lock_guard lock(mutex);
         states.clear();
+        { std::lock_guard sprintLock(sprintMutex); sprintBlockedOwners.clear(); }
         logic.reset(); // a fresh Lua state per world, as TACZ reloads scripts with the data packs
     });
 }
 
 void disable() {
+    if (sprintHooked) ServerAimSprint::unhook();
+    sprintHooked=false;
+    { std::lock_guard sprintLock(sprintMutex); sprintBlockedOwners.clear(); }
     auto& bus = ll::event::EventBus::getInstance();
     for (auto& listener : listeners) {
         if (listener) bus.removeListener(listener);

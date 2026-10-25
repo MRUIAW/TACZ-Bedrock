@@ -8,6 +8,54 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 Versioning rule for this project: the patch number goes up by 1 for each small item or test
 round, the minor number goes up by 1 for each finished feature or phase.
 
+## [0.3.17] - 2026-10-26
+
+### User-tested 0.3.16 baseline
+
+- Camera-bone firing shake now works. Held sprint resumes after ADS, but sprint attempts/
+  flicker while ADS is held regressed. This is user testing, not an agent-run game test.
+- All reported mesh jitter/flicker occurs while moving and stops under freeze, including
+  the last two regions. The earlier static-z-fighting attribution is not established.
+- User selected route 1 (own renderer, static model-space meshes + bone draw matrices),
+  moved to **0.3.18**, plus a separate later small native-arm/real-skin experiment.
+
+### Fixed / Changed
+
+- Gunpack camera animation now follows the live game **Camera Shake** switch, not View
+  Bobbing. Installed SDK OptionID has no named constants; current 1.26.51.01 video and
+  accessibility bindings both use ID **570 / 0x23A** (read-only binary audit). Use native
+  `IOptionRegistry::getIfValid` and `Option::save(vector&)` in memory; require save tag
+  `camera_shake`, fail closed if unavailable. No BoolOption cast, opaque iterator, file
+  polling or restart needed. Remove/migrate `camera_bone_animation` from aim.json.
+- Sprint intent and consumption are now separate end-to-end: retain raw/processed native
+  latches, suppress state processing plus independent RawMoveInput extraction, filter
+  SprintDown/Sprinting/StartSprinting at the owned sender/subclient's mutable packet egress,
+  and drop only standalone StartSprinting actions. Preserve StopSprinting/unrelated bits.
+  Server rejects native sprint=true while aim/non-finishing reload policy is active instead
+  of relying only on its later tick correction. Native toggle callback is confirmed to XOR
+  raw SprintDown; no custom toggle/W timer or forced setSprinting(true) is introduced.
+  Tests cover repeated blocked ticks, held release/resume, toggle cancellation, double-tap
+  request suppression/no queued key, vanilla ineligibility and the old boundary regressions.
+- Record upload-position quantization (possibly half/packed positions) as the **working
+  hypothesis**, not a verified GPU format or implemented fix. SDK MeshData is float32 vec3;
+  VertexLayout and VertexField/VertexFieldType are opaque/empty. No renderer rework here;
+  GunRenderer's only change is the requested camera-option gate.
+- Detailed current findings and test plan: `docs/CAMERA-RENDER-0.3.16.md` (0.3.17 addendum).
+
+### Not yet / Known issues
+
+- With View Bobbing ON, aimed walking sways the gun left/right. Recorded, **not fixed**.
+- Moving gun mesh jitter remains; upload encoding needs capture/native-layout evidence.
+  Route 1 rework is 0.3.18; native arm rendering/Persona feasibility is a separate experiment.
+
+### Validation
+
+- Server/client x64 release builds passed; **135 tests / 50,123 assertions** passed with
+  no failures/skips. `git diff --check` passed. Known LL hook-macro unused-variable warnings
+  remain. Deployed `0.3.17 / client`; SHA-256 for DLL/PDB/manifest and exact relative-path/
+  hashes for all 4 resource-pack / 2 behavior-pack files match output/source.
+- No agent-run new in-game option/sprint acceptance test; native hook paths must be tested.
+
 ## [0.3.16] - 2026-10-26
 
 ### User-tested 0.3.15 baseline
