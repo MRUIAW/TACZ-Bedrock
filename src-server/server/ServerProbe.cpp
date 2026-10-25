@@ -105,6 +105,13 @@ void registerCommands() {
             output.success("Animation request sent");
         });
     // /tacz rdebug <material> <twoSided> : first-person gun render diagnostics
+    command.overload<RenderToggleParams>().text("rdebug").text("mesh").required("value")
+        .execute([](CommandOrigin const&, CommandOutput& output, RenderToggleParams const& params) {
+            if (params.value < 0 || params.value > 1) return output.error("mesh: 0 or 1");
+            debug::meshDiagnostics = params.value != 0;
+            ++debug::renderRevision;
+            output.success("Mesh diagnostics changed (integrated client only)");
+        });
     command.overload<RenderToggleParams>().text("rdebug").text("freeze").required("value")
         .execute([](CommandOrigin const& origin, CommandOutput& output, RenderToggleParams const& params) {
             if (params.value < 0 || params.value > 1) return output.error("freeze: 0 or 1");

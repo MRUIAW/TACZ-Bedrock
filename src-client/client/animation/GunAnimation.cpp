@@ -126,7 +126,7 @@ void refresh() {
     if (!player) return;
     auto gun = hand.puttingAway ? session->itemState : nbt::readGun(player->getSelectedItem());
     if (!gun || gun->gunId != currentGun) return;
-    session->renderClient = reinterpret_cast<uintptr_t>(&*client);
+    session->renderClient = reinterpret_cast<uintptr_t>(static_cast<IClientInstance*>(&*client));
     session->cameraAllowed = client->getScreenName().starts_with("hud_screen") && player->isAlive() && !player->isSpectator();
     if (session->entry->index.display) {
         auto const* display = TaczMod::getInstance().gunPacks().gunDisplay(*session->entry->index.display);

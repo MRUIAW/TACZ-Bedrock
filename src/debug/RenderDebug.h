@@ -14,6 +14,7 @@ inline std::atomic<int> gunMaterial{6};
 // 0.2.3 test showed no missing faces with single-sided quads.
 inline std::atomic<bool> gunTwoSided{false};
 inline std::atomic<bool> freezePose{false};
+inline std::atomic<bool> meshDiagnostics{false}; // expensive read-only comparisons, opt in
 // 0 native depth; 1 isolated GL-style .05..16; 2 isolated .10..16. Diagnostic only.
 inline std::atomic<int> gunDepthMode{0};
 

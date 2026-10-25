@@ -8,6 +8,53 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 Versioning rule for this project: the patch number goes up by 1 for each small item or test
 round, the minor number goes up by 1 for each finished feature or phase.
 
+## [0.3.16] - 2026-10-26
+
+### User-tested 0.3.15 baseline
+
+- Passed: recoil direction, ADS placement, aimed sway and aimed reload.
+- Failed: camera roll/shake absent; held sprint does not resume after aim release.
+- Freeze reduces flickering to two regions; depth 1/2 appeared unchanged without clipping.
+  User also reports frequent small per-face gun-mesh shifts. These are user observations,
+  not a new agent-run game test or proof of a GPU cause.
+
+### Fixed / Added
+
+- Camera: current Bob View is disabled, and 0.3.15 explicitly gated both consumers on it.
+  Existing log contains only hook installation, no consumed flags. Add independent
+  `aim.json` `camera_bone_animation=true`, leaving game settings untouched. Study GPL-3.0
+  Do-A-Barrel-Roll-Bedrock's client-native render-camera-component timing; inject orientation
+  before typed setupCamera, restore at callback-scoped prep/render exit with same-world,
+  registry/entity and subsequent-writer checks. No persistent pending owner, player-look
+  mutation, packets/Molang or unsafe matrix fallback. Exact signatures/entt hashes checked;
+  use existing const ECS storage to avoid native component construction. Add entry/rejection/
+  injection/restoration, peak-roll and native view-orientation diagnostics (not GPU proof).
+- Sprint: mask raw/processed held latches only while native input state is processed, then
+  restore via RAII, including exceptions. Retain sprint-state suppression during ADS/reload;
+  afterward vanilla sees held input and decides eligibility. Never force sprint true.
+- Opt-in `/tacz rdebug mesh <0|1>`: consecutive CPU position hashes/max deltas, same-pose
+  repeat bake, Tessellator position comparison, documented native raw-data size/hash and
+  actual draw clip-matrix stability/translation diagnostics. No opaque packing inference.
+  Log selected versus captured depth mode to expose frozen-transform depth comparisons.
+- Real AK47: 7,608 vertices, maximum absolute coordinate 1.5364 blocks, fixed pose repeated
+  240 times with identical hash and zero delta; authored shoot adjacent max .0484827 blocks,
+  quad-edge delta 3.57628e-7 blocks. Bake already uses small model space, not world space.
+  **Live jitter root cause, downstream packing and the exact two visible cubes remain
+  unconfirmed**; no speculative mesh/geometry fix or render rework is included.
+- Attachable/runtime pack/Lua/functional bone/retained gun/real-skin/Persona/RTX comparison,
+  Java draw-order/depth limits, decisions and regression/evidence plan:
+  `docs/CAMERA-RENDER-0.3.16.md`. Recommend own mesh-once/bone-matrix route for 0.3.19;
+  native player-arm hybrid is a separate future feasibility task, not an implemented fix.
+
+### Validation
+
+- Server and client x64 release builds passed; **130 tests / 47,989 assertions** passed,
+  zero failures/skips. `git diff --check` passed. Only known LL hook-macro unused-variable
+  warnings remain. Deployed `0.3.16 / client` to the configured LeviLauncher version;
+  DLL/PDB/manifest SHA-256 and all 4 resource-pack / 2 behavior-pack files match output/source.
+- No agent-run in-game camera/sprint/jitter/Persona/RTX acceptance test. Do not equate
+  build/unit-test success with visible rendering or measured GPU behavior.
+
 ## [0.3.15] - 2026-10-25
 
 ### User-tested baseline

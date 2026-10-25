@@ -21,6 +21,7 @@
 #include "client/gameplay/ClientShooter.h"
 #include "client/gameplay/ClientRecoil.h"
 #include "model/Aiming.h"
+#include "model/SprintInput.h"
 #include "mod/TaczMod.h"
 #include "net/GunPackets.h"
 
@@ -40,6 +41,7 @@ std::atomic<unsigned> togglePresses{0};
 bool holdToAim = true; // read from our own config at enable, before callbacks install
 float screenDistance = 1.33f, sensitivityMultiplier = 1.f;
 std::atomic<uintptr_t> sprintInput{0}, sprintPlayer{0};
+bool cameraAnimation = true;
 bool sprintHooked = false, inputHooked = false;
 bool toggled = false, target = false, tickValid = false;
 bool loggedFull = false;
@@ -117,15 +119,16 @@ LL_STATIC_HOOK(AimSprintInput, ll::memory::HookPriority::Normal,
     MovementAbilitiesComponent const& abilities, MobEffectsComponent const& effects, ActorDataFlagComponent const& flags,
     ActorOwnerComponent& actor, MoveInputComponent& input, Optional<PassengerComponent const> riding,
     Optional<WasInWaterFlagComponent const> water) {
-    auto suppress = [&] {
-        if (!shooter::worldToken() || sprintInput.load() != reinterpret_cast<uintptr_t>(&input)) return;
-        input.mInputState->mFlagValues->set(static_cast<size_t>(MoveInputState::Flag::SprintDown),false);
-        input.mRawInputState->mFlagValues->set(static_cast<size_t>(MoveInputState::Flag::SprintDown),false);
+    if (!shooter::worldToken() || sprintInput.load() != reinterpret_cast<uintptr_t>(&input)) {
+        origin(abilities,effects,flags,actor,input,riding,water);
+        return;
+    }
+    model::withSprintMasked(*input.mRawInputState->mFlagValues,*input.mInputState->mFlagValues,
+        static_cast<size_t>(MoveInputState::Flag::SprintDown),[&] {
         input.mFlagValues->set(static_cast<size_t>(MoveInputComponent::Flag::Sprinting),false);
-    };
-    suppress();
-    origin(abilities,effects,flags,actor,input,riding,water);
-    suppress(); // covers double-tap sprint computed from forward movement
+        origin(abilities,effects,flags,actor,input,riding,water);
+        input.mFlagValues->set(static_cast<size_t>(MoveInputComponent::Flag::Sprinting),false);
+    });
 }
 LL_TYPE_INSTANCE_HOOK(AimSprintState, ll::memory::HookPriority::Normal, LocalPlayer,
     &LocalPlayer::$setSprinting, void, bool value) {
@@ -151,6 +154,7 @@ bool mouse(bool down, bool gameplay, bool gunHeld) {
     }
     return true;
 }
+bool cameraBonesEnabled() { return cameraAnimation; }
 void frame(IClientInstance& client, LocalPlayer& player, std::optional<pack::ResourceId> gun,
     pack::GunData const* data, pack::GunDisplay const* display, bool selectionChanged, bool allowed) {
     auto now = Clock::now();
@@ -234,6 +238,7 @@ void clear() {
 void enable() {
     clear();
     holdToAim = true;
+    cameraAnimation = true;
     screenDistance = 1.33f; sensitivityMultiplier = 1.f;
     auto& mod = TaczMod::getInstance();
     try {
@@ -242,12 +247,14 @@ void enable() {
         if (std::ifstream input{path}; input) {
             config = nlohmann::json::parse(input);
             holdToAim = config.value("hold_to_aim", true);
+            cameraAnimation = config.value("camera_bone_animation",true);
             screenDistance = config.value("screen_distance_coefficient",1.33f);
             sensitivityMultiplier = config.value("zoom_sensitivity_base_multiplier",1.f);
         }
         if (!std::isfinite(screenDistance) || screenDistance <= 0) screenDistance = 1.33f;
         sensitivityMultiplier = std::isfinite(sensitivityMultiplier) ? std::clamp(sensitivityMultiplier,0.f,2.f) : 1.f;
         config["hold_to_aim"] = holdToAim;
+        config["camera_bone_animation"] = cameraAnimation;
         config["screen_distance_coefficient"] = screenDistance;
         config["zoom_sensitivity_base_multiplier"] = sensitivityMultiplier;
         std::filesystem::create_directories(path.parent_path());

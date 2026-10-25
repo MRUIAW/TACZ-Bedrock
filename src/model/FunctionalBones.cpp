@@ -50,6 +50,12 @@ glm::mat4 applyCameraAngles(glm::mat4 const& view, glm::quat q) {
     auto after = glm::eulerAngleZXY(roll+delta.z,pitch+delta.x,yaw+delta.y);
     return after*glm::transpose(before)*view;
 }
+glm::quat cameraEntityOrientation(glm::quat original, glm::quat animation) {
+    if (animation.x==0 && animation.y==0 && animation.z==0) return original;
+    auto view = glm::transpose(glm::mat4_cast(glm::normalize(original)));
+    auto result = glm::normalize(glm::quat_cast(glm::transpose(glm::mat3(applyCameraAngles(view,animation)))));
+    return glm::dot(result,original) < 0 ? -result : result;
+}
 glm::mat4 modelProjectionTransform(glm::mat4 const& native, float fov, int mode) {
     if (!projectionFov(native) || std::abs(glm::determinant(native)) < 1e-12f) return glm::mat4(1);
     auto desired = withModelFov(native,fov);

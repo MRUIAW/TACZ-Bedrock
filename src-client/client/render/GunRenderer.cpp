@@ -84,6 +84,7 @@
 #include "model/RenderResourceKey.h"
 #include "model/Aiming.h"
 #include "model/FunctionalBones.h"
+#include "model/MeshDiagnostics.h"
 #include "client/render/CameraBones.h"
 #include "mod/TaczMod.h"
 #include "nbt/GunNbt.h"
@@ -107,6 +108,7 @@ struct GunVisual {
     model::AimDynamics                modelFov{.5f, 1.2f, .5f};
     std::optional<std::chrono::steady_clock::time_point> modelFovAt;
     bool frozen = false;
+    int capturedDepthMode = 0;
     bool loggedAimProjection = false;
     std::vector<model::Vertex>        vertices; // baked rest pose, kept to rebuild the mesh
     model::GeoModel                   model;
@@ -119,6 +121,16 @@ struct GunVisual {
     std::optional<mce::Mesh>          mesh;
     bool                              meshTwoSided = false;
     uint                              vertexCount  = 0;
+    struct Diagnostics {
+        std::vector<model::Vertex> previous;
+        glm::mat4 previousClip{1};
+        bool hasClip=false;
+        uint64_t hash=0, previousHash=0, rawHash=0;
+        size_t frames=0, changes=0, topologyChanges=0, rawBytes=0;
+        float maxDelta=0, maxClipDelta=0, uploadDelta=-1;
+        int revision=-1;
+        std::chrono::steady_clock::time_point at=std::chrono::steady_clock::now();
+    } diagnostics;
     std::unique_ptr<ResourceLocation> textureLocation;
     TextureVariant                    texture;
     std::weak_ptr<mce::TextureGroup>   textureOwner;
@@ -236,6 +248,18 @@ void buildMesh(ScreenContext& screen, GunVisual& visual, bool twoSided) {
         }
     }
     auto const& data = batch.mMeshData.get();
+    visual.diagnostics.uploadDelta=-1; // never reuse an older mesh's measurement
+    if (debug::meshDiagnostics) {
+        auto const& positions=data.mPositions.get();
+        auto& d=visual.diagnostics;
+        size_t expected=vertices.size()*(twoSided ? 2 : 1);
+        d.uploadDelta=positions.size()==expected ? 0.f : -1.f;
+        if (d.uploadDelta==0) for (size_t i=0;i<positions.size();++i) {
+            size_t quad=i/(twoSided ? 8 : 4), corner=i%(twoSided ? 8 : 4);
+            size_t source=quad*4+(corner<4 ? corner : 7-corner);
+            for (int axis=0;axis<3;++axis) d.uploadDelta=std::max(d.uploadDelta,std::abs(positions[i][axis]-vertices[source].pos[axis]));
+        }
+    }
     if (!visual.mesh) logger().info(
         "Gun mesh: {} vertices (two-sided {}), uv0={}, normals={}, colors={}",
         batch.mCount,
@@ -515,7 +539,7 @@ bool drawGun(ItemInHandRenderer& renderer, BaseActorRenderContext& context) {
     auto placement = model::firstPersonAimTransform(visual->idleView, visual->ironView, viewProgress);
     placement = model::applyConstraint(placement,model::constraintTransform(visual->model,pose.pose),viewProgress);
     glm::quat cameraRotation{1,0,0,0};
-    if (auto it = pose.pose.find("camera"); client.getOptions().getBobView() && it != pose.pose.end() && it->second.rotation)
+    if (auto it = pose.pose.find("camera"); aim::cameraBonesEnabled() && it != pose.pose.end() && it->second.rotation)
         cameraRotation = model::scaledCameraRotation(model::cameraBoneRotation(*it->second.rotation),progress,sameAimGun ? aiming.ironZoom : 1.f);
     auto nativeProjection = camera.projectionMatrixStack->top()._m.get();
     auto baseModelFov = model::projectionFov(nativeProjection);
@@ -533,8 +557,41 @@ bool drawGun(ItemInHandRenderer& renderer, BaseActorRenderContext& context) {
     // place the correction in the consumed per-draw transform (also honored by RTX).
     auto transform = model::modelProjectionTransform(nativeProjection,fov,debug::gunDepthMode)
         * glm::mat4_cast(cameraRotation) * placement;
-    if (!debug::freezePose || !visual->frozen) visual->transform = transform;
+    if (!debug::freezePose || !visual->frozen) {
+        visual->transform = transform;
+        visual->capturedDepthMode = debug::gunDepthMode;
+    }
     visual->frozen = debug::freezePose;
+    if (debug::meshDiagnostics) {
+        auto& d=visual->diagnostics;
+        auto clip=nativeProjection*camera.viewMatrixStack->top()._m.get()*camera.worldMatrixStack->top()._m.get()*visual->transform;
+        auto now=std::chrono::steady_clock::now();
+        if (d.revision!=revision) { d.previous.clear(); d.hasClip=false; d.frames=d.changes=d.topologyChanges=0; d.maxDelta=d.maxClipDelta=0; d.revision=revision; d.at=now; }
+        d.previousHash=d.hash; d.hash=model::positionHash(visual->vertices);
+        if (!d.previous.empty()) {
+            auto delta=model::positionDelta(d.previous,visual->vertices);
+            if (delta<0) ++d.topologyChanges; else d.maxDelta=std::max(d.maxDelta,delta);
+            d.changes+=d.hash!=d.previousHash;
+        }
+        if (d.hasClip) d.maxClipDelta=std::max(d.maxClipDelta,model::matrixDelta(clip,d.previousClip));
+        d.previous=visual->vertices; d.previousClip=clip; d.hasClip=true; ++d.frames;
+        if (now-d.at>=std::chrono::seconds(1)) {
+            // Inspect the current documented byte vector, without forcing HAL
+            // generation or interpreting the SDK's empty VertexLayout.
+            auto const& raw=visual->mesh->mRawData.get();
+            d.rawBytes=raw.size(); d.rawHash=14695981039346656037ull;
+            for (auto byte:raw) { d.rawHash^=byte; d.rawHash*=1099511628211ull; }
+            model::GunRenderState state;
+            auto repeat=model::bake(visual->model,[&](auto const& bone,auto* parent){return model::gunVisibility(bone,parent,state);},pose.pose);
+            float magnitude=0;
+            for (auto const& v:visual->vertices) for (int axis=0;axis<3;++axis) magnitude=std::max(magnitude,std::abs(v.pos[axis]));
+            logger().info("[mesh-jitter] world={} freeze={} frames={} changes={} topologyChanges={} hash={:016x} previousHash={:016x} maxAbsPos={:.9g} consecutiveMaxDelta={:.9g} repeatMaxDelta={:.9g} tessellatorMaxDelta={:.9g} clipMatrixMaxDelta={:.9g} rawBytes={} rawHash={:016x} viewTranslation={} worldTranslation={} nativePacking=unknown frame=model-blocks cpuPosition=float32",
+                session,debug::freezePose.load(),d.frames,d.changes,d.topologyChanges,d.hash,d.previousHash,magnitude,d.maxDelta,
+                model::positionDelta(visual->vertices,repeat),d.uploadDelta,d.maxClipDelta,d.rawBytes,d.rawHash,
+                str(glm::vec3(camera.viewMatrixStack->top()._m.get()[3])),str(glm::vec3(camera.worldMatrixStack->top()._m.get()[3])));
+            d.at=now; d.frames=d.changes=d.topologyChanges=0; d.maxDelta=d.maxClipDelta=0;
+        }
+    }
     if (progress < .9f) visual->loggedAimProjection = false;
     if ((progress >= .999f && !visual->loggedAimProjection) || debugChanged) {
         auto mv = camera.viewMatrixStack->top()._m.get()*camera.worldMatrixStack->top()._m.get()*visual->transform;
@@ -545,8 +602,8 @@ bool drawGun(ItemInHandRenderer& renderer, BaseActorRenderContext& context) {
             sight *= model::partTransform(visual->model.bones[i],it == pose.pose.end() ? nullptr : &it->second);
         }
         auto clip = nativeProjection*mv*sight*glm::vec4(0,0,0,1);
-        logger().info("[ads-projection] world={} nativeFov={:.3f} targetFov={:.3f} modelFov={:.3f} viewProgress={:.4f} ironOriginClip=({:.6f},{:.6f},{:.6f},{:.6f}) sightAxisNDC=({:.6f},{:.6f}) depthMode={} freeze={} nativeP22={:.9g} nativeP32={:.9g} projectionViaModel=true",
-            session,baseModelFov,sameAimGun ? aiming.zoomModelFov : baseModelFov,fov,viewProgress,clip.x,clip.y,clip.z,clip.w,ndc.x,ndc.y,debug::gunDepthMode.load(),debug::freezePose.load(),nativeProjection[2][2],nativeProjection[3][2]);
+        logger().info("[ads-projection] world={} nativeFov={:.3f} targetFov={:.3f} modelFov={:.3f} viewProgress={:.4f} ironOriginClip=({:.6f},{:.6f},{:.6f},{:.6f}) sightAxisNDC=({:.6f},{:.6f}) depthMode={} capturedDepthMode={} freeze={} nativeP22={:.9g} nativeP32={:.9g} projectionViaModel=true",
+            session,baseModelFov,sameAimGun ? aiming.zoomModelFov : baseModelFov,fov,viewProgress,clip.x,clip.y,clip.z,clip.w,ndc.x,ndc.y,debug::gunDepthMode.load(),visual->capturedDepthMode,debug::freezePose.load(),nativeProjection[2][2],nativeProjection[3][2]);
         visual->loggedAimProjection = true;
     }
     auto world            = camera.worldMatrixStack->push(false);

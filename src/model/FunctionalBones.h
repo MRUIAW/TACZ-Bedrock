@@ -10,6 +10,7 @@ glm::quat blendCameraRotation(glm::quat a, glm::quat b);
 float positiveDegrees(float radians);
 glm::quat scaledCameraRotation(glm::quat q, float aim, float zoom);
 glm::mat4 applyCameraAngles(glm::mat4 const& view, glm::quat rotation);
+glm::quat cameraEntityOrientation(glm::quat cameraToWorld, glm::quat animation);
 glm::mat4 modelProjectionTransform(glm::mat4 const& nativeProjection, float fov, int depthMode = 0);
 // FirstPersonRenderGunEvent: animation before rest rotation, no scale, and the
 // constraint node's own position/rotation channels are coefficients, NOT transforms.
