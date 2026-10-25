@@ -8,6 +8,56 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 Versioning rule for this project: the patch number goes up by 1 for each small item or test
 round, the minor number goes up by 1 for each finished feature or phase.
 
+## [0.3.18] - 2026-10-26
+
+### User-tested 0.3.17 baseline
+
+- Camera-bone animation correctly follows the game Camera Shake option, including live
+  changes. Sprint while aiming and recovery on release passed in all user-tested cases.
+- Preserve these fixes. Earlier moving-face jitter/flicker stops entirely under freeze;
+  matrix-driven arms animate under RTX while the rebuilt gun does not. These are user tests.
+
+### Changed
+
+- Default first-person render path is now immutable bone-local meshes plus per-draw bone
+  matrices. Keep named-bone animation/visibility boundaries; fold only static anonymous
+  cube helpers into ordered rigid draw runs, preserving DFS quad/UV/winding order. AK47:
+  605 parsed bones / 549 face-owning bones -> **43 groups, 29 default-visible gun draws**.
+  No pose-baked vertices/upload on path 1; winding debug variants are cached independently.
+- One cached BoneFrame drives gun parts and both arm attachments, outside the unchanged
+  ADS/constraint/camera/model-FOV/put-away transform. Publish actual retained-item visibility
+  state; skip existing groups for chamber/ammo/mag/sight/handguard/functional rules. Keyed
+  additional-magazine visibility now reaches both paths; attachment gameplay stays deferred.
+- `/tacz rdebug path 0|1` selects retained animated bake (0) versus new default (1) in an
+  integrated client. Empty-name pose channels safely use path 0 with a warning. Keep old
+  bake/upload benchmark; add per-second path/draw/cache/CPU diagnostics, one-time upload cost
+  and 120-frame steady mean/max/prepare/draw measurements for in-game A/B comparison.
+- Resource-scoped cache is keyed by display+model+texture; stable per-group native mesh
+  addresses, unique runtime texture names and existing RenderResourceKey release/owner checks
+  prevent per-pose reconstruction and preserve the world/pipeline/pink-texture lifecycle.
+  No new native hook or opaque by-value ABI path.
+- Equivalence: 35 AK47 clips plus static-idle blends, 2,310 poses / 16,574,320 vertices,
+  max position error 4.76837e-7 blocks (<2e-6); nonsingular normal error 2.38419e-7; exact
+  UV/order and both arm matrices. All singular/zero-scale positions remain checked; only
+  undefined singular-normal comparisons excluded. Details: `docs/RENDER-0.3.18.md`.
+
+### Evidence / Not yet
+
+- User-run 0.3.17 native rebuild baseline: 3.788 ms mean raster / 3.862 ms RTX (120 poses).
+  Latest offline pure bake .0525 ms vs new matrices .0139 ms, excluding native upload/draw/GPU.
+  **New in-game CPU cost, jitter disappearance and RTX internal animation remain acceptance
+  items**, not results inferred from tests. New path removes the suspected repeated upload
+  mechanism and follows the user-validated arm matrix principle; GPU packing stays unknown.
+- Not yet: HUD, shells/muzzle flash, real skin/Persona/native-arm experiment, attachments,
+  and View Bobbing aimed-walk left/right sway. No source-geometry or depth/material workaround.
+
+### Validation
+
+- Client and server x64 release builds passed; all **138 tests / 73,430 assertions** passed
+  (zero failures/skips). Client 0.3.18 deployed; DLL/PDB/manifest SHA-256 matched final
+  artifacts, and resource/behavior packs matched exact source file maps and hashes (4/2 files).
+  No new in-game acceptance run. Final client DLL SHA-256 is recorded in `docs/RENDER-0.3.18.md`.
+
 ## [0.3.17] - 2026-10-26
 
 ### User-tested 0.3.16 baseline

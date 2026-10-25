@@ -341,11 +341,20 @@ void update() {
     published.cameraAim = session ? session->context.aimingProgress : 0;
     published.cameraZoom = session ? session->cameraZoom : 1;
     if (debug::freezePose && currentGun == publishedGun && published.world == world) return;
-    if (pose != published.pose || currentGun != publishedGun || hand.puttingAway != published.puttingAway || published.world != world) {
+    model::GunRenderState renderState;
+    if (session) {
+        renderState.bulletInBarrel=session->context.barrel;
+        renderState.ammoCount=session->context.ammo;
+        renderState.extendedMagLevel=session->context.magExtent;
+        if (auto it=pose.find("additional_magazine"); it!=pose.end())
+            renderState.additionalMagazine=it->second.translation || it->second.rotation || it->second.scale;
+    }
+    if (pose != published.pose || renderState != published.renderState || currentGun != publishedGun || hand.puttingAway != published.puttingAway || published.world != world) {
         published.world = world;
         published.gun = currentGun;
         published.puttingAway = hand.puttingAway;
         published.pose = std::move(pose);
+        published.renderState=renderState;
         ++published.revision;
         publishedGun = currentGun;
     }

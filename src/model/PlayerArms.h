@@ -6,6 +6,7 @@
 #include <string_view>
 
 #include "model/GeoModel.h"
+#include "model/RigidGunModel.h"
 
 namespace tacz::model {
 
@@ -19,6 +20,8 @@ std::vector<Vertex> playerArmVertices(Arm side, bool slim, bool sleeve);
 // Own functional-node cubes/visibility are replaced, but hidden ancestors still hide the arm.
 std::optional<glm::mat4> playerArmTransform(GeoModel const& model, std::span<int const> path,
     animation::Pose const& pose);
+std::optional<glm::mat4> playerArmTransformFromFrame(GeoModel const& model, std::span<int const> path,
+    BoneFrame const& frame);
 
 bool isClassicArmSkin(uint32_t width, uint32_t height, size_t bytes, bool persona,
     bool animated, std::string_view geometry);

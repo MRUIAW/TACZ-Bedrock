@@ -18,6 +18,7 @@ struct GunRenderState {
     bool bulletInBarrel   = true;
     int  ammoCount        = 1;
     int  extendedMagLevel = 0;
+    bool additionalMagazine = false;
 
     auto operator<=>(GunRenderState const&) const = default;
 };
@@ -42,7 +43,7 @@ inline Visit gunVisibility(Bone const& bone, Bone const* parent, GunRenderState 
     // Drawn by LeftHandRender / RightHandRender / MuzzleFlashRender / ShellRender instead.
     if (n == "lefthand_pos" || n == "righthand_pos" || n == "muzzle_flash" || detail::isShellNode(n)) return Visit::Hide;
     // Only visible while an animation keyframes it (ModelAdditionalMagazineListener).
-    if (n == "additional_magazine") return Visit::Hide;
+    if (n == "additional_magazine") return state.additionalMagazine ? Visit::Draw : Visit::Hide;
     if (n == "bullet_in_barrel") return state.bulletInBarrel ? Visit::Draw : Visit::Hide;
     if (n == "bullet_in_mag" || n == "bullet_chain") return state.ammoCount > 0 ? Visit::Draw : Visit::Hide;
     if (n == "mag_standard") return state.extendedMagLevel == 0 ? Visit::Draw : Visit::Hide;

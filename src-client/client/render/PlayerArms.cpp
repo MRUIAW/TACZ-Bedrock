@@ -277,21 +277,21 @@ void releasePlayerArms(char const* reason) {
     logger().info("[arm-gpu] release reason={}", reason);
 }
 
-void drawPlayerArms(ScreenContext& screen, IClientInstance& client, LocalPlayer& player,
-    model::GeoModel const& geo, ArmPaths const& paths, animation::Pose const& pose,
+size_t drawPlayerArms(ScreenContext& screen, IClientInstance& client, LocalPlayer& player,
+    model::GeoModel const& geo, ArmPaths const& paths, model::BoneFrame const& frame,
     uint64_t world, uint64_t resourceSerial, bool rtx) {
-    if (paths[0].empty() && paths[1].empty()) return;
+    if (paths[0].empty() && paths[1].empty()) return 0;
     auto start = Clock::now();
     if (!cache) cache = std::make_unique<ArmCache>();
     auto probeStart = Clock::now();
     probeSkin(screen, client, player, world, resourceSerial);
     auto& a = *cache;
     if (a.frames < 120) a.probeMs += msSince(probeStart);
-    if (!a.textureReady) return;
+    if (!a.textureReady) return 0;
     auto* light = client.getLightTexture();
     auto& dispatch = client.getBlockEntityRenderDispatcher();
     auto* moving = static_cast<MovingBlockActorRenderer*>(dispatch.mRenderers.get()[BlockActorRendererId::MovingBlock].get());
-    if (!light || !moving) return;
+    if (!light || !moving) return 0;
     if (!a.materials[0]) a.materials[0].emplace(moving->mBlockMaterials[static_cast<int>(BlockRenderLayer::RenderlayerAlphatest)].get());
     if (!a.materials[1]) a.materials[1].emplace(moving->mBlockMaterials[static_cast<int>(BlockRenderLayer::RenderlayerBlend)].get());
     if (!a.materialLogged) {
@@ -306,8 +306,9 @@ void drawPlayerArms(ScreenContext& screen, IClientInstance& client, LocalPlayer&
     ActorShaderManager::setupShaderParameters(screen, player.getDimensionBlockSource(), full,
         glm::vec4{1,1,1,1}, 1, true, *light, Vec2{1,1}, Vec4{0,0,1,1});
     auto drawStart = Clock::now();
+    size_t drawCalls=0;
     for (int side = 0; side < 2; ++side) {
-        auto transform = model::playerArmTransform(geo, paths[side], pose);
+        auto transform = model::playerArmTransformFromFrame(geo, paths[side], frame);
         if (!transform) continue;
         auto worldMatrix = screen.camera.worldMatrixStack->push(false);
         worldMatrix.stack->_isDirty = true;
@@ -326,6 +327,7 @@ void drawPlayerArms(ScreenContext& screen, IClientInstance& client, LocalPlayer&
                     a.skinDrawLogged = true;
                 }
                 ++a.draws;
+                ++drawCalls;
             }
         } catch (...) { pop(worldMatrix); throw; } // stack ownership, not exception suppression
         pop(worldMatrix);
@@ -339,6 +341,7 @@ void drawPlayerArms(ScreenContext& screen, IClientInstance& client, LocalPlayer&
             "[arm-perf] rtx={} 120 frames: CPU totalMean={:.3f} max={:.3f} probeMean={:.3f} buildUploadTotal={:.3f} matrixDrawMean={:.3f} ms builds={} draws={} gpu-not-timed",
             rtx, a.totalMs / 120, a.maxMs, a.probeMs / 120, a.buildMs, a.drawMs / 120, a.builds, a.draws);
     }
+    return drawCalls;
 }
 
 } // namespace tacz::client::render

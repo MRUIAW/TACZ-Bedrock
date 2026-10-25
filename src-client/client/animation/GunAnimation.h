@@ -5,6 +5,7 @@
 #include <string>
 
 #include "model/Animation.h"
+#include "model/GunModelRules.h"
 #include "pack/ResourceId.h"
 
 // Client adapter for TACZ's Lua animation state machine. All VM/controller logic is shared.
@@ -33,6 +34,7 @@ struct Snapshot {
     bool cameraAllowed = false;
     float cameraAim = 0, cameraZoom = 1;
     animation::Pose pose;
+    model::GunRenderState renderState;
     uint64_t        revision = 0;
 };
 Snapshot snapshot();

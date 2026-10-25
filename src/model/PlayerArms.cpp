@@ -43,6 +43,21 @@ std::optional<glm::mat4> playerArmTransform(GeoModel const& model, std::span<int
     return result;
 }
 
+std::optional<glm::mat4> playerArmTransformFromFrame(GeoModel const& model,std::span<int const> path,BoneFrame const& frame) {
+    if (path.empty() || frame.world.size()!=model.bones.size() || frame.parentVisible.size()!=model.bones.size()) return std::nullopt;
+    for (size_t i=0;i<path.size();++i) {
+        int index=path[i];
+        if (index<0 || static_cast<size_t>(index)>=model.bones.size()
+            || model.bones[index].parent!=(i ? path[i-1] : -1)) return std::nullopt;
+    }
+    int node=path.back();
+    if (!frame.parentVisible[node]) return std::nullopt; // replace own functional-node cubes
+    auto result=glm::rotate(frame.world[node],std::numbers::pi_v<float>,glm::vec3{0,0,1});
+    for (int c=0;c<4;++c) for (int r=0;r<4;++r) if (!std::isfinite(result[c][r])) return std::nullopt;
+    if (std::abs(glm::determinant(glm::mat3(result)))<1e-12f) return std::nullopt;
+    return result;
+}
+
 bool isClassicArmSkin(uint32_t width, uint32_t height, size_t bytes, bool persona,
     bool animated, std::string_view geometry) {
     return !persona && !animated && renderArmSkinLayout(width, height, geometry).has_value()

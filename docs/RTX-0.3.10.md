@@ -1,5 +1,9 @@
 # RTX static gun: 0.3.10 runtime analysis
 
+0.3.18 update: route 1 (immutable rigid meshes + per-draw bone matrices) is implemented
+for A/B acceptance; see `RENDER-0.3.18.md`. Jitter/RTX/native-cost outcomes are not yet
+verified by a new game run. This supersedes the historical 0.3.19 schedule below.
+
 Status (2026-10-25): parked by user decision. The historical analysis below predates the
 separate 0.3.11 arms work (`ARMS-0.3.11.md`); that release does not claim an RTX fix.
 
