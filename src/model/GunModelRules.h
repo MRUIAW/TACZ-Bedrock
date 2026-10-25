@@ -23,6 +23,11 @@ struct GunRenderState {
     auto operator<=>(GunRenderState const&) const = default;
 };
 
+inline bool additionalMagazineKeyed(animation::Pose const& pose) {
+    auto it=pose.find("additional_magazine");
+    return it!=pose.end() && (it->second.translation || it->second.rotation || it->second.scale);
+}
+
 namespace detail {
 inline bool isShellNode(std::string_view name) {
     if (name == "shell") return true;

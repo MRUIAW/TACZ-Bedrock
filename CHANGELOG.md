@@ -8,6 +8,70 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 Versioning rule for this project: the patch number goes up by 1 for each small item or test
 round, the minor number goes up by 1 for each finished feature or phase.
 
+## [0.3.19] - 2026-10-26
+
+### User-tested 0.3.18 / real in-game cost
+
+- User confirmed `5aac463`: mesh-once rendering almost perfectly eliminated motion
+  jitter/flicker, and internal gun animation now works under RTX; no new-path problems noticed.
+- Real `[gun-perf]` N=120 CPU totals (not GPU): `2026-10-26.2.log:276/289`, raster old
+  path 0 **4.116 mean / 5.038 max ms** versus path 1 **.141 / .486 ms**, 1 versus 29 gun
+  submissions (both +4 arm draws). RTX path 1 `.2.log:427`: .158/.284 ms, 29+4 draws.
+  Latest `.7.log:180`: RTX path 1 **.117/.363 ms**, 21+4 draws; no path 0 in that run.
+  Different guns/runs are not a matched A/B. Source/scope details: `docs/MULTIGUN-0.3.19.md`.
+
+### Fixed / changed
+
+- Implement TACZ's functional `additional_magazine` rendering: instance the real magazine
+  subtree at the keyed extra-magazine matrix, excluding its original root transform/parent
+  chain (which can be zero-scaled). Keep immutable groups/shared arm frame; path 0 also
+  implements this functional reference. User-reported reload cases covered with real assets:
+  m4a1, glock_17, hk_mp5a5, deagle_golden, cz75, deagle, fn_fal, g36k, hk_mk23, m9a4.
+- Open-bolt HUD/probe/command text no longer misreads raw HasBulletInBarrel as +1.
+  Preserve TACZ creative-builder NBT (raw true even for open bolt); existing consume checks
+  already ignore it. m249/aa12/minigun must show zero usable rounds when the magazine is empty.
+- Glock/Deagle put-away: their shipped scripts look up undefined SWITCH_MODE_TRACK;
+  sol2 previously threw on nil and forced static_idle (confirmed in user log). A missing
+  optional track lookup now returns -1/no-op, allowing the original put_away clip/seek/HOLD.
+- Remove the visible placeholder yellow bullet cubes, keeping the behavior entity/physics/
+  hit logic. Like TACZ, normal ammo without an entity model should be invisible. Dedicated
+  ammo entity models and tracers remain future work, not a generic particle substitute.
+- Gson-compatible lenient JSON syntax and typed primitive coercion: array trailing commas
+  become null entries; leading + numbers are tree strings coerced by numeric fields;
+  string booleans follow TypeAdapters. Unquoted/single-quoted literals supported; object
+  trailing commas and invalid typed values remain errors. Verified with actual Gson 2.10.1,
+  including JsonElement→POJO versus streaming differences; `scripts/GsonProbe.java` retained.
+- `/tacz guns [namespace]` lists sorted IDs in readable chunks to chat and log. `/tacz packs`
+  also reports each pack's namespaces/gun count/missing-asset gun count. Startup aggregates
+  each gun's missing model/texture/animation/script/sound resources into one `[gun-assets]` line.
+- Read-only production-loader audit of installed packs: **325 indexes / 325 guns loaded**,
+  80 ammo / 36 logic scripts. Previous 322 was the successful-load count, with three data
+  failures; nine display failures overlapped some affected guns. All core display assets
+  now parse/exist in this snapshot; missing optional sounds are separately listed.
+  `classicr:tec_9` still warns about two unsupported animation values (`-` / Molang path).
+  Re-runnable per-gun table/unknown fields/APIs: `docs/GUNS-0.3.19.md`; queue: `docs/ROADMAP.md`.
+
+### Not yet / decisions
+
+- B93R is a distinct reload case: original clips do not key additional_magazine; the normal
+  magazine follows mag_and_lefthand offscreen. Needs Java frame comparison, not invented keys.
+- HK416D static white-text z-fighting and P320 inspect tilt investigated but not safely fixed:
+  illuminated in Java changes light only, not polygon offset; thin source faces and authored
+  inspect/camera rotations are not sufficient evidence to nudge geometry or change matrices.
+- Confirmed causes: minigun's default 30 = unimplemented inventory feed; AWP needs manual bolt;
+  AUG needs builtin scope attachments. Heat/charging/explosion/melee/extensions are not newly
+  implemented. HUD/crosshair/hit feedback, items, effects, skin and View Bobbing aim sway remain.
+- Third-party loadability does not imply Arcana/gameplay compatibility. Unknown fields/APIs
+  are listed, not silently simulated. Removed encrypted Vanguard pack is not accessed/decrypted.
+- Decisions for the user and evidence: `docs/MULTIGUN-0.3.19.md`.
+
+### Validation
+
+- Both client/server Windows x64 release builds passed; **143 tests / 77,719 assertions**
+  passed, zero failures/skips. Production offline audit: 325/325 data/display/geometry loaded.
+  **Deployment pending: the user is playing; no deploy script run, no game process stopped,
+  no loaded mod/resources overwritten.** Close the game before deploying DLL and RP/BP together.
+
 ## [0.3.18] - 2026-10-26
 
 ### User-tested 0.3.17 baseline

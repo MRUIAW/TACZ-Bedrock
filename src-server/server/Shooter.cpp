@@ -312,7 +312,7 @@ char const* handleReload(Player& player) {
         empty ? "empty" : "tactical",
         item->gunId.toString(),
         item->ammo,
-        item->barrel ? "+1" : ""
+        gun::hasChamberedRound(data.bolt,item->barrel) ? "+1" : ""
     );
     sendReloadState(player, {s.reloadState, 0});
     return nullptr;

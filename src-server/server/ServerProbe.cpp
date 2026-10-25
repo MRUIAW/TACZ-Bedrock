@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <memory>
 #include <string>
+#include <set>
 
 #include "ll/api/command/CommandHandle.h"
 #include "ll/api/command/CommandRegistrar.h"
@@ -23,6 +24,7 @@
 #include "mc/world/item/ItemStack.h"
 
 #include "debug/RenderDebug.h"
+#include "gun/ShootRules.h"
 #include "mod/TaczMod.h"
 #include "nbt/AmmoItem.h"
 #include "nbt/GunItem.h"
@@ -44,6 +46,7 @@ Player* originPlayer(CommandOrigin const& origin) {
 struct SetGunParams {
     std::string gunId;
 };
+struct GunListParams { std::string namespaceName; };
 
 struct RenderDebugParams {
     int material;
@@ -91,7 +94,43 @@ void registerCommands() {
                         + " ammo type(s)";
         if (auto* player = originPlayer(origin)) player->sendMessage(msg);
         output.success(msg);
+        for (auto const& source:packs.packs()) {
+            size_t count=0,missing=0;
+            std::set<std::string> namespaces;
+            for (auto const& [id,entry]:packs.guns()) if (entry.packName==source.name) {
+                ++count; namespaces.insert(id.ns); missing+=packs.assetIssues().contains(id);
+            }
+            std::string ns;
+            for (auto const& name:namespaces) ns+=(ns.empty() ? "" : ",")+name;
+            auto line="[TACZ pack] "+source.name+" namespace="+(ns.empty() ? source.meta.ns : ns)
+                +" guns="+std::to_string(count)+" missingAssets="+std::to_string(missing);
+            logger().info("{}",line);
+            if (auto* player=originPlayer(origin)) player->sendMessage(line);
+            else output.success(line);
+        }
     });
+    auto listGuns=[](CommandOrigin const& origin,CommandOutput& output,std::string const& ns) {
+        auto const& packs=TaczMod::getInstance().gunPacks();
+        std::vector<std::string> chunks;
+        std::string chunk;
+        size_t count=0;
+        for (auto const& [id,entry]:packs.guns()) if (ns.empty() || id.ns==ns) {
+            auto name=id.toString();
+            if (!chunk.empty() && chunk.size()+name.size()+2>180) { chunks.push_back(std::move(chunk)); chunk.clear(); }
+            chunk+=(chunk.empty() ? "" : ", ")+name;
+            ++count;
+        }
+        if (!chunk.empty()) chunks.push_back(std::move(chunk));
+        auto send=[&](std::string const& line) {
+            logger().info("{}",line);
+            if (auto* player=originPlayer(origin)) player->sendMessage(line); else output.success(line);
+        };
+        send("[TACZ guns] namespace="+(ns.empty() ? std::string("all") : ns)+" count="+std::to_string(count));
+        for (size_t i=0;i<chunks.size();++i) send("["+std::to_string(i+1)+"/"+std::to_string(chunks.size())+"] "+chunks[i]);
+    };
+    command.overload().text("guns").execute([listGuns](CommandOrigin const& origin,CommandOutput& output) { listGuns(origin,output,{}); });
+    command.overload<GunListParams>().text("guns").required("namespaceName")
+        .execute([listGuns](CommandOrigin const& origin,CommandOutput& output,GunListParams const& params) { listGuns(origin,output,params.namespaceName); });
     command.overload<AnimationParams>()
         .text("anim")
         .required("name")
@@ -190,7 +229,7 @@ void registerCommands() {
             );
         });
     // /tacz setgun <gunId> : turn the selected item into a gun as TACZ's creative tab hands it out
-    // (first fire mode, full magazine, round chambered)
+    // (first fire mode, full magazine; open-bolt raw chamber flag is not an extra round)
     command.overload<SetGunParams>()
         .text("setgun")
         .required("gunId")
@@ -207,7 +246,7 @@ void registerCommands() {
             if (!nbt::writeSelectedGun(*player, state)) return output.error("Hold an item first");
             player->sendMessage(
                 "[TACZ] Selected item is now " + gun->id.toString() + " (" + nbt::fireModeName(state.fireMode) + ", "
-                + std::to_string(state.ammo) + "+1 rounds)"
+                + std::to_string(state.ammo) + (gun::hasChamberedRound(gun->data.bolt,state.barrel) ? "+1 rounds)" : " rounds)")
             );
         });
 }
@@ -222,9 +261,11 @@ public:
         if (!player) return;
 
         auto        gun  = nbt::readGun(player->getSelectedItem());
+        auto const* entry=gun ? TaczMod::getInstance().gunPacks().gun(gun->gunId) : nullptr;
+        bool chambered=entry && gun::hasChamberedRound(entry->data.bolt,gun->barrel);
         std::string info = packet.action + " #" + std::to_string(packet.seq) + " from " + player->getRealName() + " gun="
-                         + (gun ? gun->gunId.toString() + " " + nbt::fireModeName(gun->fireMode) + " ammo="
-                                      + std::to_string(gun->ammo) + (gun->barrel ? "+1" : "")
+                          + (gun ? gun->gunId.toString() + " " + nbt::fireModeName(gun->fireMode) + " ammo="
+                                       + std::to_string(gun->ammo) + (chambered ? "+1" : "")
                                 : std::string{"-"});
         logger().info("[probe] {}", info);
         net::DebugAckPacket{packet.seq, std::move(info)}.sendTo(*player);

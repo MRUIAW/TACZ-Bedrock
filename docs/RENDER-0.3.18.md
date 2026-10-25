@@ -1,5 +1,10 @@
 # 0.3.18 — immutable gun meshes + draw-time bone matrices
 
+0.3.19 acceptance follow-up: user confirmed `5aac463` almost perfectly fixed motion
+jitter/flicker and internal gun animation works under RTX, with no new-path problems noticed.
+Real CPU A/B and newer multi-gun samples are recorded in `MULTIGUN-0.3.19.md` and CHANGELOG.
+The pending statements below are the historical pre-acceptance 0.3.18 implementation record.
+
 Parent `88c21f3` (0.3.17). User-approved route 1. No new agent-run Minecraft/GPU test:
 the implementation/equivalence evidence below is not a claim that jitter disappeared,
 RTX animated or the new native draw-call cost has already been measured in game.

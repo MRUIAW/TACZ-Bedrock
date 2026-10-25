@@ -3,6 +3,13 @@
 #include <cfloat>
 #include <string>
 #include <utility>
+#include <algorithm>
+#include <cctype>
+#include <cmath>
+#include <limits>
+#include <charconv>
+#include <regex>
+#include "pack/LenientJson.h"
 
 namespace tacz::pack {
 namespace {
@@ -18,8 +25,44 @@ using json = nlohmann::json;
 void read(json const& obj, std::string_view key, bool& out) {
     auto it = obj.find(key);
     if (it == obj.end() || it->is_null()) return;
-    if (!it->is_boolean()) fail(key, "a boolean");
-    out = it->get<bool>();
+    if (it->is_boolean()) out=it->get<bool>();
+    else if (it->is_string()) {
+        auto s=it->get<std::string>();
+        std::transform(s.begin(),s.end(),s.begin(),[](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+        out=s=="true"; // Gson TypeAdapters.BOOLEAN / Boolean.parseBoolean
+    } else fail(key, "a boolean or boolean string");
+}
+
+template <class T> T numeric(json const& value,std::string_view key) {
+    if (value.is_number()) return value.get<T>();
+    if (!value.is_string()) fail(key,"a number or numeric string");
+    try {
+        auto s=value.get<std::string>();
+        if constexpr (std::is_integral_v<T>) {
+            // TACZ first builds a JsonElement, then deserializes its POJO. On a
+            // string JsonTreeReader.nextInt uses Integer.parseInt, NOT the more
+            // permissive streaming nextInt fallback through Double.parseDouble.
+            size_t begin=!s.empty() && s[0]=='+' ? 1 : 0;
+            if (begin && begin<s.size() && s[begin]=='-') fail(key,"an integer string");
+            if (begin<s.size()) {
+                T exact{};
+                auto result=std::from_chars(s.data()+begin,s.data()+s.size(),exact);
+                if (result.ec==std::errc{} && result.ptr==s.data()+s.size()) return exact;
+            }
+            fail(key,"an integer string");
+        }
+        // Float/Double.parseDouble accepts Java decimal/hex floating literals,
+        // optional suffix and ASCII trim; reject C-only lowercase nan/inf forms.
+        static std::regex const floating(R"(^[\x00-\x20]*[+-]?(NaN|Infinity|((([0-9]+(\.[0-9]*)?)|(\.[0-9]+))([eE][+-]?[0-9]+)?|0[xX]([0-9a-fA-F]+(\.[0-9a-fA-F]*)?|\.[0-9a-fA-F]+)[pP][+-]?[0-9]+)[fFdD]?)[\x00-\x20]*$)");
+        if (!std::regex_match(s,floating)) fail(key,"a numeric string");
+        auto last=s.find_last_not_of(" \t\r\n\f");
+        if (last!=std::string::npos && std::string_view("fFdD").find(s[last])!=std::string_view::npos) s.erase(last,1);
+        size_t end=0;
+        long double v=std::stold(s,&end);
+        while (end<s.size() && std::isspace(static_cast<unsigned char>(s[end]))) ++end;
+        if (end!=s.size()) fail(key,"a numeric string");
+        return static_cast<T>(v);
+    } catch (std::exception const&) { fail(key,"a numeric string"); }
 }
 
 template <class T>
@@ -27,15 +70,15 @@ template <class T>
 void read(json const& obj, std::string_view key, T& out) {
     auto it = obj.find(key);
     if (it == obj.end() || it->is_null()) return;
-    if (!it->is_number()) fail(key, "a number");
-    out = it->get<T>();
+    out = numeric<T>(*it,key);
 }
 
 void read(json const& obj, std::string_view key, std::string& out) {
     auto it = obj.find(key);
     if (it == obj.end() || it->is_null()) return;
-    if (!it->is_string()) fail(key, "a string");
-    out = it->get<std::string>();
+    if (it->is_string()) out=it->get<std::string>();
+    else if (it->is_number() || it->is_boolean()) out=it->dump();
+    else fail(key,"a primitive string");
 }
 
 ResourceId toResourceId(json const& value, std::string_view key) {
@@ -121,16 +164,17 @@ DistanceDamagePair parseDistanceDamage(json const& j) {
     if (!j.contains("damage")) throw ParseError("damage_adjust entry has no damage field");
     auto const& distance = j["distance"];
     auto const& damage   = j["damage"];
-    if (!damage.is_number()) throw ParseError("damage_adjust damage is not a number");
     DistanceDamagePair pair;
     if (distance.is_number()) {
         pair.distance = distance.get<float>();
-    } else if (distance.is_string() && distance.get<std::string>() == "infinite") {
+    } else if (distance.is_string() && distance.get<std::string>()=="infinite") {
         pair.distance = FLT_MAX;
+    } else if (distance.is_boolean()) {
+        pair.distance = 0; // literal behavior of TACZ DistanceDamagePairSerializer
     } else {
         throw ParseError("damage_adjust distance is neither a number nor 'infinite'");
     }
-    pair.damage = damage.get<float>();
+    pair.damage = numeric<float>(damage,"damage");
     return pair;
 }
 
@@ -149,8 +193,15 @@ Ignite parseIgnite(json const& j) {
     if (j.is_boolean()) return {j.get<bool>(), j.get<bool>()};
     if (j.is_object()) {
         Ignite ignite;
-        read(j, "entity", ignite.entity);
-        read(j, "block", ignite.block);
+        // This custom serializer uses GsonHelper, not TypeAdapters.BOOLEAN.
+        auto strict=[&](char const* key,bool& out) {
+            if (auto it=j.find(key); it!=j.end()) {
+                if (!it->is_boolean()) fail(key,"a boolean");
+                out=it->get<bool>();
+            }
+        };
+        strict("entity",ignite.entity);
+        strict("block",ignite.block);
         return ignite;
     }
     throw ParseError("field 'ignite' is neither a boolean nor an object");
@@ -213,8 +264,7 @@ std::vector<RecoilKeyFrame> parseRecoilFrames(json const& j, std::string_view ke
         if (auto* value = array(entry, "value")) {
             frame.value.clear();
             for (auto const& v : *value) {
-                if (!v.is_number()) throw ParseError("recoil value is not a number");
-                frame.value.push_back(v.get<float>());
+                frame.value.push_back(numeric<float>(v,"recoil.value"));
             }
         }
         frames.push_back(std::move(frame));
@@ -256,12 +306,13 @@ void requireObject(json const& j, std::string_view what) {
 } // namespace
 
 nlohmann::json parseJsonText(std::string_view text) {
-    // Skip a UTF-8 BOM; several pack files are saved with one.
+    // Strict/comments fast path, then Gson JsonReader LENIENT syntax. Do not remove
+    // trailing array commas: Gson inserts a null entry, not an absent element.
     if (text.starts_with("\xEF\xBB\xBF")) text.remove_prefix(3);
     try {
         return json::parse(text, nullptr, true, true);
-    } catch (json::parse_error const& e) {
-        throw ParseError(e.what());
+    } catch (json::parse_error const&) {
+        return readLenientJson(text);
     }
 }
 
@@ -286,8 +337,7 @@ GunData parseGunData(nlohmann::json const& j) {
     if (auto* extended = array(j, "extended_mag_ammo_amount")) {
         std::vector<int> amounts;
         for (auto const& v : *extended) {
-            if (!v.is_number()) fail("extended_mag_ammo_amount", "an array of numbers");
-            amounts.push_back(v.get<int>());
+            amounts.push_back(numeric<int>(v,"extended_mag_ammo_amount"));
         }
         data.extendedMagAmmoAmount = std::move(amounts);
     }
@@ -309,8 +359,9 @@ GunData parseGunData(nlohmann::json const& j) {
     if (auto* reload = object(j, "reload")) data.reload = parseReload(*reload);
     if (auto* modes = array(j, "fire_mode")) {
         for (auto const& v : *modes) {
-            if (!v.is_string()) fail("fire_mode", "an array of strings");
-            data.fireModes.push_back(parseFireMode(v.get<std::string>()));
+            if (v.is_null()) data.fireModes.push_back(std::nullopt);
+            else if (v.is_string()) data.fireModes.push_back(parseFireMode(v.get<std::string>()));
+            else fail("fire_mode", "an array of strings/null");
         }
     } else {
         data.fireModes.push_back(std::nullopt); // TACZ default: [UNKNOWN]
@@ -338,8 +389,7 @@ GunData parseGunData(nlohmann::json const& j) {
     if (auto* inaccuracy = object(j, "inaccuracy")) {
         std::map<InaccuracyType, float> values;
         for (auto const& [name, value] : inaccuracy->items()) {
-            if (!value.is_number()) fail("inaccuracy", "a map of numbers");
-            if (auto type = parseInaccuracyType(name)) values[*type] = value.get<float>();
+            if (auto type = parseInaccuracyType(name)) values[*type] = numeric<float>(value,"inaccuracy");
         }
         data.inaccuracy = std::move(values);
     }
@@ -351,8 +401,9 @@ GunData parseGunData(nlohmann::json const& j) {
     if (auto* heat = object(j, "heat")) data.heat = parseHeat(*heat);
     if (auto* types = array(j, "allow_attachment_types")) {
         for (auto const& v : *types) {
-            if (!v.is_string()) fail("allow_attachment_types", "an array of strings");
-            data.allowAttachmentTypes.push_back(v.get<std::string>());
+            if (v.is_null()) data.allowAttachmentTypes.push_back(std::nullopt);
+            else if (v.is_string()) data.allowAttachmentTypes.push_back(v.get<std::string>());
+            else fail("allow_attachment_types", "an array of strings/null");
         }
     }
     read(j, "weight", data.weight);

@@ -346,8 +346,7 @@ void update() {
         renderState.bulletInBarrel=session->context.barrel;
         renderState.ammoCount=session->context.ammo;
         renderState.extendedMagLevel=session->context.magExtent;
-        if (auto it=pose.find("additional_magazine"); it!=pose.end())
-            renderState.additionalMagazine=it->second.translation || it->second.rotation || it->second.scale;
+        renderState.additionalMagazine=model::additionalMagazineKeyed(pose);
     }
     if (pose != published.pose || renderState != published.renderState || currentGun != publishedGun || hand.puttingAway != published.puttingAway || published.world != world) {
         published.world = world;

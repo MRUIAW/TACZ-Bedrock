@@ -7,6 +7,7 @@
 
 #include "pack/GunPackParser.h"
 #include "pack/BuiltinAssets.h"
+#include "pack/GunAnimations.h"
 
 namespace tacz::pack {
 namespace {
@@ -148,6 +149,8 @@ void GunPackRegistry::clear() {
     mGunDisplays.clear();
     mDataScripts.clear();
     mAssetScripts.clear();
+    mAssetPaths.clear();
+    mAssetIssues.clear();
 }
 
 void GunPackRegistry::loadFolder(fs::path const& folder, LogFn const& info, LogFn const& warn) {
@@ -196,6 +199,7 @@ void GunPackRegistry::load(std::vector<std::unique_ptr<PackSource>> packs, LogFn
         }
     }
     info("Found " + std::to_string(mPacks.size()) + " possible gunpack(s)");
+    for (auto const& source:valid) for (auto const& file:source->list("assets/")) mAssetPaths.insert(file);
 
     auto parseAll = [&](std::string_view root, std::string_view dir, auto&& parse) {
         using Value = decltype(parse(std::declval<nlohmann::json const&>()));
@@ -248,6 +252,42 @@ void GunPackRegistry::load(std::vector<std::unique_ptr<PackSource>> packs, LogFn
         }
         mGuns.emplace(id, GunEntry{id, std::move(index), std::move(data), std::move(packName)});
     }
+    std::map<ResourceId,std::vector<std::string>> displayIssues;
+    for (auto const& [id,gun]:mGuns) {
+        std::vector<std::string> missing;
+        if (!gun.index.display || !gunDisplay(*gun.index.display)) {
+            missing.push_back("display="+(gun.index.display ? gun.index.display->toString() : "<not declared>"));
+        } else if (auto cached=displayIssues.find(*gun.index.display); cached!=displayIssues.end()) missing=cached->second;
+        else {
+            auto const& d=*gunDisplay(*gun.index.display);
+            auto check=[&](char const* kind,std::optional<ResourceId> const& resource,char const* dir,char const* ext,bool required=false) {
+                if (!resource) { if (required) missing.push_back(std::string(kind)+"=<not declared>"); return; }
+                auto path=assetPath(*resource,dir,ext);
+                if (!hasFile(path)) missing.push_back(std::string(kind)+"="+resource->toString()+" ("+path+")");
+            };
+            check("model",d.model,"geo_models",".json",true);
+            check("texture",d.texture,"textures",".png",true);
+            check("animation",d.animation,"animations",".animation.json");
+            auto fallback=d.defaultAnimation;
+            if (!fallback && (d.useDefaultAnimation=="rifle" || d.useDefaultAnimation=="pistol")) fallback=ResourceId{"tacz",d.useDefaultAnimation+"_default"};
+            check("animation",fallback,"animations",".animation.json");
+            check("state_machine",d.stateMachine,"scripts",".lua");
+            std::set<ResourceId> sounds;
+            for (auto const& [key,sound]:d.sounds) sounds.insert(sound);
+            try {
+                auto clips=loadGunAnimations(*this,d,[](auto const&){});
+                for (auto const& [name,clip]:clips) for (auto const& sound:clip.sounds) sounds.insert(sound.sound);
+            } catch (std::exception const& e) { missing.push_back(std::string("animation parse: ")+e.what()); }
+            for (auto const& sound:sounds) check("sound",sound,"tacz_sounds",".ogg");
+            displayIssues.emplace(*gun.index.display,missing);
+        }
+        if (!missing.empty()) {
+            std::string message="[gun-assets] "+id.toString()+" missing: ";
+            for (size_t i=0;i<missing.size();++i) message+=(i ? "; " : "")+missing[i];
+            info(message); // optional missing sounds are not a gun-data load failure
+            mAssetIssues.emplace(id,std::move(missing));
+        }
+    }
     info(
         "Loaded " + std::to_string(mGuns.size()) + " gun(s), " + std::to_string(mAmmo.size()) + " ammo type(s), "
         + std::to_string(mDataScripts.size()) + " gun logic script(s)"
@@ -275,6 +315,10 @@ std::optional<std::string> GunPackRegistry::readFile(std::string_view path) cons
     }
     if (auto text = builtinAsset(path)) return std::string(*text);
     return std::nullopt;
+}
+
+bool GunPackRegistry::hasFile(std::string const& path) const {
+    return mAssetPaths.contains(path) || builtinAsset(path).has_value();
 }
 
 } // namespace tacz::pack

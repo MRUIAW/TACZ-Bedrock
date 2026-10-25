@@ -42,6 +42,7 @@
 #include "client/gameplay/ClientShooter.h"
 #include "client/sound/GunSound.h"
 #include "gun/Reload.h"
+#include "gun/ShootRules.h"
 #include "mod/TaczMod.h"
 #include "nbt/AmmoItem.h"
 #include "nbt/GunItem.h"
@@ -119,7 +120,8 @@ void enable() {
             auto& player = *client->getLocalPlayer();
             if (auto gun = nbt::readGun(player.getSelectedItem())) {
                 int reserve = 0;
-                if (auto const* entry = TaczMod::getInstance().gunPacks().gun(gun->gunId); entry && entry->data.ammoId) {
+                auto const* entry = TaczMod::getInstance().gunPacks().gun(gun->gunId);
+                if (entry && entry->data.ammoId) {
                     reserve = nbt::countAmmo(player, *entry->data.ammoId);
                 }
                 held = fmt::format(
@@ -127,7 +129,7 @@ void enable() {
                     gun->gunId.toString(),
                     nbt::fireModeName(gun->fireMode),
                     gun->ammo,
-                    gun->barrel ? "+1" : "",
+                    entry && gun::hasChamberedRound(entry->data.bolt,gun->barrel) ? "+1" : "",
                     reserve,
                     gun::reloadStateName(shooter::reloadState())
                 );

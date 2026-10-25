@@ -84,6 +84,9 @@ enum class Visit { Draw, Hide };
 using VisitFn = std::function<Visit(Bone const& bone, Bone const* parent)>;
 
 // Bakes the rest pose into vertices, 4 per quad, in the order BedrockModel.render emits them.
-std::vector<Vertex> bake(GeoModel const& model, VisitFn const& visit, animation::Pose const& pose = {});
+// Gun mode additionally instances the magazine subtree at additional_magazine, as
+// BedrockGunModel does. Generic geometry baking has no functional renderer behavior.
+std::vector<Vertex> bake(GeoModel const& model, VisitFn const& visit, animation::Pose const& pose = {},
+    bool gunMagazineInstance = false);
 
 } // namespace tacz::model

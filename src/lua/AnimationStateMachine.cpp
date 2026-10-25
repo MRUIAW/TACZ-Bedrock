@@ -240,7 +240,12 @@ struct AnimationStateMachine::Impl {
         a["assignNewTrack"] = [this](AnimationContext&, double l) { return controller.assignNewTrack(integer(l)); };
         a["findIdleTrack"] = [this](AnimationContext&, double l, bool interrupt) { return controller.findIdleTrack(integer(l), interrupt); };
         a["ensureTracksAmount"] = [this](AnimationContext&, double l, double n) { controller.ensureTracksAmount(integer(l), integer(n)); };
-        a["getTrack"] = [this](AnimationContext&, double l, double n) { return controller.getTrack(integer(l), integer(n)); };
+        // Several original pistol scripts look up an undefined SWITCH_MODE_TRACK.
+        // Treat a nil optional index as an absent track, so stopAnimation is a no-op,
+        // not a fatal VM fallback. Do not invent a fire-select track or edit pack Lua.
+        a["getTrack"] = [this](AnimationContext&, double l, sol::optional<double> n) {
+            return n ? controller.getTrack(integer(l),integer(*n)) : -1;
+        };
         a["getAsSingletonTrack"] = [this](AnimationContext&, double l) { return controller.getAsSingletonTrack(integer(l)); };
         a["runAnimation"] = [this](AnimationContext&, std::string name, double t, bool blend, double type, float transition) {
             controller.runAnimation(name, integer(t), blend, playType(type), transition);

@@ -15,6 +15,8 @@ struct RigidGunModel {
     std::vector<glm::mat4> restLocal;
     std::vector<int> traversal;
     std::vector<RigidGunGroup> groups;
+    int magazine=-1, additionalMagazine=-1;
+    std::vector<int> magazineTraversal; // source subtree, instanced after the additional node
 };
 struct BoneFrame {
     std::vector<glm::mat4> world;

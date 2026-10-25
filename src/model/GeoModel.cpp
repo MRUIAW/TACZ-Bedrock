@@ -291,12 +291,13 @@ glm::mat4 positioningInverse(GeoModel const& model, std::vector<int> const& path
 
 namespace {
 
-void bakeBone(GeoModel const& model, int index, glm::mat4 const& parentMatrix, VisitFn const& visit, animation::Pose const& pose, std::vector<Vertex>& out) {
+void bakeBone(GeoModel const& model, int index, glm::mat4 const& parentMatrix, VisitFn const& visit, animation::Pose const& pose, std::vector<Vertex>& out,
+    int magazine=-1, bool skipLocal=false) {
     Bone const& bone   = model.bones[index];
     Bone const* parent = bone.parent >= 0 ? &model.bones[bone.parent] : nullptr;
     if (visit(bone, parent) == Visit::Hide) return;
     auto it = pose.find(bone.name);
-    glm::mat4 m = parentMatrix * partTransform(bone, it == pose.end() ? nullptr : &it->second);
+    glm::mat4 m = skipLocal ? parentMatrix : parentMatrix * partTransform(bone, it == pose.end() ? nullptr : &it->second);
     glm::mat3 n(m);
     // Normal matrix for non-uniform animated scales; zero scales collapse the geometry.
     if (std::abs(glm::determinant(n)) > 1e-12f) n = glm::transpose(glm::inverse(n));
@@ -307,14 +308,21 @@ void bakeBone(GeoModel const& model, int index, glm::mat4 const& parentMatrix, V
             out.push_back({glm::vec3(m * glm::vec4(quad.pos[k] / 16.0f, 1.0f)), quad.uv[k], normal});
         }
     }
-    for (int child : bone.children) bakeBone(model, child, m, visit, pose, out);
+    for (int child : bone.children) bakeBone(model, child, m, visit, pose, out,magazine);
+    if (magazine>=0 && bone.name=="additional_magazine")
+        bakeBone(model,magazine,m,visit,pose,out,-1,true);
 }
 
 } // namespace
 
-std::vector<Vertex> bake(GeoModel const& model, VisitFn const& visit, animation::Pose const& pose) {
+std::vector<Vertex> bake(GeoModel const& model, VisitFn const& visit, animation::Pose const& pose,bool gunMagazineInstance) {
     std::vector<Vertex> out;
-    for (int root : model.roots) bakeBone(model, root, glm::mat4(1.0f), visit, pose, out);
+    int magazine=gunMagazineInstance ? model.find("magazine") : -1;
+    if (magazine>=0) {
+        auto path=model.path(model.find("additional_magazine"));
+        if (std::find(path.begin(),path.end(),magazine)!=path.end()) magazine=-1;
+    }
+    for (int root : model.roots) bakeBone(model, root, glm::mat4(1.0f), visit, pose, out,magazine);
     return out;
 }
 

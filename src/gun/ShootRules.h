@@ -72,6 +72,16 @@ struct GunAmmo {
     auto operator<=>(GunAmmo const&) const = default;
 };
 
+inline bool hasChamberedRound(std::optional<Bolt> bolt,bool stored) {
+    return bolt && *bolt!=Bolt::OpenBolt && stored;
+}
+
+// AbstractGunItem.fillItemCategory + GunItemBuilder write this raw flag even on
+// open bolts. Preserve TACZ NBT; consumers/UI must use hasChamberedRound instead.
+inline GunAmmo initialAmmo(GunData const& data) {
+    return {std::max(data.ammoAmount,0),true};
+}
+
 // Rounds that can be fired: the chambered round only counts for closed and manual bolts.
 inline int availableRounds(Bolt bolt, GunAmmo const& ammo) {
     return ammo.magazine + (ammo.barrel && bolt != Bolt::OpenBolt ? 1 : 0);

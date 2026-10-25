@@ -7,6 +7,7 @@
 #include <string>
 #include <unordered_map>
 #include <vector>
+#include <set>
 
 #include "pack/GunData.h"
 #include "pack/GunDisplay.h"
@@ -68,6 +69,9 @@ public:
     // Reads a file by pack-relative path (e.g. "assets/tacz/textures/gun/uv/ak47.png");
     // the last pack containing it wins, as with resource pack stacking.
     [[nodiscard]] std::optional<std::string> readFile(std::string_view path) const;
+    [[nodiscard]] bool hasFile(std::string const& path) const;
+    // Per-gun startup audit, aggregated once (including clip-keyed sounds).
+    [[nodiscard]] std::map<ResourceId,std::vector<std::string>> const& assetIssues() const { return mAssetIssues; }
 
     [[nodiscard]] std::map<ResourceId, GunEntry> const&  guns() const { return mGuns; }
     [[nodiscard]] std::map<ResourceId, AmmoEntry> const& ammos() const { return mAmmo; }
@@ -85,6 +89,8 @@ private:
     std::map<ResourceId, GunDisplay>         mGunDisplays;
     std::map<ResourceId, std::string>        mDataScripts;
     std::map<ResourceId, std::string>        mAssetScripts;
+    std::set<std::string,std::less<>>        mAssetPaths;
+    std::map<ResourceId,std::vector<std::string>> mAssetIssues;
 };
 
 // CommonGunIndex.checkIndex / checkData. Returns an error message, or empty if valid.

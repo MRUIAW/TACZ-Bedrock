@@ -2,7 +2,7 @@ add_rules("mode.debug", "mode.release")
 
 -- Single source of the mod version. Keep tooth.json "version" in sync.
 -- Patch +1 per small item / test round; minor +1 per finished feature or phase.
-local tacz_version = "0.3.18"
+local tacz_version = "0.3.19"
 set_version(tacz_version)
 
 add_repositories("levimc-repo https://github.com/LiteLDev/xmake-repo.git")
@@ -118,3 +118,17 @@ target("tacz-tests")
     -- The reference TACZ checkout supplies the default gun pack for integration tests.
     add_defines(format('TACZ_DEFAULT_PACK_DIR="%s"',
         path.join(os.projectdir(), "_reference/TACZ/src/main/resources/assets/tacz/custom/tacz_default_gun"):gsub("\\", "/")))
+
+target("tacz-pack-audit")
+    add_rules("tacz.builtin_assets")
+    set_default(false)
+    set_kind("binary")
+    set_languages("c++20")
+    if is_plat("windows") then
+        add_defines("NOMINMAX", "UNICODE")
+        add_cxflags("/EHsc", "/utf-8")
+        set_toolchains("clang-cl")
+    end
+    add_packages("nlohmann_json", "glm")
+    add_includedirs("src")
+    add_files("src/pack/**.cpp", "src/model/**.cpp", "scripts/pack-audit.cpp")

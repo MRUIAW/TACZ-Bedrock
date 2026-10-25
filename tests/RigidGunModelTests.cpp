@@ -42,7 +42,7 @@ TEST_CASE("Rigid groups keep named/visibility boundaries, DFS order and immutabl
         model::GunRenderState state; state.extendedMagLevel=i%4; state.additionalMagazine=i%2;
         auto visit=visibility(state);
         model::evaluateBoneFrame(geo,rigid,pose,visit,frame);
-        auto a=model::bake(geo,visit,pose),b=model::flattenRigidGunModel(rigid,frame);
+        auto a=model::bake(geo,visit,pose,true),b=model::flattenRigidGunModel(rigid,frame);
         REQUIRE(a.size()==b.size()); CHECK(model::positionDelta(a,b)<2e-6f); CHECK(normalDelta(a,b)<2e-5f);
         for (size_t k=0;k<a.size();++k) CHECK(a[k].uv==b[k].uv);
         CHECK(model::positionHash(saved)==model::positionHash(rigid.groups.front().vertices));
@@ -100,7 +100,7 @@ TEST_CASE("Real AK47 all clips and blends: cached local meshes equal legacy bake
         size_t draws=0;
         for (auto const& g:rigid.groups) draws+=model::drawableRigidBone(frame,g.bone);
         minDraws=std::min(minDraws,draws); maxDraws=std::max(maxDraws,draws);
-        auto a=model::bake(geo,visit,pose),b=model::flattenRigidGunModel(rigid,frame);
+        auto a=model::bake(geo,visit,pose,true),b=model::flattenRigidGunModel(rigid,frame);
         REQUIRE(a.size()==b.size());
         maxPosition=std::max(maxPosition,model::positionDelta(a,b));
         float nError=0;
@@ -131,7 +131,7 @@ TEST_CASE("Real AK47 all clips and blends: cached local meshes equal legacy bake
         INFO(name," sample ",i);
         animation::Pose pose; animation::evaluate(clip,clip.duration*i/32.f,pose);
         model::GunRenderState state; state.extendedMagLevel=i%4; state.bulletInBarrel=i%2; state.ammoCount=i%3;
-        state.additionalMagazine=pose.contains("additional_magazine");
+        state.additionalMagazine=model::additionalMagazineKeyed(pose);
         check(pose,state);
         animation::Pose base; animation::evaluate(clips.at("static_idle"),0,base);
         animation::compose(pose,base,true); check(base,state);

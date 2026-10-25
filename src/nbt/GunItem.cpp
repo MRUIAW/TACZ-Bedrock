@@ -11,6 +11,7 @@
 #include "mc/world/item/ItemStack.h"
 
 #include "nbt/GunNbt.h"
+#include "gun/ShootRules.h"
 
 namespace tacz::nbt {
 
@@ -65,8 +66,9 @@ bool writeSelectedGun(Player& player, GunItemState const& state) {
 GunItemState freshGun(pack::ResourceId const& gunId, pack::GunData const& data) {
     GunItemState state{gunId};
     state.fireMode = data.fireModes.empty() ? std::nullopt : data.fireModes.front();
-    state.ammo     = data.ammoAmount;
-    state.barrel   = true;
+    auto ammo=gun::initialAmmo(data);
+    state.ammo     = ammo.magazine;
+    state.barrel   = ammo.barrel;
     return state;
 }
 

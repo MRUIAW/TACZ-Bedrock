@@ -44,7 +44,7 @@ std::optional<glm::mat4> playerArmTransform(GeoModel const& model, std::span<int
 }
 
 std::optional<glm::mat4> playerArmTransformFromFrame(GeoModel const& model,std::span<int const> path,BoneFrame const& frame) {
-    if (path.empty() || frame.world.size()!=model.bones.size() || frame.parentVisible.size()!=model.bones.size()) return std::nullopt;
+    if (path.empty() || frame.world.size()<model.bones.size() || frame.parentVisible.size()<model.bones.size()) return std::nullopt;
     for (size_t i=0;i<path.size();++i) {
         int index=path[i];
         if (index<0 || static_cast<size_t>(index)>=model.bones.size()

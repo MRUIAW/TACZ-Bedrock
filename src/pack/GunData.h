@@ -151,7 +151,7 @@ struct GunData {
     std::optional<std::map<InaccuracyType, float>> inaccuracy;
     MoveSpeed                                movementSpeed;
     std::optional<GunHeatData>               heat;
-    std::vector<std::string>                 allowAttachmentTypes;
+    std::vector<std::optional<std::string>>  allowAttachmentTypes;
     float                                    weight = 0;
     std::optional<ResourceId>                script;
     // Kept as raw JSON until the systems that use them are ported.

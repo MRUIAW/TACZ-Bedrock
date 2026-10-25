@@ -479,7 +479,7 @@ bool drawGun(ItemInHandRenderer& renderer, BaseActorRenderContext& context) {
     bool twoSided = debug::gunTwoSided;
     if (path==0 && (!visual->mesh || pose.revision != visual->animationRevision || twoSided != visual->meshTwoSided)) {
         auto start = std::chrono::steady_clock::now();
-        visual->vertices = model::bake(visual->model,visit,pose.pose);
+        visual->vertices = model::bake(visual->model,visit,pose.pose,true);
         buildMesh(screen, *visual, twoSided);
         visual->animationRevision = pose.revision;
         counters.lastMesh = pose.revision;
@@ -623,7 +623,7 @@ bool drawGun(ItemInHandRenderer& renderer, BaseActorRenderContext& context) {
             auto const& raw=visual->mesh->mRawData.get();
             d.rawBytes=raw.size(); d.rawHash=14695981039346656037ull;
             for (auto byte:raw) { d.rawHash^=byte; d.rawHash*=1099511628211ull; }
-            auto repeat=model::bake(visual->model,visit,pose.pose);
+            auto repeat=model::bake(visual->model,visit,pose.pose,true);
             float magnitude=0;
             for (auto const& v:visual->vertices) for (int axis=0;axis<3;++axis) magnitude=std::max(magnitude,std::abs(v.pos[axis]));
             logger().info("[mesh-jitter] path=0 world={} freeze={} frames={} changes={} topologyChanges={} hash={:016x} previousHash={:016x} maxAbsPos={:.9g} consecutiveMaxDelta={:.9g} repeatMaxDelta={:.9g} tessellatorMaxDelta={:.9g} clipMatrixMaxDelta={:.9g} rawBytes={} rawHash={:016x} viewTranslation={} worldTranslation={} nativePacking=unknown frame=model-blocks cpuPosition=float32",
