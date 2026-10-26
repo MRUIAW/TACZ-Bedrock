@@ -8,6 +8,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 Versioning rule for this project: the patch number goes up by 1 for each small item or test
 round, the minor number goes up by 1 for each finished feature or phase.
 
+## [0.3.26] - 2026-10-27
+
+### Part 1 — partial pickup data loss
+
+- User-tested0.3.25 `f7bd259`: tooltip ammo correct, no observed stacks above60;
+  icons remain placeholders. Partial pickup fills a stack but deletes ground overflow,
+  including after rejoin. The bool-only fix was insufficient.
+- `.1.log`04:45:01/04:45:07 explicitly records add returning false with15/7 left,
+  followed by take=true. Missing later add logs were caused by the40-sample cap, not
+  evidence of a different overload. Native take's false branch writes back remainder,
+  then its creative-mode cleanup discards the local remainder and returns full success.
+- Keep the original actor and native partial transaction. A synchronous, player-matched
+  ammo-take scope suppresses the creative predicate only after an add leaves a remainder;
+  no global game-mode change, no A2 actor split, no corrective packets or spawned copies.
+  Log every add inside take, raw post-take count, removed/pending-removal state,
+  effective ground count and creative-discard suppression. Full-pickup stale actor
+  counts no longer masquerade as conserved ground ammo. Other A1 paths remain pending.
+- Native persistence/client-sync acceptance still requires the new in-game test.
+  Evidence and remaining risks: `docs/ITEMS-0.3.26.md`.
+
 ## [0.3.25] - 2026-10-27
 
 ### Interim testing release — A1 pending

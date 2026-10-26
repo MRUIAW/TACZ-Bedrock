@@ -27,6 +27,8 @@ struct PickupPlan { int accepted=0,remaining=0; };
 PickupPlan planPickup(int groundCount,int capacity);
 // Native add can mutate partially and return false; true means no remainder.
 bool nativeAmmoAddComplete(int remaining);
+bool preserveAmmoPickupRemainder(bool samePlayer,int inserted,int remaining);
+int ammoPickupGroundAfter(int rawAfterTake,bool removed,bool nativeComplete);
 std::string normalizeLanguage(std::string code);
 using LanguageTable=std::map<std::string,std::map<std::string,std::string>>;
 std::string lookupTranslation(LanguageTable const& languages,std::string const& key,std::string const& locale);

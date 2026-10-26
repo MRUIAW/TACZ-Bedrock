@@ -98,3 +98,20 @@ TEST_CASE("Give overflow belongs on ground, including subsequent split stacks af
     CHECK(pack::nativeAmmoAddComplete(pack::planAmmoInsertion({{0,false}},60,60).remaining));
     CHECK_FALSE(pack::nativeAmmoAddComplete(pack::planAmmoInsertion({{60,true}},60,60).remaining));
 }
+TEST_CASE("Creative partial pickup must retain the native false branch remainder, not discard it") {
+    for (int count:{1,7,15,30,59,60}) for (int space=0;space<=60;++space) for (bool creative:{false,true}) {
+        auto plan=pack::planPickup(count,space);
+        bool suppress=pack::preserveAmmoPickupRemainder(true,plan.accepted,plan.remaining);
+        bool complete=pack::nativeAmmoAddComplete(plan.remaining);
+        // Native creative cleanup would null the local remainder and return true.
+        if (creative && !suppress) complete=true;
+        auto ground=pack::ammoPickupGroundAfter(plan.remaining,false,complete);
+        CHECK(plan.accepted+ground==count);
+        CHECK_FALSE(pack::preserveAmmoPickupRemainder(false,plan.accepted,plan.remaining));
+        if (plan.accepted>0 && plan.remaining>0) { CHECK(suppress); CHECK_FALSE(complete); }
+    }
+    CHECK(pack::ammoPickupGroundAfter(60,false,true)==0); // caller removal pending; stale actor count is not ground ammo
+    CHECK(pack::ammoPickupGroundAfter(30,false,false)==30);
+    CHECK(pack::ammoPickupGroundAfter(30,true,false)==0);
+    CHECK(pack::preserveAmmoPickupRemainder(true,0,60)); // no-progress take must not discard the whole actor either
+}

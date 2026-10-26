@@ -83,6 +83,12 @@ PickupPlan planPickup(int groundCount,int capacity) {
     return {accepted,groundCount-accepted};
 }
 bool nativeAmmoAddComplete(int remaining) { return remaining==0; }
+bool preserveAmmoPickupRemainder(bool samePlayer,int inserted,int remaining) {
+    return samePlayer && inserted>=0 && remaining>0;
+}
+int ammoPickupGroundAfter(int rawAfterTake,bool removed,bool nativeComplete) {
+    return removed || nativeComplete ? 0 : std::max(0,rawAfterTake);
+}
 std::string normalizeLanguage(std::string code) {
     for (auto& c:code) { if (c=='-') c='_'; else if (c>='A' && c<='Z') c+= 'a'-'A'; }
     return code;

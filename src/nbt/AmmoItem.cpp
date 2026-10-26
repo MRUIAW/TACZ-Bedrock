@@ -91,6 +91,24 @@ int insertAmmo(Inventory& inventory,ItemStack& source,int limit) {
     return inserted;
 }
 std::atomic<int> inventorySamples=0;
+// Native take's creative cleanup discards a partial add's local remainder after
+// writing it back to the actor, then reports full pickup to the removing caller.
+// Limit the predicate override to this player's synchronous partial-ammo take.
+struct AmmoTakeContext {
+    Player const* player;
+    Inventory const* inventory;
+    int inserted=0,remaining=0,addCalls=0,creativeChecks=0;
+};
+thread_local AmmoTakeContext* ammoTake=nullptr;
+static_assert(std::is_same_v<decltype(&Actor::isCreative),bool (Actor::*)() const>);
+LL_TYPE_INSTANCE_HOOK(AmmoKeepCreativeRemainder,ll::memory::HookPriority::Normal,Actor,&Actor::isCreative,bool) {
+    auto native=origin();
+    if (native && ammoTake && pack::preserveAmmoPickupRemainder(static_cast<Actor const*>(this)==static_cast<Actor const*>(ammoTake->player),ammoTake->inserted,ammoTake->remaining)) {
+        ++ammoTake->creativeChecks;
+        return false;
+    }
+    return native;
+}
 static_assert(std::is_same_v<decltype(&ItemStackBase::hasSameUserData),bool (ItemStackBase::*)(ItemStackBase const&) const>);
 LL_TYPE_INSTANCE_HOOK(AmmoSameData,ll::memory::HookPriority::Normal,ItemStackBase,&ItemStackBase::hasSameUserData,bool,ItemStackBase const& other) {
     if (!limitFor(*this) || !limitFor(other)) return origin(other);
@@ -117,7 +135,11 @@ LL_TYPE_INSTANCE_HOOK(AmmoAdd,ll::memory::HookPriority::Normal,Inventory,&Invent
     // inserted>0 here (0.3.24) incorrectly selected the full-success branch.
     int inserted=insertAmmo(*this,item,limit);
     bool complete=pack::nativeAmmoAddComplete(item.mCount);
-    if (inventorySamples.fetch_add(1)<40) TaczMod::getInstance().getSelf().getLogger().info(
+    bool taking=ammoTake && ammoTake->inventory==this;
+    if (taking) {
+        ammoTake->inserted+=inserted; ammoTake->remaining=item.mCount; ++ammoTake->addCalls;
+    }
+    if (taking || inventorySamples.fetch_add(1)<40) TaczMod::getInstance().getSelf().getLogger().info(
         "[ammo-stack] add id={} requested={} inserted={} remaining={} limit={} complete={}",id,requested,inserted,item.mCount,limit,complete);
     return complete;
 }
@@ -132,33 +154,45 @@ LL_TYPE_INSTANCE_HOOK(AmmoPickup,ll::memory::HookPriority::Normal,Player,&Player
     auto ammoId=*readAmmoId(item->mItem.get());
     auto actorId=item->getOrCreateUniqueID();
     int inventoryBefore=countAmmo(*this,ammoId);
-    // Observational only: no A2 actor reservation/splitting, hand-written pickup
-    // packets, forced refresh, cancellation override or extra ground mutation.
+    AmmoTakeContext context{this,&getInventory()};
+    struct Scope {
+        AmmoTakeContext* previous=ammoTake;
+        Scope(AmmoTakeContext& current) { ammoTake=&current; }
+        ~Scope() { ammoTake=previous; }
+    } scope(context);
+    // No A2 actors, packets, forced refresh or post-take corrective mutation.
+    // Native partial branch commits the same actor; suppress only its scoped
+    // creative discard predicate once a partial inventory add has occurred.
     bool result=origin(actor,count,favoredSlot);
     int inserted=countAmmo(*this,ammoId)-inventoryBefore;
     // Native may have removed the actor. Reacquire by ID rather than using the
     // original actor/stack reference after take has completed.
     auto liveActor=getLevel().fetchEntity(actorId,false);
     auto liveItem=liveActor ? ItemActor::tryGetFromEntity(liveActor->getEntityContext(),false) : nullptr;
-    int after=!liveItem || liveItem->mRemoved || liveItem->mItem->isNull() ? 0 : int(liveItem->mItem->mCount);
+    bool removed=!liveItem || liveItem->mRemoved;
+    int rawAfter=removed || liveItem->mItem->isNull() ? 0 : int(liveItem->mItem->mCount);
+    int after=pack::ammoPickupGroundAfter(rawAfter,removed,result);
     TaczMod::getInstance().getSelf().getLogger().info(
-        "[ammo-pickup] id={} groundBefore={} requested={} groundAfter={} native={} inserted={} conserved={} mode=observe",
-        ammoId.toString(),before,count,after,result,inserted,before==inserted+after);
+        "[ammo-pickup] id={} groundBefore={} requested={} groundAfter={} rawAfterTake={} removed={} removalPending={} native={} inserted={} conserved={} addCalls={} addRemaining={} creativeDiscardSuppressed={} mode=native-partial",
+        ammoId.toString(),before,count,after,rawAfter,removed,result && !removed,result,inserted,before==inserted+after,
+        context.addCalls,context.remaining,context.creativeChecks);
     return result;
 }
-bool addHook=false,canAddHook=false,sameDataHook=false,pickupHook=false;
+bool addHook=false,canAddHook=false,sameDataHook=false,pickupHook=false,creativeRemainderHook=false;
 }
 void enableAmmoInventory() {
     addHook=AmmoAdd::hook()==0; canAddHook=AmmoCanAdd::hook()==0;
     sameDataHook=AmmoSameData::hook()==0;
     pickupHook=AmmoPickup::hook()==0;
-    TaczMod::getInstance().getSelf().getLogger().info("[ammo-stack] addHook={} canAddHook={} sameDataHook={} pickupHook={}",addHook,canAddHook,sameDataHook,pickupHook);
+    creativeRemainderHook=AmmoKeepCreativeRemainder::hook()==0;
+    TaczMod::getInstance().getSelf().getLogger().info("[ammo-stack] addHook={} canAddHook={} sameDataHook={} pickupHook={} creativeRemainderHook={}",addHook,canAddHook,sameDataHook,pickupHook,creativeRemainderHook);
 }
 void disableAmmoInventory() {
     if (addHook) AmmoAdd::unhook(); if (canAddHook) AmmoCanAdd::unhook();
     if (sameDataHook) AmmoSameData::unhook();
     if (pickupHook) AmmoPickup::unhook();
-    addHook=canAddHook=sameDataHook=pickupHook=false; inventorySamples=0;
+    if (creativeRemainderHook) AmmoKeepCreativeRemainder::unhook();
+    addHook=canAddHook=sameDataHook=pickupHook=creativeRemainderHook=false; inventorySamples=0;
 }
 
 std::optional<pack::ResourceId> readAmmoId(ItemStackBase const& item) {
