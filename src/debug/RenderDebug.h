@@ -1,6 +1,7 @@
 #pragma once
 
 #include <atomic>
+#include <cstdint>
 
 // Render diagnostics shared by the /tacz command (server side, also in the client DLL for
 // single-player) and the client renderer. Only meaningful in single-player.
@@ -18,6 +19,8 @@ inline std::atomic<bool> meshDiagnostics{false}; // expensive read-only comparis
 inline std::atomic<int> gunRenderPath{1}; // 0 animated CPU bake; 1 immutable rigid meshes + bone matrices
 inline std::atomic<bool> gunBlend{true}; // TACZ display transparency + cutout mask compatibility; 0 legacy A/B
 inline std::atomic<bool> probeHud{false};
+inline std::atomic<uint64_t> hudRevision{0}; // one-shot /tacz rdebug hud snapshot, no overlay pollution
+inline std::atomic<int> gunSampler{0}; // 0 established upload (default); 1 experimental one-mip/no-drop container
 // 0 native depth; 1 isolated GL-style .05..16; 2 isolated .10..16. Diagnostic only.
 inline std::atomic<int> gunDepthMode{0};
 

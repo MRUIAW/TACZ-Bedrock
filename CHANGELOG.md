@@ -8,6 +8,74 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 Versioning rule for this project: the patch number goes up by 1 for each small item or test
 round, the minor number goes up by 1 for each finished feature or phase.
 
+## [0.3.21] - 2026-10-26
+
+### User-tested 0.3.20
+
+- `7fce9c2` crosshair and body/head/kill markers + corresponding sounds passed.
+  Mixed numeric/percent ammo is correct display-driven TACZ behavior, not a HUD bug.
+  Current production audit confirms 18 percent displays/guns (13 twx, 2 cyber_armorer,
+  1 ccrp, 2 sfms); the planner's “14 twx” subtotal was off by one. No style override added.
+- User found HUD font/proportions/version line unlike Java. Timeless_50 pattern and HK416D
+  white text remain wrong; blend0/1 had no visible effect. Alpha threshold did not fix them.
+- User decision: BDS testing, gun-pack data sync and server-only warning go **last**;
+  ROADMAP updated. This release builds both variants but does not start BDS integration work.
+
+### Changed / investigated
+
+- Extract tested TACZ GUI layout math, matching current/reserve/version positions and
+  independent1.5/.8/.5 font scales, 1×18 separator, 39×13 gun HUD and 10×10 fire-mode icon;
+  preserve Java integer truncation for fire-mode/version placement. Bedrock scaled UI units
+  map1:1 to Java GUI units, without multiplying physical GUI scale a second time.
+- Use the game's retained original/default bitmap font rather than the alias's modern UI
+  override; normalize digit advance to6 and use the same font metrics for measurement/draw.
+  Restore grey shadowed version line: native SharedConstants Major.Minor.Patch + mod version,
+  e.g. `1.26.51-0.3.21`, without launcher/build-revision suffix. No copied/custom font texture.
+- Keep correct strict low-ammo/percent/bolt rules; add inventory/dummy color tests and
+  read-only DummyAmmo HUD support. No heat simulation/bar, ammo-box or attachment-capacity
+  gameplay added. Preserve50ms cache and creative9999, infinite∞, hud_empty/red fallback.
+- 030/031: no dropped chamber found in the HUD formula. Production AK47 has closed bolt,
+  initial magazine30/rawChamber=true; initialAmmo→HUD tests confirm031 (open bolt030).
+  The screenshot lacks frame-specific raw NBT, so do not invent a chamber or claim its state.
+  `/tacz rdebug hud` logs magazine/raw chamber/bolt/final text and font/GUI metrics for diagnosis.
+- Exact installed decal UV audit: Java/native divide by **geometry description**, with zero
+  inset; negative size retains reversal and JSON up/down have the same face routing.
+  Timeless normalized `(0,.7890625)→(.533203125,1.005859375)`, PNG texels
+  `(0,202)→(136.5,257.5)`, identical both sides. HK white text localized to bone/cubes0,2,3;
+  all four-corner UVs match production-model tests. Detailed rectangles in the evidence doc.
+- Add read-only `scripts/analyze-decal-sampling.py`: raw crops, Java/native UV point-repeat
+  controls, clamp/linear/mip hypotheses and contact sheet. Controls match pixel-for-pixel;
+  simulated filtering blurs tiny text, **not proof of the actual native sampler**.
+  Third-party output images stay in approved temporary storage, not the repository/gunpacks.
+- `/tacz rdebug sampler 0|1`: default0 retains established ImageBuffer upload; experimental1
+  uploads a typed single-level TextureContainer, explicitly one mip/no mip dropping.
+  Log requested/native metadata mip counts and texture/UV dimensions; rebuild only at resource
+  boundaries, keeping immutable group meshes, bone animation, arm handling and native RTX path.
+
+### Evidence / limits
+
+- Java entity texture state disables blur/mips. Native actual point/linear/wrap/clamp and
+  automatic mip behavior remain **unverified**: installed SDK SamplerStateDescription is an
+  empty placeholder, not safe to mutate/index as a real sampler array. No unsafe shared-state
+  edit, speculative UV rewrite or geometry/depth workaround. Sampler1 is not a point-filter switch.
+- **Decal root cause/fix is not established.** This release excludes the UV-rectangle mismatch
+  and supplies a bounded mip A/B, not a claim that Timeless/HK416D are fixed or RTX-tested.
+  Exact HUD pixel appearance, bitmap fallback and the experimental upload still need in-game
+  screenshot/RTX/world-switch acceptance. Prior gameplay/skin/kill-count gaps remain.
+- Evidence, all rectangles, sampling-image legend and regression steps:
+  `docs/HUD-SAMPLING-0.3.21.md`. No installed gunpack changed or encrypted content accessed.
+
+### Validation / deployment
+
+- Client/server Windows x64 release builds passed; **158 tests / 78,054 assertions** passed,
+  zero failures/skips. Production offline audit325/325 loaded; four decal UV controls agree.
+  `git diff --check` passed.
+- Game closed; client0.3.21 deployed. DLL/PDB/manifest SHA-256 values match final build,
+  manifest platform/version checked; RP/BP exact path sets + hashes match (4/2 files).
+  No game process terminated; no new in-game run by the agent.
+- Client DLL SHA-256: `186c19a634fa1eb40d8fba3877049bdf47dc3c87991c775fc84ffbeab6c69588`.
+  Server DLL: `bbfffbec058d876f7f8d8f848345898230879968d063d91bf53e9aa0afc58df2`.
+
 ## [0.3.20] - 2026-10-26
 
 ### User-tested 0.3.19 / continuation review

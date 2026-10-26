@@ -144,6 +144,16 @@ void registerCommands() {
             output.success("Animation request sent");
         });
     // /tacz rdebug <material> <twoSided> : first-person gun render diagnostics
+    command.overload().text("rdebug").text("hud").execute([](CommandOrigin const&,CommandOutput& output) {
+        ++debug::hudRevision;
+        output.success("HUD metrics/ammo snapshot requested; see client [hud-layout] log (integrated client only)");
+    });
+    command.overload<RenderToggleParams>().text("rdebug").text("sampler").required("value")
+        .execute([](CommandOrigin const&,CommandOutput& output,RenderToggleParams const& params) {
+            if (params.value<0 || params.value>1) return output.error("sampler: 0 legacy upload, 1 explicit single mip/no dropping (not a point/linear switch)");
+            debug::gunSampler=params.value; ++debug::renderRevision;
+            output.success("Gun texture upload changed; no shared sampler state modified (integrated client only)");
+        });
     command.overload<RenderToggleParams>().text("rdebug").text("blend").required("value")
         .execute([](CommandOrigin const&,CommandOutput& output,RenderToggleParams const& params) {
             if (params.value<0 || params.value>1) return output.error("blend: 0 legacy, 1 TACZ display transparency/cutout (default)");

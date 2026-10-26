@@ -4,11 +4,64 @@
 #include <iterator>
 #include <limits>
 #include "model/GunHud.h"
+#include "model/GunHudLayout.h"
 #include "model/GunAlpha.h"
 #include "pack/BuiltinAssets.h"
 #include "pack/GunPackParser.h"
 
 using namespace tacz;
+TEST_CASE("TACZ HUD layout: Java GUI positions, independent font scales and integer fire icon") {
+    auto h=model::hud::layout(320,180,18);
+    CHECK(h.line==glm::vec4(245,137,246,155));
+    CHECK(h.current==glm::vec2(250,137));
+    CHECK(h.reserve==glm::vec2(279,137));
+    CHECK(h.version==glm::vec2(250,151));
+    CHECK(h.gunIcon==glm::vec2(203,136));
+    CHECK(h.fireMode==glm::vec2(278,142));
+    CHECK(model::hud::Layout::CurrentScale==1.5f);
+    CHECK(model::hud::Layout::ReserveScale==.8f);
+    CHECK(model::hud::Layout::VersionScale==.5f);
+    CHECK(model::hud::Layout::GunSize==glm::vec2(39,13));
+    CHECK(model::hud::Layout::ModeSize==glm::vec2(10,10));
+    auto percent=model::hud::layout(640,360,24);
+    CHECK(percent.reserve==glm::vec2(608,317));
+    CHECK(percent.fireMode==glm::vec2(607,322));
+    CHECK(percent.current-h.current==glm::vec2(320,180));
+}
+TEST_CASE("TACZ HUD font mapping: bitmap advance six, no second GUI pixel scale") {
+    CHECK(model::hud::bitmapScale(6)==1);
+    CHECK(model::hud::bitmapScale(12)==.5f);
+    CHECK(model::hud::bitmapScale(0)==1);
+    CHECK(model::hud::bitmapScale(std::numeric_limits<float>::quiet_NaN())==1);
+    CHECK(model::hud::versionText("1.26.51.01","0.3.21")=="1.26.51-0.3.21");
+    CHECK(model::hud::versionText("v1.26.51","0.3.21")=="1.26.51-0.3.21");
+    CHECK(model::hud::versionText("1.26.51-LeviLamina","0.3.21")=="1.26.51-0.3.21");
+}
+TEST_CASE("TACZ HUD colors: strict low ammo, inventory/dummy and overheat priority") {
+    CHECK(model::hud::currentColor(7,30,false,false)==0xFF5555);
+    CHECK(model::hud::currentColor(8,30,false,false)==0xFFFFFF);
+    CHECK(model::hud::currentColor(10,100,true,false)==0xFFFF55);
+    CHECK(model::hud::currentColor(10,100,true,true)==0x55FFFF);
+    CHECK(model::hud::currentColor(10,100,false,true)==0xFFFFFF);
+    CHECK(model::hud::currentColor(100,100,false,false,true)==0xFF5555);
+    CHECK(model::hud::currentColor(0,30,true,true)==0xFF5555);
+    CHECK(model::hud::reserveColor(false,true)==0x55FFFF);
+    CHECK(model::hud::reserveColor(false,false)==0xAAAAAA);
+    CHECK(model::hud::reserveColor(true,true)==0xAAAAAA);
+}
+TEST_CASE("TACZ fresh setgun ammo to HUD: closed 031, open 030; do not invent a chamber") {
+    pack::GunData data;
+    data.ammoAmount=30;
+    for (auto bolt:{pack::Bolt::ClosedBolt,pack::Bolt::ManualAction,pack::Bolt::OpenBolt}) {
+        data.bolt=bolt;
+        auto initial=gun::initialAmmo(data);
+        CHECK(initial.magazine==30); CHECK(initial.barrel);
+        auto count=model::hud::currentAmmo(initial.magazine,initial.barrel,bolt);
+        CHECK(model::hud::ammoText(count,30,false)==(bolt==pack::Bolt::OpenBolt ? "030" : "031"));
+    }
+    CHECK(model::hud::currentAmmo(30,false,pack::Bolt::ClosedBolt)==30);
+    CHECK(model::hud::currentAmmo(29,true,pack::Bolt::ClosedBolt)==30);
+}
 TEST_CASE("Gun HUD: TACZ summed chamber count, strict low-ammo limits and reserve") {
     CHECK(model::hud::currentAmmo(30,true,pack::Bolt::ClosedBolt)==31);
     CHECK(model::hud::currentAmmo(30,true,pack::Bolt::ManualAction)==31);
@@ -115,6 +168,10 @@ TEST_CASE("TACZ FaceItem ignores uv_rotation; preserve reference per-face UVs") 
     REQUIRE(a.bones[0].quads.size()==1); REQUIRE(b.bones[0].quads.size()==1);
     CHECK(a.bones[0].quads[0].uv==b.bones[0].quads[0].uv);
     CHECK(a.bones[0].quads[0].uv[2].y==doctest::Approx(128.75/128.0));
+    std::array<glm::vec2,4> java{{{.533203125f,.7890625f},{0,.7890625f},{0,1.005859375f},{.533203125f,1.005859375f}}};
+    CHECK(a.bones[0].quads[0].uv==java);
+    CHECK(a.bones[0].quads[0].uv[0]*256.f==glm::vec2(136.5f,202));
+    CHECK(a.bones[0].quads[0].uv[2]*256.f==glm::vec2(0,257.5f));
 }
 #ifdef TACZ_PROJECT_DIR
 TEST_CASE("HUD PNGs are authorized TACZ jar assets and embedded byte-for-byte") {

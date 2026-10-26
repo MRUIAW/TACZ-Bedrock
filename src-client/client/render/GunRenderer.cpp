@@ -50,6 +50,7 @@
 #include "mc/deps/minecraft_renderer/renderer/Mesh.h"
 #include "mc/deps/minecraft_renderer/renderer/MeshData.h"
 #include "mc/deps/minecraft_renderer/renderer/TexturePtr.h"
+#include "mc/deps/minecraft_renderer/renderer/TextureContainer.h"
 #include "mc/deps/minecraft_renderer/resources/ClientTexture.h"
 #include "mc/deps/minecraft_renderer/resources/OffscreenCaptureDescription.h"
 #include "mc/deps/minecraft_renderer/resources/ServerTexture.h"
@@ -104,6 +105,9 @@ using MeshRenderSignature=void (mce::Mesh::*)(mce::MeshContext&,mce::MaterialPtr
 static_assert(std::is_same_v<decltype(static_cast<MeshRenderSignature>(&mce::Mesh::renderMesh)),MeshRenderSignature>);
 static_assert(std::is_same_v<decltype(&Tessellator::vertex),void (Tessellator::*)(float,float,float)>);
 static_assert(std::is_same_v<decltype(&MatrixStack::push),MatrixStack::MatrixStackRef (MatrixStack::*)(bool)>);
+using UploadContainer=BedrockTexture& (mce::TextureGroup::*)(ResourceLocation const&,mce::TextureContainer&&,std::string_view);
+static_assert(std::is_same_v<decltype(static_cast<UploadContainer>(&mce::TextureGroup::uploadTexture)),UploadContainer>);
+static_assert(std::is_constructible_v<mce::TextureContainer,cg::ImageBuffer&&,mce::AllowDroppingMips>);
 
 ll::io::Logger& logger() { return TaczMod::getInstance().getSelf().getLogger(); }
 
@@ -193,6 +197,7 @@ int   loggedRevision = -1;
 std::optional<model::RenderResourceKey> resourceKey;
 uint64_t resourceSerial = 0;
 uint64_t textureSerial = 0;
+int boundSampler=-1;
 struct RenderCounters {
     std::chrono::steady_clock::time_point start = std::chrono::steady_clock::now();
     uint64_t hooks = 0, builds = 0, draws = 0, poseChanges = 0, invalidMeshes = 0;
@@ -233,6 +238,18 @@ void releaseResources(char const* reason) {
     waitingForResources = false;
 }
 
+BedrockTexture& uploadGunImage(mce::TextureGroup& group,ResourceLocation const& location,mce::Image&& image) {
+    cg::ImageBuffer buffer(std::move(image)); // one decoded image, no mip chain
+    if (boundSampler==0) return group.uploadTexture(location,std::move(buffer));
+    mce::TextureContainer container(std::move(buffer),static_cast<mce::AllowDroppingMips>(0));
+    auto previousMips=container.mDescription->mMipCount;
+    container.mDescription->mMipCount=1;
+    auto& texture=group.uploadTexture(location,std::move(container),"tacz single-mip gun");
+    std::shared_ptr<BedrockTextureData> data=texture.mBedrockTextureData;
+    logger().info("[gun-sampling] upload={} mode=1 inputMips={} requestedMips=1 nativeMetadataMips={} (filter/address are material-owned; GPU sampler not inferred)",
+        resourceSerial,previousMips,data ? data->mTextureDescription->mMipCount : 0);
+    return texture;
+}
 // Decodes a pack PNG and uploads it under a Raw (in-memory) resource location.
 bool uploadTexture(IClientInstance& client, std::string const& png, std::string const& name, GunVisual& visual) {
     int   w = 0, h = 0, channels = 0;
@@ -263,7 +280,7 @@ bool uploadTexture(IClientInstance& client, std::string const& png, std::string 
     if (!group) return false;
     auto runtimeName = fmt::format("tacz/runtime/{}/{}/{}/{}", resourceKey->world, resourceSerial, ++textureSerial, name);
     visual.textureLocation = std::make_unique<ResourceLocation>(Core::PathView(runtimeName), ResourceFileSystem::Raw);
-    auto& texture          = group->uploadTexture(*visual.textureLocation, cg::ImageBuffer(std::move(image)));
+    auto& texture          = uploadGunImage(*group,*visual.textureLocation,std::move(image));
     visual.texture         = mce::TexturePtr(texture, *visual.textureLocation, cg::TextureSetLayerType::Color);
     visual.textureOwner = group;
     bool fractional=std::find(visual.alphaClasses.begin(),visual.alphaClasses.end(),model::AlphaClass::Fractional)!=visual.alphaClasses.end();
@@ -275,7 +292,7 @@ bool uploadTexture(IClientInstance& client, std::string const& png, std::string 
         cutout.setRawImage(mce::Blob(mask.data(),mask.size()));
         auto maskName=runtimeName+"/java-cutout";
         visual.cutoutLocation=std::make_unique<ResourceLocation>(Core::PathView(maskName),ResourceFileSystem::Raw);
-        auto& masked=group->uploadTexture(*visual.cutoutLocation,cg::ImageBuffer(std::move(cutout)));
+        auto& masked=uploadGunImage(*group,*visual.cutoutLocation,std::move(cutout));
         visual.cutoutTexture=mce::TexturePtr(masked,*visual.cutoutLocation,cg::TextureSetLayerType::Color);
     } else visual.cutoutTexture=visual.texture;
     logger().info("[gun-alpha] {} displayTransparency={} fullyOpaqueGroups={} alphaGroups={} fractionalGroups={} JavaCutoutThreshold=.1 maskUploaded={} (backend filtering/RTX acceptance pending)",
@@ -484,9 +501,11 @@ bool drawGun(ItemInHandRenderer& renderer, BaseActorRenderContext& context) {
         return pose.puttingAway;
     }
     waitingForResources = false;
-    if (!resourceKey || *resourceKey != key) {
-        releaseResources("world/pipeline/resource-owner change");
+    int requestedSampler=debug::gunSampler.load();
+    if (!resourceKey || *resourceKey != key || boundSampler!=requestedSampler) {
+        releaseResources("world/pipeline/resource-owner/sampling change");
         resourceKey = key;
+        boundSampler=requestedSampler;
         ++resourceSerial;
         logger().info("[gun-gpu] bind world={} serial={} rtx={} deferred={}", key.world, resourceSerial,
             lighting == 1, lighting == 2);
@@ -583,6 +602,12 @@ bool drawGun(ItemInHandRenderer& renderer, BaseActorRenderContext& context) {
         logger().info("Gun transform {}", str(visual->transform));
         logger().info("[gun-alpha-state] path={} rtx={} compatibility={} displayTransparency={} material={} blended={} opaqueGroups={} alphaGroups={} nativePipelineVariant=true (not a GPU validation)",
             path,lighting==1,alphaCompatibility,visual->enableTransparency,materialIndex,blended,visual->opaqueGroups.size(),visual->alphaGroups.size());
+        if (auto* pointer=std::get_if<mce::TexturePtr>(&visual->texture)) {
+            std::shared_ptr<BedrockTextureData const> data=pointer->mClientTexture;
+            logger().info("[gun-sampling] mode={} rtx={} texture={}x{} metadataMips={} UV normalization={}x{} (sampler filter/wrap opaque in SDK; metadata is not a GPU capture)",
+                boundSampler,lighting==1,data ? data->mTextureDescription->mWidth : 0,data ? data->mTextureDescription->mHeight : 0,
+                data ? data->mTextureDescription->mMipCount : 0,visual->model.textureWidth,visual->model.textureHeight);
+        }
         auto const* info = mat ? mat->mRenderMaterialInfoPtr.get() : nullptr;
         auto const* material = info ? info->mPtr.get() : nullptr;
         if (material) logger().info("[gun-depth] material={} test={} func={} writeMask={} bias={} slopeBias={} cameraNear={} cameraFar={} (legacy descriptor; GPU pipeline may override)",

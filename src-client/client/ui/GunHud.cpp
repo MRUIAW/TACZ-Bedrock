@@ -33,6 +33,7 @@
 #include "mc/client/gui/screens/ScreenContext.h"
 #include "mc/client/renderer/Tessellator.h"
 #include "mc/common/Globals.h"
+#include "mc/common/SharedConstants.h"
 #include "mc/deps/minecraft_renderer/framebuilder/FrameBuilder.h"
 #include "mc/deps/core/container/Blob.h"
 #include "mc/deps/core/file/PathView.h"
@@ -58,6 +59,10 @@
 #include "mod/TaczMod.h"
 #include "nbt/AmmoItem.h"
 #include "nbt/GunItem.h"
+#include "model/GunHudLayout.h"
+#include "debug/RenderDebug.h"
+#include "mc/deps/nbt/CompoundTag.h"
+#include "mc/deps/nbt/CompoundTagVariant.h"
 #include "net/HitFeedbackPacket.h"
 
 namespace tacz::client::hud {
@@ -77,7 +82,14 @@ static_assert(std::is_same_v<decltype(&MinecraftUIRenderContext::getLineLength),
 using GuiDataGetter=Bedrock::NotNullNonOwnerPtr<GuiData> (IClientInstance::*)();
 static_assert(std::is_same_v<decltype(static_cast<GuiDataGetter>(&IClientInstance::getGuiData)),GuiDataGetter>);
 static_assert(std::is_same_v<decltype(&IOptionRegistry::getHideHud),bool (IOptionRegistry::*)() const>);
-constexpr mce::Color White{1.f,1.f,1.f,1.f},Red{1.f,1.f/3,1.f/3,1.f},Gray{2.f/3,2.f/3,2.f/3,1.f};
+static_assert(std::is_same_v<decltype(&SharedConstants::MajorVersion),int const& (*)()>);
+static_assert(std::is_same_v<decltype(&SharedConstants::MinorVersion),int const& (*)()>);
+static_assert(std::is_same_v<decltype(&SharedConstants::PatchVersion),int const& (*)()>);
+static_assert(std::is_same_v<decltype(static_cast<float (Font::*)() const>(&Font::getScaleFactor)),float (Font::*)() const>);
+static_assert(std::is_same_v<decltype(&Font::getWrapHeight),float (Font::*)() const>);
+using FontSources=std::pair<Core::PathBuffer<std::string> const&,Core::PathBuffer<std::string> const&> (Font::*)() const;
+static_assert(std::is_same_v<decltype(&Font::getFontSources),FontSources>);
+constexpr mce::Color White{1.f,1.f,1.f,1.f},Gray{2.f/3,2.f/3,2.f/3,1.f};
 struct Texture {
     bool failed=false;
     std::unique_ptr<ResourceLocation> location;
@@ -92,6 +104,7 @@ std::weak_ptr<mce::TextureGroup> textureOwner;
 std::string crosshair="dot_1",ammoGun;
 int64_t countAt=-1;
 int reserve=0;
+uint64_t loggedHudRevision=~uint64_t(0);
 std::atomic<bool> warned{false};
 std::atomic<bool> enabled{false};
 model::hud::HitMarker marker;
@@ -154,10 +167,20 @@ void image(MinecraftUIRenderContext& context,std::string const& path,glm::vec2 p
     context.drawImage(*data->mClientTexture,pos,size,uv,span,false);
     context.flushImages(color,alpha,HashedString{"ui_textured_and_glcolor"});
 }
-void text(MinecraftUIRenderContext& context,Font& font,std::string value,float x,float y,float scale,mce::Color color) {
-    TextMeasureData const measure{scale,0,false,false,false,ui::TextAlignment::Left};
+void text(MinecraftUIRenderContext& context,Font& font,std::string value,glm::vec2 pos,float scale,mce::Color color,bool shadow=false) {
+    TextMeasureData const measure{scale,0,shadow,false,false,ui::TextAlignment::Left};
     CaretMeasureData const caret{-1,false};
-    context.drawText(font,RectangleArea{x,x+180,y,y+16*scale},std::move(value),color,1,ui::TextAlignment::Left,measure,caret);
+    context.drawText(font,RectangleArea{pos.x,pos.x+180,pos.y,pos.y+16*scale},std::move(value),color,1,ui::TextAlignment::Left,measure,caret);
+}
+std::shared_ptr<Font> bitmapFont(FontRepository const& repo) {
+    auto const& originals=repo.mOriginalMinecraftFonts.get();
+    if (auto it=originals.find(repo.mDefaultFontId);it!=originals.end() && it->second) return it->second;
+    // A handle retains its original/default font even when getFont() resolves a
+    // modern UI font override. Do not alter repository-wide font preferences.
+    return repo.mFontHandle->mDefaultFont;
+}
+mce::Color rgb(uint32_t value) {
+    return {float((value>>16)&255)/255.f,float((value>>8)&255)/255.f,float(value&255)/255.f,1.f};
 }
 void configure() {
     try {
@@ -209,26 +232,47 @@ void draw(MinecraftUIRenderContext& context) {
     auto const& screen=client.getGuiData()->mScreenSizeData->clientUIScreenSize.get();
     float width=screen.x,height=screen.y;
     if (!std::isfinite(width) || !std::isfinite(height) || width<130 || height<60) return;
-    auto& font=client.getMinecraftGame_DEPRECATED().getFontRepository()->getFontFromFontType("default").getFont();
+    auto repo=client.getMinecraftGame_DEPRECATED().getFontRepository();
+    auto bitmap=bitmapFont(*repo);
+    if (!bitmap) return; // repository not yet ready; no dangling/cached font reference
+    auto& font=*bitmap;
+    float fontUnit=model::hud::bitmapScale(static_cast<float>(context.getLineLength(font,"0",1,false)));
+    auto const& selected=player->getSelectedItem();
+    auto const& tag=selected.mUserData;
+    bool dummy=tag && tag->contains("DummyAmmo",Tag::Int);
     if (ammoGun!=gun->gunId.toString() || countAt<0 || now-countAt>=50) {
         ammoGun=gun->gunId.toString(); countAt=now;
-        reserve=player->isCreative() ? model::hud::MaxAmmo : data.ammoId ? nbt::countAmmo(*player,*data.ammoId) : 0;
+        reserve=player->isCreative() ? model::hud::MaxAmmo : dummy ? std::max(0,static_cast<int>((*tag)["DummyAmmo"]))
+            : data.ammoId ? nbt::countAmmo(*player,*data.ammoId) : 0;
     }
     bool inventory=data.reload.type==pack::FeedType::Inventory;
     int amount=model::hud::currentAmmo(inventory ? reserve : gun->ammo,gun->barrel,data.bolt);
     auto current=model::hud::ammoText(amount,data.ammoAmount,display->ammoPercent);
     auto spare=model::hud::reserveText(reserve,player->isCreative(),data.reload.infinite,inventory);
-    auto ink=model::hud::lowAmmo(amount,data.ammoAmount) ? Red : inventory ? mce::Color{1.f,1.f,1.f/3,1.f} : White;
-    context.fillRectangle(RectangleArea{width-75,width-74,height-43,height-25},White,1);
+    float currentWidth=static_cast<float>(context.getLineLength(font,current,fontUnit,false));
+    auto hud=model::hud::layout(width,height,currentWidth);
+    context.fillRectangle(RectangleArea{hud.line.x,hud.line.z,hud.line.y,hud.line.w},White,1);
     context.flushImages(White,1,HashedString{"ui_fillColor"});
-    text(context,font,current,width-70,height-43,1.5f,ink);
-    float currentWidth=static_cast<float>(context.getLineLength(font,current,1,false))*1.5f;
-    text(context,font,spare,width-68+currentWidth,height-43,.8f,Gray);
+    text(context,font,current,hud.current,fontUnit*model::hud::Layout::CurrentScale,rgb(model::hud::currentColor(amount,data.ammoAmount,inventory,dummy)));
+    text(context,font,spare,hud.reserve,fontUnit*model::hud::Layout::ReserveScale,rgb(model::hud::reserveColor(inventory,dummy)));
+    auto gameVersion=std::to_string(SharedConstants::MajorVersion())+"."+std::to_string(SharedConstants::MinorVersion())
+        +"."+std::to_string(SharedConstants::PatchVersion());
+    auto version=model::hud::versionText(gameVersion,TACZ_VERSION);
+    text(context,font,version,hud.version,fontUnit*model::hud::Layout::VersionScale,Gray,true);
     context.flushText(0,std::nullopt);
     auto icon=amount<=0 && display->hudEmpty ? display->hudEmpty : display->hud;
-    if (icon) image(context,pack::assetPath(*icon,"textures",".png"),{width-117,height-44},{39,13},amount<=0 && !display->hudEmpty ? mce::Color{1.f,.3f,.3f,1.f} : White);
+    if (icon) image(context,pack::assetPath(*icon,"textures",".png"),hud.gunIcon,model::hud::Layout::GunSize,amount<=0 && !display->hudEmpty ? mce::Color{1.f,.3f,.3f,1.f} : White);
     auto mode=gun->fireMode==pack::FireMode::Auto ? "auto" : gun->fireMode==pack::FireMode::Burst ? "burst" : "semi";
-    image(context,std::string("assets/tacz/textures/hud/fire_mode_")+mode+".png",{width-68.5f+currentWidth,height-38},{10,10});
+    image(context,std::string("assets/tacz/textures/hud/fire_mode_")+mode+".png",hud.fireMode,model::hud::Layout::ModeSize);
+    auto hudRevision=debug::hudRevision.load();
+    if (loggedHudRevision!=hudRevision) {
+        loggedHudRevision=hudRevision;
+        auto sources=font.getFontSources();
+        logger().info("[hud-layout] world={} gun={} magazine={} rawChamber={} bolt={} effective={} text={} reserve={} percent={} GUI={}x{} guiScale={} bitmap={} digitAdvance={} fontUnit={} wrapHeight={} nativeScale={} version={}",
+            world,gun->gunId.toString(),gun->ammo,gun->barrel,data.bolt ? static_cast<int>(*data.bolt) : -1,amount,current,spare,display->ammoPercent,
+            width,height,client.getGuiData()->mGuiScale,static_cast<std::string const&>(sources.first),
+            context.getLineLength(font,"0",1,false),fontUnit,font.getWrapHeight(),font.getScaleFactor(),version);
+    }
     auto animation=anim::hudState(); auto aiming=aim::snapshot();
     bool same=animation.world==world && animation.gun==gun->gunId && animation.client==clientOwner;
     model::hud::CrosshairState cross;
