@@ -10,6 +10,7 @@
 #include "client/gameplay/ClientShooter.h"
 #include "client/render/GunRenderer.h"
 #include "client/render/SkinTextureSource.h"
+#include "client/ui/GunHud.h"
 #endif
 
 namespace tacz {
@@ -50,6 +51,7 @@ bool TaczMod::enable() {
     client::probe::enable();
     client::shooter::enable();
     client::render::enable();
+    client::hud::enable();
 #endif
     return true;
 }
@@ -57,6 +59,7 @@ bool TaczMod::enable() {
 bool TaczMod::disable() {
     getSelf().getLogger().debug("Disabling...");
 #ifdef TACZ_CLIENT
+    client::hud::disable();
     client::render::disable();
     client::shooter::disable();
     client::probe::disable();

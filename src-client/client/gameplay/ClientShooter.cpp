@@ -38,6 +38,7 @@
 #include "client/gameplay/ClientAim.h"
 #include "client/gameplay/ClientRecoil.h"
 #include "client/render/GunRenderer.h"
+#include "client/ui/GunHud.h"
 #include "gun/ShootRules.h"
 #include "gun/ClientWorldSession.h"
 #include "mod/TaczMod.h"
@@ -421,6 +422,7 @@ void endWorld(IClientInstance const* client) {
     // global service when exit callbacks arrive. Request-leave runs before that teardown.
     sound::stopAnimation();
     worldSession.close();
+    hud::releaseWorld(client);
     recoil::requestClear();
     render::releaseWorld(client);
     joinedClient = nullptr;
@@ -446,6 +448,7 @@ std::array<ll::event::ListenerPtr, 6> listeners;
 
 gun::ReloadStateType reloadState() { return static_cast<gun::ReloadStateType>(reloadTypePublished.load()); }
 uint64_t worldToken() { return worldSession.current(); }
+bool ownsClient(IClientInstance const* client) { return worldSession.current() && client && joinedClient.load()==client; }
 
 AnimationTiming animationTiming() {
     AnimationTiming result;

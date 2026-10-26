@@ -86,6 +86,7 @@
 #include "model/FunctionalBones.h"
 #include "model/MeshDiagnostics.h"
 #include "model/RigidGunModel.h"
+#include "model/GunAlpha.h"
 #include "client/render/CameraBones.h"
 #include "mod/TaczMod.h"
 #include "nbt/GunNbt.h"
@@ -127,6 +128,10 @@ struct GunVisual {
     bool                              warnedIncompatible=false;
     bool                              loggedInvalidMesh=false;
     uint64_t                          localHash=0;
+    bool                              enableTransparency=false;
+    bool                              warnedBlendFallback=false;
+    std::vector<model::AlphaClass>     alphaClasses;
+    std::vector<size_t>               opaqueGroups,alphaGroups;
     ArmPaths                          armPaths;
     uint64_t                          animationRevision = 0;
     size_t                            measuredFrames = 0;
@@ -147,7 +152,9 @@ struct GunVisual {
         std::chrono::steady_clock::time_point at=std::chrono::steady_clock::now();
     } diagnostics;
     std::unique_ptr<ResourceLocation> textureLocation;
+    std::unique_ptr<ResourceLocation> cutoutLocation;
     TextureVariant                    texture;
+    TextureVariant                    cutoutTexture;
     std::weak_ptr<mce::TextureGroup>   textureOwner;
 };
 
@@ -156,7 +163,7 @@ struct GunVisual {
 //   3 renderer alpha block   4 debug (vertex colour)   5 holo_hand_pointer
 //   6 moving-block alphatest (what Lamium uses for textured ghost blocks)
 // Verified in game (0.2.2): 4 and 6 draw; 2 is not populated on ItemInHandRenderer.
-constexpr int MaterialCount = 7;
+constexpr int MaterialCount = 8;
 
 char const* materialName(int index) {
     static constexpr char const* names[MaterialCount] = {
@@ -167,6 +174,7 @@ char const* materialName(int index) {
         "debug",
         "holo_hand_pointer",
         "moving-block alphatest",
+        "moving-block blend (native pipeline variant)",
     };
     return index >= 0 && index < MaterialCount ? names[index] : "?";
 }
@@ -205,6 +213,11 @@ void releaseResources(char const* reason) {
         visual.mesh.reset();
         for (auto& variant:visual.rigidMeshes) variant.clear();
         visual.texture = {};
+        visual.cutoutTexture={};
+        if (visual.cutoutLocation) {
+            auto owner=visual.textureOwner.lock();
+            if (owner) owner->unloadTexture(*visual.cutoutLocation,false);
+        }
         if (visual.textureLocation) {
             auto owner = visual.textureOwner.lock();
             bool unloaded = owner && owner->unloadTexture(*visual.textureLocation, false);
@@ -235,10 +248,16 @@ bool uploadTexture(IClientInstance& client, std::string const& png, std::string 
         logger().warn("Texture {} is not a valid PNG: {}", name, stbi_failure_reason());
         return false;
     }
+    std::unique_ptr<stbi_uc,decltype(&stbi_image_free)> decoded(pixels,stbi_image_free);
+    auto rgba=std::span<uint8_t const>(pixels,static_cast<size_t>(w)*h*4);
+    for (size_t i=0;i<visual.rigid.groups.size();++i) {
+        auto kind=model::groupAlpha(visual.rigid.groups[i].vertices,rgba,w,h);
+        visual.alphaClasses.push_back(kind);
+        (kind==model::AlphaClass::Opaque ? visual.opaqueGroups : visual.alphaGroups).push_back(i);
+    }
     mce::Image image(static_cast<uint32>(w), static_cast<uint32>(h), mce::ImageFormat::RGBA8Unorm, mce::ImageUsage::SRGB);
     image.mAlphaUsage = mce::AlphaUsage::Transparent;
     image.setRawImage(mce::Blob(pixels, static_cast<size_t>(w) * static_cast<size_t>(h) * 4));
-    stbi_image_free(pixels);
 
     auto group = client.getTextureGroup();
     if (!group) return false;
@@ -247,6 +266,21 @@ bool uploadTexture(IClientInstance& client, std::string const& png, std::string 
     auto& texture          = group->uploadTexture(*visual.textureLocation, cg::ImageBuffer(std::move(image)));
     visual.texture         = mce::TexturePtr(texture, *visual.textureLocation, cg::TextureSetLayerType::Color);
     visual.textureOwner = group;
+    bool fractional=std::find(visual.alphaClasses.begin(),visual.alphaClasses.end(),model::AlphaClass::Fractional)!=visual.alphaClasses.end();
+    if (fractional) {
+        std::vector<uint8_t> mask(rgba.begin(),rgba.end());
+        model::javaCutoutMask(mask);
+        mce::Image cutout(static_cast<uint32>(w),static_cast<uint32>(h),mce::ImageFormat::RGBA8Unorm,mce::ImageUsage::SRGB);
+        cutout.mAlphaUsage=mce::AlphaUsage::Transparent;
+        cutout.setRawImage(mce::Blob(mask.data(),mask.size()));
+        auto maskName=runtimeName+"/java-cutout";
+        visual.cutoutLocation=std::make_unique<ResourceLocation>(Core::PathView(maskName),ResourceFileSystem::Raw);
+        auto& masked=group->uploadTexture(*visual.cutoutLocation,cg::ImageBuffer(std::move(cutout)));
+        visual.cutoutTexture=mce::TexturePtr(masked,*visual.cutoutLocation,cg::TextureSetLayerType::Color);
+    } else visual.cutoutTexture=visual.texture;
+    logger().info("[gun-alpha] {} displayTransparency={} fullyOpaqueGroups={} alphaGroups={} fractionalGroups={} JavaCutoutThreshold=.1 maskUploaded={} (backend filtering/RTX acceptance pending)",
+        name,visual.enableTransparency,visual.opaqueGroups.size(),visual.alphaGroups.size(),
+        std::count(visual.alphaClasses.begin(),visual.alphaClasses.end(),model::AlphaClass::Fractional),fractional);
     logger().info("[gun-gpu] create {} ({}x{}) world={} serial={} group={}", name, w, h,
         resourceKey->world, resourceSerial, fmt::ptr(group.get()));
     return true;
@@ -330,6 +364,7 @@ GunVisual* visualFor(IClientInstance& client, pack::ResourceId const& gunId) {
         if (!png) throw std::runtime_error("texture file " + display->texture->toString() + " not found");
 
         visual.model     = model::parseGeoModel(pack::parseJsonText(*modelText));
+        visual.enableTransparency=display->enableTransparency;
         auto const& geo  = visual.model;
         visual.armPaths = {geo.path(geo.find("lefthand_pos")), geo.path(geo.find("righthand_pos"))};
         visual.transform = model::firstPersonIdleTransform(geo);
@@ -385,8 +420,10 @@ mce::MaterialPtr const* gunMaterial(int index, ItemInHandRenderer& renderer, ICl
             slot.emplace(mce::RenderMaterialGroup::switchable(), HashedString{"holo_hand_pointer"});
             break;
         case 6:
+        case 7:
             if (auto* moving = movingBlockRenderer(client)) {
-                slot.emplace(moving->mBlockMaterials[static_cast<int>(BlockRenderLayer::RenderlayerAlphatest)].get());
+                auto layer=index==7 ? BlockRenderLayer::RenderlayerBlend : BlockRenderLayer::RenderlayerAlphatest;
+                slot.emplace(moving->mBlockMaterials[static_cast<int>(layer)].get());
             } else {
                 // The default constructor is not exported; an unknown name gives an empty material.
                 slot.emplace(mce::RenderMaterialGroup::common(), HashedString{"tacz_missing_material"});
@@ -510,7 +547,14 @@ bool drawGun(ItemInHandRenderer& renderer, BaseActorRenderContext& context) {
     auto prepareMs=std::chrono::duration<double,std::milli>(std::chrono::steady_clock::now()-prepareStart).count();
 
     int         materialIndex = debug::gunMaterial;
+    bool alphaCompatibility=debug::gunBlend;
+    bool blended=materialIndex==7 || (alphaCompatibility && visual->enableTransparency && materialIndex==6);
+    if (blended) materialIndex=7;
     auto const* mat           = gunMaterial(materialIndex, renderer, client);
+    if (!mat && blended && debug::gunMaterial==6) {
+        if (!visual->warnedBlendFallback) logger().warn("[gun-alpha] rtx={} native moving-block blend unavailable; explicit cutout fallback (NOT translucent equivalence)",lighting==1);
+        visual->warnedBlendFallback=true; materialIndex=6; blended=false; mat=gunMaterial(6,renderer,client);
+    }
     auto&       camera        = screen.camera;
 
     int revision = debug::renderRevision;
@@ -537,6 +581,8 @@ bool drawGun(ItemInHandRenderer& renderer, BaseActorRenderContext& context) {
         logger().info("World {}", str(camera.worldMatrixStack->stack->back()._m.get()));
         logger().info("Proj {}", str(camera.projectionMatrixStack->stack->back()._m.get()));
         logger().info("Gun transform {}", str(visual->transform));
+        logger().info("[gun-alpha-state] path={} rtx={} compatibility={} displayTransparency={} material={} blended={} opaqueGroups={} alphaGroups={} nativePipelineVariant=true (not a GPU validation)",
+            path,lighting==1,alphaCompatibility,visual->enableTransparency,materialIndex,blended,visual->opaqueGroups.size(),visual->alphaGroups.size());
         auto const* info = mat ? mat->mRenderMaterialInfoPtr.get() : nullptr;
         auto const* material = info ? info->mPtr.get() : nullptr;
         if (material) logger().info("[gun-depth] material={} test={} func={} writeMask={} bias={} slopeBias={} cameraNear={} cameraFar={} (legacy descriptor; GPU pipeline may override)",
@@ -544,12 +590,16 @@ bool drawGun(ItemInHandRenderer& renderer, BaseActorRenderContext& context) {
             static_cast<int>(material->depthStencilStateDescription->depthFunc),
             static_cast<int>(material->depthStencilStateDescription->depthWriteMask),
             material->mDepthBias,material->mSlopeScaledDepthBias,camera.mZNear,camera.mZFar);
+        if (material) logger().info("[gun-blend-descriptor] enable={} src={} dst={} alphaSrc={} alphaDst={} depthWriteMask={} (read-only; RenderDragon pipeline may override)",
+            material->blendStateDescription->enableBlend,static_cast<int>(material->blendStateDescription->blendSource),
+            static_cast<int>(material->blendStateDescription->blendDestination),static_cast<int>(material->blendStateDescription->alphaSource),
+            static_cast<int>(material->blendStateDescription->alphaDestination),static_cast<int>(material->depthStencilStateDescription->depthWriteMask));
     }
     if (!mat) return true; // keep vanilla hidden so a missing material is obvious in game
 
     // Lighting: block materials need light-texture constants (Lamium's ghost blocks), entity
     // materials the actor ones.
-    if (materialIndex == 6) {
+    if (materialIndex == 6 || materialIndex==7) {
         auto* lightTexture = client.getLightTexture();
         if (!lightTexture) return true;
         BrightnessPair full;
@@ -664,7 +714,8 @@ bool drawGun(ItemInHandRenderer& renderer, BaseActorRenderContext& context) {
     world.stack->_isDirty = true;
     world.mat->_m         = world.mat->_m.get() * visual->transform;
 
-    TextureVariant const& texture = (materialIndex == 4 || materialIndex == 5) ? TextureVariant{} : visual->texture;
+    TextureVariant const& texture = (materialIndex == 4 || materialIndex == 5) ? TextureVariant{}
+        : alphaCompatibility && !blended ? visual->cutoutTexture : visual->texture;
     auto drawStart=std::chrono::steady_clock::now();
     size_t gunCalls=0,armCalls=0;
     try {
@@ -673,9 +724,9 @@ bool drawGun(ItemInHandRenderer& renderer, BaseActorRenderContext& context) {
             ++gunCalls; ++counters.draws;
         } else {
             auto const& meshes=visual->rigidMeshes[twoSided ? 1 : 0];
-            for (size_t i=0;i<visual->rigid.groups.size();++i) {
+            auto drawGroup=[&](size_t i) {
                 auto const& group=visual->rigid.groups[i];
-                if (!model::drawableRigidBone(visual->frame,group.bone)) continue;
+                if (!model::drawableRigidBone(visual->frame,group.bone)) return;
                 auto boneMatrix=camera.worldMatrixStack->push(false);
                 boneMatrix.stack->_isDirty=true;
                 boneMatrix.mat->_m=boneMatrix.mat->_m.get()*visual->frame.world[group.bone];
@@ -684,7 +735,13 @@ bool drawGun(ItemInHandRenderer& renderer, BaseActorRenderContext& context) {
                     ++gunCalls; ++counters.draws;
                 } catch (...) { pop(boneMatrix); throw; }
                 pop(boneMatrix);
-            }
+            };
+            if (blended) {
+                // Stable original DFS order within each phase. Every group still
+                // uses the same native blend material, as Java's display flag does.
+                for (auto i:visual->opaqueGroups) drawGroup(i);
+                for (auto i:visual->alphaGroups) drawGroup(i);
+            } else for (size_t i=0;i<visual->rigid.groups.size();++i) drawGroup(i);
         }
         // TACZ delegates skin draws until AFTER the gun's draw, on the same captured pose
         // stack. Arms keep their own texture/material and append only their bone matrices.

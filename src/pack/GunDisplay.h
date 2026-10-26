@@ -24,6 +24,8 @@ struct GunDisplay {
     float                     zoomModelFov       = 70.0f;
     bool                      enableTransparency = false;
     bool                      showCrosshair      = false;
+    std::optional<ResourceId> hud, hudEmpty;
+    bool                      ammoPercent = false;
     // "shoot", "reload_tactical", ... -> sound id; the file is tacz_sounds/<path>.ogg
     std::map<std::string, ResourceId> sounds;
     nlohmann::json                    raw;

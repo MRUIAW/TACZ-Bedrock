@@ -46,6 +46,7 @@
 #include "gun/ShootRules.h"
 #include "mod/TaczMod.h"
 #include "net/DebugPackets.h"
+#include "net/HitFeedbackPacket.h"
 
 namespace tacz::server::bullet {
 namespace {
@@ -65,6 +66,7 @@ struct Bullet {
     bool              igniteEntity = false;
     int               igniteSeconds = 0;
     int               serial = 0;
+    pack::ResourceId  gunId;
 };
 
 std::mutex          mutex;
@@ -198,7 +200,9 @@ void hitEntity(Bullet& b, Actor& bulletActor, Actor* shooter, EntityHit const& h
     bool   piercing   = applyDamage(target, bulletActor, shooter, split.armorPiercing, piercingCause(), false);
     if (b.igniteEntity && b.igniteSeconds > 0) target.setOnFire(b.igniteSeconds, true);
     int  after  = target.getHealth();
-    bool killed = target.isDead() || after <= 0;
+    bool killed = target.isDead() || !target.isAlive();
+    if ((normal || piercing) && shooter && shooter->isPlayer())
+        net::HitFeedbackPacket{b.gunId.toString(),hit.headshot,killed}.sendTo(*static_cast<Player const*>(shooter));
 
     AABB const& aabb = target.getAABB();
     reportHit(
@@ -304,7 +308,7 @@ void tickAll(Level& level) {
 
 } // namespace
 
-void fire(Player& shooter, pack::GunData const& gun, std::optional<pack::FireMode> mode, float inaccuracy) {
+void fire(Player& shooter,pack::ResourceId const& gunId, pack::GunData const& gun, std::optional<pack::FireMode> mode, float inaccuracy) {
     static std::mt19937 rng{std::random_device{}()};
 
     auto   origin    = toGlm(shooter.getHeadPos());
@@ -345,6 +349,7 @@ void fire(Player& shooter, pack::GunData const& gun, std::optional<pack::FireMod
         b.igniteEntity  = gun.bullet.ignite.entity;
         b.igniteSeconds = gun.bullet.igniteEntityTime;
         b.serial        = nextSerial++;
+        b.gunId         = gunId;
         bullets.push_back(std::move(b));
         logger().info(
             "[bullet #{}] fired at {:.2f} blocks/tick (x{:.2f}), inaccuracy {:.2f}, life {} ticks, damage {:.1f} at the muzzle",

@@ -38,5 +38,12 @@ struct Snapshot {
     uint64_t        revision = 0;
 };
 Snapshot snapshot();
+struct HudState {
+    uint64_t world=0;
+    uintptr_t client=0;
+    std::optional<pack::ResourceId> gun;
+    bool puttingAway=false,hideCrosshair=false;
+};
+HudState hudState(); // lightweight: do not copy the entire bone pose on every UI pass
 
 } // namespace tacz::client::anim

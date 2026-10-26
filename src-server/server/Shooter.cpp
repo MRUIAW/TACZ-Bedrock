@@ -193,7 +193,7 @@ bool fireRound(Player& player, ShooterState& s) {
     auto  delta      = player.getPosDelta();
     auto  type       = gun::inaccuracyType(model::fullyAimed(s.aimingProgress), player.isSneaking(), glm::length(glm::dvec3{delta.x, delta.y, delta.z}));
     float inaccuracy = gun::inaccuracy(data, s.mode, type);
-    bullet::fire(player, data, s.mode, inaccuracy);
+    bullet::fire(player,item->gunId, data, s.mode, inaccuracy);
     return true;
 }
 

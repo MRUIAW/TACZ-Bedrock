@@ -2,7 +2,7 @@ add_rules("mode.debug", "mode.release")
 
 -- Single source of the mod version. Keep tooth.json "version" in sync.
 -- Patch +1 per small item / test round; minor +1 per finished feature or phase.
-local tacz_version = "0.3.19"
+local tacz_version = "0.3.20"
 set_version(tacz_version)
 
 add_repositories("levimc-repo https://github.com/LiteLDev/xmake-repo.git")
@@ -37,13 +37,26 @@ end
 rule("tacz.builtin_assets")
     on_load(function (target)
         local dir = path.join(os.projectdir(), "build/generated")
-        local text = "#pragma once\nnamespace tacz::pack::builtin {\n"
+        local text = "#pragma once\n#include <cstddef>\nnamespace tacz::pack::builtin {\n"
         for _, name in ipairs({"rifle_default", "pistol_default", "default_state_machine"}) do
             local ext = name == "default_state_machine" and ".lua" or ".animation.json"
             text = text .. "inline constexpr char " .. name .. "[] = R\"tacz_asset("
                 .. io.readfile(path.join(os.projectdir(), "resources/tacz", name .. ext)) .. ")tacz_asset\";\n"
         end
-        text = text .. "}\n"
+        local images = os.files(path.join(os.projectdir(), "resources/tacz/textures/**.png"))
+        table.sort(images)
+        for i, file in ipairs(images) do
+            local bytes = assert(io.readfile(file, {encoding = "binary"}))
+            text = text .. "inline constexpr unsigned char image_" .. i .. "[] = {"
+            for k = 1, #bytes do text = text .. tostring(bytes:byte(k)) .. "," end
+            text = text .. "};\n"
+        end
+        text = text .. "struct Image { char const* path; unsigned char const* data; std::size_t size; };\ninline constexpr Image images[] = {\n"
+        for i, file in ipairs(images) do
+            local relative = path.relative(file, path.join(os.projectdir(), "resources/tacz")):gsub("\\", "/")
+            text = text .. '{"assets/tacz/' .. relative .. '",image_' .. i .. ',sizeof(image_' .. i .. ')},\n'
+        end
+        text = text .. "};\n}\n"
         local output = path.join(dir, "TaczBuiltinAssets.h")
         if not os.isfile(output) or io.readfile(output) ~= text then
             os.mkdir(dir)
@@ -115,6 +128,7 @@ target("tacz-tests")
     add_includedirs("src")
     -- Only sources that do not touch the game or LeviLamina.
     add_files("src/pack/**.cpp", "src/model/**.cpp", "src/lua/**.cpp", "tests/**.cpp")
+    add_defines(format('TACZ_PROJECT_DIR="%s"', os.projectdir():gsub("\\", "/")))
     -- The reference TACZ checkout supplies the default gun pack for integration tests.
     add_defines(format('TACZ_DEFAULT_PACK_DIR="%s"',
         path.join(os.projectdir(), "_reference/TACZ/src/main/resources/assets/tacz/custom/tacz_default_gun"):gsub("\\", "/")))

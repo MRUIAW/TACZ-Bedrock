@@ -8,6 +8,74 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 Versioning rule for this project: the patch number goes up by 1 for each small item or test
 round, the minor number goes up by 1 for each finished feature or phase.
 
+## [0.3.20] - 2026-10-26
+
+### User-tested 0.3.19 / continuation review
+
+- `91e4d2b` was subsequently deployed. User passed m4a1/glock_17/deagle reload magazines,
+  glock/deagle put-away, b93r's removed face-level bullet, open-bolt single-number ammo,
+  and ccrp:sr_3m / sfms:mgl416 / cyber_armorer:g58_dian / classicr:ak12 / twx:twx_b3.
+  **No acceptance report yet** for HK416D decal, P320 inspect, `/tacz guns`, `/tacz packs`.
+- Reviewed and retained the interrupted task's uncommitted alpha/HUD/crosshair/hit-feedback
+  implementation. Fixed text-mode PNG embedding (all 26 images were transcoded), completed
+  HUD pipeline-owner invalidation/client identity/disable guards, and matched Java's float
+  percent rounding (`1/40 -> 003%`). Added byte-for-byte embedded-image regressions.
+
+### Added / changed
+
+- Respect Java's actual display transparency switch: `GunItemRendererWrapper.java:217–220`
+  uses `entityTranslucent` only for `enable_transparency=true`, otherwise `entityCutout`.
+  The installed Timeless_50 **and** HK416D omit that flag. Do not automatically blend their
+  decals or claim the planner's proposed shared root cause was established.
+- Transparent displays select the native moving-block blend layer, with fully opaque groups
+  before other groups and stable DFS order within each phase; keep immutable rigid meshes,
+  per-bone matrices, full-bright behavior and independent arm materials. Cache a cutout-mask
+  texture (`alpha <26 ->0`, otherwise255, RGB unchanged) to approximate Java's .1 discard
+  on the existing native alpha-test route. `/tacz rdebug blend 0|1` selects legacy/raw versus
+  display-routing/cutout compatibility (default1); explicit material7 is a separate blend experiment.
+- Read-only PNG/UV audit confirms Timeless pattern's tiny west face and 128 UV / 256 PNG:
+  alpha0=3,899, alpha255=2,187, fractional=1,586; only10 texels at104–106. Its UV V exceeds1.
+  HK416D: 4,224 per-face entries, **zero fractional-alpha footprints**. Keep ignoring
+  uv_rotation (Timeless20/1,358): reference FaceItem/BedrockCubePerFace ignore it too.
+- TACZ-style bottom-right ammo/reserve HUD, strict low-ammo red rule, normal/percent style,
+  effective closed/manual chamber sum versus open-bolt no+1, creative9999, infinite∞,
+  pack hud/hud_empty icons and embedded fire-mode icons. Inventory-fed display hides reserve;
+  this does not implement inventory-fed shooting. No unimplemented heat bar.
+- Replace vanilla crosshair with TACZ textures, default dot_1, client `config/hud.json`
+  `crosshair_type`. ADS>.9 hides unless display forces; reload/animation-hide still win.
+  Gate old yellow probe UI behind `/tacz rdebug probe 0|1` (default0).
+- Server accepted-damage hit/kill packet to shooter, retaining launch GunId and server headshot
+  result. Client-thread flesh_hit/head_hit/kill sounds from display; kill replaces hurt sound.
+  Four-quadrant hit marker fades300ms; recent headshots red; only kills expand gap4→8.
+- World/menu/client gates, bounded marker queue, cross-world sound-task cancellation and
+  explicit texture release to original owners; HUD also invalidates on buffer/frame-builder/
+  lighting changes. Native UI and cursor signatures checked at compile time.
+
+### Limits / decisions
+
+- **No new in-game acceptance run.** Native blend depth/write/sorting equivalence and RTX
+  transparency are not established. Reuse the current pipeline's native layer, log selected
+  alpha/depth/blend descriptors, warn on unavailable blend and explicitly fall back to cutout.
+  No shared native-state mutation, speculative RTX material or geometry depth offset.
+- Cutout masking before filtering only approximates Java's sampled-alpha discard; wrap/clamp,
+  native cutoff and filtering remain risks. Timeless/HK416D fixes are **not claimed**.
+  Stable group ordering is not per-triangle translucent sorting; legacy path0 stays diagnostic.
+- Kill-count overlay: **Not yet**. Dummy ammo/ammo boxes/attachment capacity, Java version
+  small print and ShoulderSurfing/refit UI are not implemented; missing HUD PNG skips rather
+  than drawing a checkerboard. Prior B93R authored reload/P320 inspect/skin/gameplay gaps remain.
+- Evidence, implementation divergences, user choices and regression steps:
+  `docs/HUD-ALPHA-0.3.20.md`; current queue: `docs/ROADMAP.md`. No gunpack files changed/decrypted.
+
+### Validation / deployment
+
+- Client and server Windows x64 release builds passed. **153 tests / 77,964 assertions**
+  passed, zero failures/skips (10 added cases). `git diff --check` passed.
+- Game closed; deployed client0.3.20 DLL/PDB/manifest and both packs. Manifest version/platform
+  checked; all three artifact SHA-256 values match; RP/BP exact path sets and hashes match
+  source (4/2 files). No game process terminated; gunpacks outside deployment targets.
+- Client DLL SHA-256: `a34dc01e22ade4e66b9f5506b01876875901368c58358deb8ee39683d06a3018`.
+  Server DLL: `fc57901fae170d76c1eac20fa734d31a6f0b890d2819fa83691e7c4d05ce56b7`.
+
 ## [0.3.19] - 2026-10-26
 
 ### User-tested 0.3.18 / real in-game cost

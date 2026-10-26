@@ -144,6 +144,18 @@ void registerCommands() {
             output.success("Animation request sent");
         });
     // /tacz rdebug <material> <twoSided> : first-person gun render diagnostics
+    command.overload<RenderToggleParams>().text("rdebug").text("blend").required("value")
+        .execute([](CommandOrigin const&,CommandOutput& output,RenderToggleParams const& params) {
+            if (params.value<0 || params.value>1) return output.error("blend: 0 legacy, 1 TACZ display transparency/cutout (default)");
+            debug::gunBlend=params.value!=0; ++debug::renderRevision;
+            output.success("Gun alpha compatibility changed (integrated client only)");
+        });
+    command.overload<RenderToggleParams>().text("rdebug").text("probe").required("value")
+        .execute([](CommandOrigin const&,CommandOutput& output,RenderToggleParams const& params) {
+            if (params.value<0 || params.value>1) return output.error("probe: 0 or 1 (default off)");
+            debug::probeHud=params.value!=0;
+            output.success("Probe HUD changed (integrated client only)");
+        });
     command.overload<RenderToggleParams>().text("rdebug").text("path").required("value")
         .execute([](CommandOrigin const&, CommandOutput& output, RenderToggleParams const& params) {
             if (params.value<0 || params.value>1) return output.error("path: 0 baked, 1 rigid bone matrices (default)");

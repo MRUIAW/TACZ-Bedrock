@@ -30,6 +30,8 @@
 #include "model/FunctionalBones.h"
 #include "debug/RenderDebug.h"
 #include "mod/TaczMod.h"
+#include "nbt/GunItem.h"
+#include "mc/world/item/ItemStack.h"
 
 namespace tacz::client::render {
 namespace {
@@ -176,17 +178,11 @@ LL_TYPE_INSTANCE_HOOK(CameraBoneSetup,ll::memory::HookPriority::Normal,LevelRend
 }
 LL_TYPE_INSTANCE_HOOK(GunCrosshair,ll::memory::HookPriority::Normal,HudCursorRenderer,
     &HudCursorRenderer::$render,void,MinecraftUIRenderContext& context,IClientInstance& client,UIControl& owner,int pass) {
-    if (shooter::worldToken()) {
-        auto state = aim::snapshot();
-        auto pose = anim::snapshot();
-        if (state.world && state.gun && state.client == reinterpret_cast<uintptr_t>(&client)
-            && pose.world == state.world && pose.gun == state.gun) {
-            auto const& packs = TaczMod::getInstance().gunPacks();
-            auto const* gun = packs.gun(*state.gun);
-            auto const* display = gun && gun->index.display ? packs.gunDisplay(*gun->index.display) : nullptr;
-            if (gun::isReloading(shooter::reloadState()) || pose.hideCrosshair
-                || (state.progress > .9f && display && !display->showCrosshair)) return;
-        }
+    if (shooter::ownsClient(&client)) {
+        if (auto* player=client.getLocalPlayer(); player && nbt::readGun(player->getSelectedItem())) return;
+        auto pose=anim::hudState();
+        if (pose.world==shooter::worldToken() && pose.gun && pose.client==reinterpret_cast<uintptr_t>(&client))
+            return; // fully replace vanilla; GunHud applies the single TACZ visibility rule
     }
     origin(context,client,owner,pass);
 }

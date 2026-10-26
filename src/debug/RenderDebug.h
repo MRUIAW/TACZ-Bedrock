@@ -16,6 +16,8 @@ inline std::atomic<bool> gunTwoSided{false};
 inline std::atomic<bool> freezePose{false};
 inline std::atomic<bool> meshDiagnostics{false}; // expensive read-only comparisons, opt in
 inline std::atomic<int> gunRenderPath{1}; // 0 animated CPU bake; 1 immutable rigid meshes + bone matrices
+inline std::atomic<bool> gunBlend{true}; // TACZ display transparency + cutout mask compatibility; 0 legacy A/B
+inline std::atomic<bool> probeHud{false};
 // 0 native depth; 1 isolated GL-style .05..16; 2 isolated .10..16. Diagnostic only.
 inline std::atomic<int> gunDepthMode{0};
 

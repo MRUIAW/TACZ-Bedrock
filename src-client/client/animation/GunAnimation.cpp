@@ -435,6 +435,11 @@ Snapshot snapshot() {
     std::lock_guard lock(mutex);
     return published.world && published.world == shooter::worldToken() ? published : Snapshot{};
 }
+HudState hudState() {
+    std::lock_guard lock(mutex);
+    if (!published.world || published.world!=shooter::worldToken()) return {};
+    return {published.world,published.client,published.gun,published.puttingAway,published.hideCrosshair};
+}
 
 void clear() {
     sound::stopAnimation();

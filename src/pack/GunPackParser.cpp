@@ -443,6 +443,11 @@ GunDisplay parseGunDisplay(nlohmann::json const& j) {
     read(j, "zoom_model_fov", display.zoomModelFov);
     read(j, "show_crosshair", display.showCrosshair);
     read(j, "enable_transparency", display.enableTransparency);
+    read(j,"hud",display.hud);
+    read(j,"hud_empty",display.hudEmpty);
+    std::string countStyle;
+    read(j,"ammo_count_style",countStyle);
+    display.ammoPercent=countStyle=="percent";
     if (auto* sounds = object(j, "sounds")) {
         for (auto const& [key, value] : sounds->items()) {
             // An empty id is a valid (path-less) ResourceLocation in Java and simply plays

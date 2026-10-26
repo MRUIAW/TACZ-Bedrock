@@ -47,6 +47,7 @@
 #include "nbt/AmmoItem.h"
 #include "nbt/GunItem.h"
 #include "net/DebugPackets.h"
+#include "debug/RenderDebug.h"
 
 namespace tacz::client::probe {
 namespace {
@@ -65,6 +66,7 @@ public:
 };
 
 bool inGameplay() {
+    if (!shooter::worldToken()) return false;
     auto client = ll::service::getClientInstance();
     return client && client->getLocalPlayer() && client->getScreenName().starts_with("hud_screen");
 }
@@ -111,7 +113,7 @@ void enable() {
     });
 
     listeners[1] = bus.emplaceListener<ll::event::AfterUIRenderEvent>([](ll::event::AfterUIRenderEvent& event) {
-        if (!hudView(event.screenView())) return;
+        if (!debug::probeHud || !shooter::worldToken() || !hudView(event.screenView())) return;
         auto& context = event.uiRenderContext();
         auto& font =
             context.mClient.getMinecraftGame_DEPRECATED().getFontRepository()->getFontFromFontType("default").getFont();

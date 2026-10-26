@@ -4,6 +4,8 @@
 
 #include "gun/Reload.h"
 
+class IClientInstance;
+
 // Client side of gun operation, after TACZ's ShootKey / LocalPlayerShoot / LocalPlayerFireSelect
 // / LocalPlayerReload: while a gun is held, the left mouse button is the trigger (vanilla attack
 // is suppressed), G switches the fire mode and R reloads. Holding the trigger fires at the
@@ -15,6 +17,7 @@ namespace tacz::client::shooter {
 
 // Zero outside ClientJoinLevelEvent..ClientExitLevelEvent; changes on every rejoin.
 uint64_t worldToken();
+bool ownsClient(IClientInstance const* client); // cached identity only, no native service access
 
 void enable();
 void disable();
