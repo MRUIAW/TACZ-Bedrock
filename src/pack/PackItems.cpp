@@ -30,6 +30,48 @@ nlohmann::json itemUserData(ItemIdentity const& identity,GunData const* gun) {
     return tag;
 }
 int ammoStackLimit(int declared) { return declared<=0 ? 64 : std::clamp(declared,1,64); }
+std::string stripFormatting(std::string_view text) {
+    std::string out;
+    for (size_t i=0;i<text.size();) {
+        if (i+2<text.size() && text.substr(i,2)=="§") {
+            auto code=text[i+2]; if (code>='A' && code<='Z') code+='a'-'A';
+            if (std::string_view("0123456789abcdefghijklmnopqrstu").find(code)!=std::string_view::npos) { i+=3; continue; }
+        }
+        out+=text[i++];
+    }
+    return out;
+}
+nlohmann::json canonicalAmmoTag(nlohmann::json tag) {
+    auto marker=tag.find("TaczAutoName");
+    if (marker!=tag.end() && marker->is_string()) {
+        auto display=tag.find("display");
+        if (display!=tag.end() && display->is_object() && display->value("Name",nlohmann::json{})==*marker) {
+            display->erase("Name");
+            if (display->empty()) tag.erase("display");
+        }
+        tag.erase("TaczAutoName");
+    }
+    return tag;
+}
+std::vector<int> splitAmmo(int count,int limit) {
+    std::vector<int> out;
+    limit=ammoStackLimit(limit);
+    while (count>0) { auto n=std::min(count,limit); out.push_back(n); count-=n; }
+    return out;
+}
+int mergeAmmoCount(int target,int source,int limit,bool sameItem,bool sameTag) {
+    return sameItem && sameTag ? std::min(std::max(0,source),std::max(0,ammoStackLimit(limit)-std::max(0,target))) : 0;
+}
+AmmoInsertion planAmmoInsertion(std::vector<AmmoSlot> const& slots,int count,int limit) {
+    AmmoInsertion plan{std::vector<int>(slots.size(),0),std::max(0,count)};
+    for (int phase=0;phase<2 && plan.remaining>0;++phase) for (size_t i=0;i<slots.size() && plan.remaining>0;++i) {
+        bool empty=slots[i].count==0;
+        if (empty!=(phase==1)) continue;
+        int amount=mergeAmmoCount(slots[i].count,plan.remaining,limit,empty || slots[i].compatible,true);
+        plan.additions[i]=amount; plan.remaining-=amount;
+    }
+    return plan;
+}
 std::string normalizeLanguage(std::string code) {
     for (auto& c:code) { if (c=='-') c='_'; else if (c>='A' && c<='Z') c+= 'a'-'A'; }
     return code;
@@ -43,7 +85,7 @@ std::string itemName(GunPackRegistry const& packs,ItemIdentity const& identity,s
     std::string key=identity.id.toString();
     if (identity.kind==ItemKind::Gun) { if (auto g=packs.gun(identity.id); g && !g->index.name.empty()) key=g->index.name; }
     else if (identity.kind==ItemKind::Ammo) { if (auto a=packs.ammo(identity.id); a && !a->index.name.empty()) key=a->index.name; }
-    return packs.localize(key,locale);
+    return stripFormatting(packs.localize(key,locale));
 }
 std::optional<std::string> itemIcon(GunPackRegistry const& packs,ItemIdentity const& identity) {
     std::optional<ResourceId> slot;

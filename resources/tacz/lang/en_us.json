@@ -1,0 +1,12 @@
+{
+  "tooltip.tacz.gun.level": "Level: ",
+  "tooltip.tacz.gun.inventory_mode": "Use Inv. Ammo",
+  "tooltip.tacz.gun.explosion": " (Explosion)",
+  "tooltip.tacz.gun.type": "Type: ",
+  "tooltip.tacz.gun.damage": "Damage: ",
+  "tooltip.tacz.gun.armor_ignore": "%s Minecraft Armor Piercing",
+  "tooltip.tacz.gun.head_shot_multiplier": "%s Headshot Damage",
+  "tooltip.tacz.gun.movement_speed": "Movement speed: %s",
+  "tooltip.tacz.gun.tips": "<<< Press %s in-game for Attachments >>>",
+  "itemGroup.tab.tacz.ammo": "TAC | Ammo"
+}

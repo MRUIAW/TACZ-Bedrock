@@ -10,6 +10,7 @@
 #include "model/GunModelRules.h"
 #include "pack/GunPackLoader.h"
 #include "pack/GunPackParser.h"
+#include "pack/ItemTooltip.h"
 #include "pack/GunAnimations.h"
 #include "model/GeoModel.h"
 #include "model/RigidGunModel.h"
@@ -128,6 +129,10 @@ int main(int argc,char** argv) {
                     {"en_us",pack::itemName(packs,{pack::ItemKind::Gun,id},"en_us")},
                     {"zh_cn",pack::itemName(packs,{pack::ItemKind::Gun,id},"zh_cn")}};
                 if (auto icon=pack::itemIcon(packs,{pack::ItemKind::Gun,id})) row["item"]["slot"]=*icon;
+                pack::TooltipState tooltipState;
+                tooltipState.ammo=g->data.ammoAmount; tooltipState.chamber=true;
+                tooltipState.mode=g->data.fireModes.empty() ? std::nullopt : g->data.fireModes.front();
+                for (auto locale:{"en_us","zh_cn"}) row["item"]["tooltip"][locale]=pack::buildItemTooltip(packs,{pack::ItemKind::Gun,id},locale,tooltipState).lines;
                 auto initial=gun::initialAmmo(g->data);
                 row["initial"]={{"magazine",initial.magazine},{"rawChamber",initial.barrel},
                     {"effectiveChamber",gun::hasChamberedRound(g->data.bolt,initial.barrel)}};
@@ -274,6 +279,8 @@ int main(int argc,char** argv) {
         json a={{"id",id.toString()},{"stackDeclared",ammo.index.stackSize},{"stackBedrock",pack::ammoStackLimit(ammo.index.stackSize)},
             {"en_us",pack::itemName(packs,{pack::ItemKind::Ammo,id},"en_us")},{"zh_cn",pack::itemName(packs,{pack::ItemKind::Ammo,id},"zh_cn")}};
         if (auto slot=pack::itemIcon(packs,{pack::ItemKind::Ammo,id})) a["slot"]=*slot;
+        a["give120"]=pack::splitAmmo(120,ammo.index.stackSize);
+        a["tooltip_zh_cn"]=pack::buildItemTooltip(packs,{pack::ItemKind::Ammo,id},"zh_cn").lines;
         report["ammoItems"].push_back(std::move(a));
     }
     std::ofstream out(fs::path(argv[2]),std::ios::binary);

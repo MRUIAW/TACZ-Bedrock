@@ -70,6 +70,7 @@ public:
         auto it=mAmmoSlots.find(id); return it==mAmmoSlots.end() ? std::nullopt : std::optional(it->second);
     }
     [[nodiscard]] std::string localize(std::string const& key,std::string const& locale) const { return lookupTranslation(mLanguages,key,locale); }
+    [[nodiscard]] std::string packDisplayName(ResourceId const& id,std::string const& locale) const;
 
     // Reads a file by pack-relative path (e.g. "assets/tacz/textures/gun/uv/ak47.png");
     // the last pack containing it wins, as with resource pack stacking.
@@ -94,6 +95,7 @@ private:
     std::map<ResourceId, GunDisplay>         mGunDisplays;
     std::map<ResourceId,ResourceId>          mAmmoSlots;
     LanguageTable                          mLanguages;
+    std::map<std::string,std::string>       mPackDisplayNames; // namespace -> gunpack_info.name translation key
     std::map<ResourceId, std::string>        mDataScripts;
     std::map<ResourceId, std::string>        mAssetScripts;
     std::set<std::string,std::less<>>        mAssetPaths;

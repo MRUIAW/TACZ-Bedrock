@@ -2,7 +2,7 @@ add_rules("mode.debug", "mode.release")
 
 -- Single source of the mod version. Keep tooth.json "version" in sync.
 -- Patch +1 per small item / test round; minor +1 per finished feature or phase.
-local tacz_version = "0.3.23"
+local tacz_version = "0.3.24"
 set_version(tacz_version)
 
 add_repositories("levimc-repo https://github.com/LiteLDev/xmake-repo.git")
@@ -42,6 +42,10 @@ rule("tacz.builtin_assets")
             local ext = name == "default_state_machine" and ".lua" or ".animation.json"
             text = text .. "inline constexpr char " .. name .. "[] = R\"tacz_asset("
                 .. io.readfile(path.join(os.projectdir(), "resources/tacz", name .. ext)) .. ")tacz_asset\";\n"
+        end
+        for _, code in ipairs({"en_us", "zh_cn"}) do
+            text = text .. "inline constexpr char lang_" .. code .. "[] = R\"tacz_asset("
+                .. io.readfile(path.join(os.projectdir(), "resources/tacz/lang", code .. ".json")) .. ")tacz_asset\";\n"
         end
         local images = os.files(path.join(os.projectdir(), "resources/tacz/textures/**.png"))
         table.sort(images)

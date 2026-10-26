@@ -63,6 +63,9 @@
 #include "nbt/PackItem.h"
 #include "ll/api/memory/Hook.h"
 #include "mc/client/gui/controls/renderers/InventoryItemRenderer.h"
+#include "mc/client/gui/controls/renderers/HoverTextRenderer.h"
+#include "mc/deps/minecraft_renderer/resources/OffscreenCaptureDescription.h"
+#include "pack/ItemTooltip.h"
 #include "mc/client/gui/controls/UIControl.h"
 #include "model/GunHudLayout.h"
 #include "debug/RenderDebug.h"
@@ -117,6 +120,12 @@ struct Hit { uint64_t world; int64_t at; pack::ResourceId gun; bool head,kill; }
 std::vector<Hit> pending;
 ll::event::ListenerPtr listener;
 std::set<std::string> iconScreens;
+std::set<std::string> iconDiagnostics;
+std::map<std::string,std::string> tooltipIcons;
+uint64_t tooltipWorld=0;
+thread_local bool tooltipRendering=false;
+struct TooltipImage { float x,y; std::string path; };
+thread_local std::optional<TooltipImage> tooltipImage;
 
 class HitHandler final : public ll::network::PacketHandlerBase<HitHandler,net::HitFeedbackPacket> {
 public:
@@ -140,7 +149,7 @@ void releaseTextures() {
         image.pointer.reset();
         if (owner && image.location) owner->unloadTexture(*image.location,false);
     }
-    images.clear(); textureOwner.reset(); resourceKey.reset(); iconScreens.clear();
+    images.clear(); textureOwner.reset(); resourceKey.reset(); iconScreens.clear(); iconDiagnostics.clear();
 }
 Texture* texture(MinecraftUIRenderContext& context,std::string const& path) {
     auto [it,inserted]=images.try_emplace(path); auto& result=it->second;
@@ -163,6 +172,7 @@ Texture* texture(MinecraftUIRenderContext& context,std::string const& path) {
     auto& uploaded=group->uploadTexture(*result.location,cg::ImageBuffer(std::move(image)));
     result.pointer.emplace(uploaded,*result.location,cg::TextureSetLayerType::Color);
     result.failed=false;
+    logger().info("[ui-texture] uploaded path={} size={}x{} world={}",path,w,h,world);
     return &result;
 }
 bool image(MinecraftUIRenderContext& context,std::string const& path,glm::vec2 pos,glm::vec2 size,
@@ -224,31 +234,97 @@ bool bindImages(MinecraftUIRenderContext& context) { // cacheMutex held by calle
 }
 using SlotRender=void (InventoryItemRenderer::*)(MinecraftUIRenderContext&,IClientInstance&,UIControl&,int);
 static_assert(std::is_same_v<decltype(&InventoryItemRenderer::$render),SlotRender>);
+static_assert(std::is_same_v<decltype(&InventoryItemRenderer::$getBatchType),UIBatchType (InventoryItemRenderer::*)() const>);
+LL_TYPE_INSTANCE_HOOK(PackSlotBatch,ll::memory::HookPriority::Normal,InventoryItemRenderer,&InventoryItemRenderer::$getBatchType,UIBatchType) {
+    auto native=origin();
+    if (!enabled || !shooter::worldToken()) return native;
+    auto identity=nbt::readItemIdentity(mItemInstance.get());
+    {
+        std::lock_guard lock(cacheMutex);
+        auto key="batch-entry:"+std::to_string(mItemId)+":"+(identity ? identity->id.toString() : "none");
+        if (iconDiagnostics.size()<128 && iconDiagnostics.insert(key).second)
+            logger().info("[item-icons] batch-entry itemId={} count={} identity={} native={}",mItemId,mItemInstance->mCount,identity ? identity->id.toString() : "none",static_cast<int>(native));
+    }
+    if (!identity || !pack::itemIcon(TaczMod::getInstance().gunPacks(),*identity)) return native;
+    // Flat items normally enter an atlas SharedMesh batch. That path does not
+    // call render(), and binding a standalone PNG inside it would be wrong.
+    // Use the engine's uncached custom-render path only for our pack-slot items.
+    std::lock_guard lock(cacheMutex);
+    if (iconDiagnostics.insert("batch:"+identity->id.toString()).second)
+        logger().info("[item-icons] batch id={} native={} selected=Default world={}",identity->id.toString(),static_cast<int>(native),shooter::worldToken());
+    return UIBatchType::Default;
+}
 LL_TYPE_INSTANCE_HOOK(PackSlotIcon,ll::memory::HookPriority::Normal,InventoryItemRenderer,&InventoryItemRenderer::$render,void,
     MinecraftUIRenderContext& context,IClientInstance& client,UIControl& owner,int pass) {
     // This common slot renderer serves hotbar/inventory/container slots. No
     // by-value UIItemRenderInfo, RenderMetadata or function_ref placeholder hooks.
-    if (!pass && shooter::worldToken() && shooter::ownsClient(&client) && !mHidingIcon) {
+    if (enabled && shooter::worldToken() && shooter::ownsClient(&client)) {
+        std::lock_guard lock(cacheMutex);
+        auto key="render-entry:"+client.getScreenName()+":"+std::to_string(pass)+":"+std::to_string(mHidingIcon);
+        if (iconDiagnostics.size()<128 && iconDiagnostics.insert(key).second)
+            logger().info("[item-icons] render-entry screen={} pass={} hidden={}",client.getScreenName(),pass,mHidingIcon);
+    }
+    if (enabled && !pass && shooter::worldToken() && shooter::ownsClient(&client) && !mHidingIcon) {
         try {
             auto identity=nbt::readItemIdentity(mItemInstance.get());
             auto path=identity ? pack::itemIcon(TaczMod::getInstance().gunPacks(),*identity) : std::nullopt;
+            {
+                std::lock_guard lock(cacheMutex);
+                auto key="entry:"+client.getScreenName()+":"+(identity ? identity->id.toString() : "none");
+                if (iconDiagnostics.size()<128 && iconDiagnostics.insert(key).second)
+                    logger().info("[item-icons] entry screen={} id={} slot={}",client.getScreenName(),identity ? identity->id.toString() : "none",path.value_or("missing"));
+            }
             if (path) {
                 std::lock_guard lock(cacheMutex);
                 if (bindImages(context)) {
                     owner._setCachedPosition();
                     auto pos=owner.mCachedPosition.get(),size=owner.mSize.get();
                     if (size.x>0 && size.y>0 && image(context,*path,pos,size,White,owner.mAlpha)) {
-                        if (iconScreens.insert(client.getScreenName()).second) logger().info("[item-icons] rendered screen={} path={} pos=({}, {}) size=({}, {})",
+                        if (iconScreens.insert(client.getScreenName()+":"+*path).second) logger().info("[item-icons] rendered screen={} path={} pos=({}, {}) size=({}, {})",
                             client.getScreenName(),*path,pos.x,pos.y,size.x,size.y);
                         return;
                     }
                 }
+                if (iconDiagnostics.insert("failed:"+client.getScreenName()+":"+*path).second)
+                    logger().warn("[item-icons] paint failed screen={} path={}; native fallback",client.getScreenName(),*path);
             }
         } catch (std::exception const& e) { if (!warned.exchange(true)) logger().warn("[item-icons] {}; using native placeholder",e.what()); }
     }
     origin(context,client,owner,pass);
 }
-bool slotHook=false;
+using TooltipFontSignature=void (Font::*)(ScreenContext&,std::string_view,float,float,mce::Color const&,bool,bool,bool,mce::MaterialPtr const*,int,bool,float,mce::Color const&,mce::Color const&,float,float,OffscreenCaptureDescription const&,bool);
+static_assert(std::is_same_v<decltype(&Font::$drawCached),TooltipFontSignature>);
+static_assert(std::is_same_v<decltype(&HoverTextRenderer::$render),void (HoverTextRenderer::*)(MinecraftUIRenderContext&,IClientInstance&,UIControl&,int)>);
+LL_TYPE_INSTANCE_HOOK(PackTooltipFont,ll::memory::HookPriority::Normal,Font,&Font::$drawCached,void,
+    ScreenContext& screen,std::string_view str,float x,float y,mce::Color const& color,bool ignore,bool darken,bool symbol,
+    mce::MaterialPtr const* material,int caret,bool shadow,float padding,mce::Color const& reset,mce::Color const& dark,
+    float outline,float caretY,OffscreenCaptureDescription const& capture,bool normals) {
+    if (tooltipRendering && !tooltipImage && shooter::worldToken()) {
+        std::lock_guard lock(cacheMutex);
+        if (tooltipWorld==shooter::worldToken()) for (auto const& [text,path]:tooltipIcons) {
+            auto line=pack::tooltipAmmoIconLine(str,text); if (!line) continue;
+            tooltipImage=TooltipImage{x,y+static_cast<float>(*line)*(getWrapHeight()+padding),path};
+            break;
+        }
+    }
+    origin(screen,str,x,y,color,ignore,darken,symbol,material,caret,shadow,padding,reset,dark,outline,caretY,capture,normals);
+}
+LL_TYPE_INSTANCE_HOOK(PackTooltipPaint,ll::memory::HookPriority::Normal,HoverTextRenderer,&HoverTextRenderer::$render,void,
+    MinecraftUIRenderContext& context,IClientInstance& client,UIControl& owner,int pass) {
+    if (!enabled || !shooter::worldToken() || !shooter::ownsClient(&client)) { origin(context,client,owner,pass); return; }
+    tooltipImage.reset();
+    struct Scope { Scope(){tooltipRendering=true;} ~Scope(){tooltipRendering=false;} } scope;
+    origin(context,client,owner,pass);
+    if (!tooltipImage) return;
+    auto icon=std::move(*tooltipImage); tooltipImage.reset();
+    context.flushText(0,std::nullopt);
+    std::lock_guard lock(cacheMutex);
+    if (bindImages(context) && image(context,icon.path,{icon.x,icon.y},{16,16})) {
+        if (iconDiagnostics.insert("tooltip:"+client.getScreenName()).second)
+            logger().info("[item-icons] tooltip painted screen={} path={}",client.getScreenName(),icon.path);
+    }
+}
+bool slotHook=false,batchHook=false,tooltipFontHook=false,tooltipPaintHook=false;
 void draw(MinecraftUIRenderContext& context) {
     auto generation=shooter::worldToken(); if (!generation) return;
     IClientInstance& client=context.mClient;
@@ -338,7 +414,10 @@ void enable() {
     configure();
     enabled=true;
     slotHook=PackSlotIcon::hook()==0;
-    logger().info("[item-icons] common InventoryItemRenderer hook={} (screen coverage awaits in-game acceptance)",slotHook);
+    batchHook=PackSlotBatch::hook()==0;
+    tooltipFontHook=PackTooltipFont::hook()==0;
+    tooltipPaintHook=PackTooltipPaint::hook()==0;
+    logger().info("[item-icons] render={} batchRoute={} tooltipFont={} tooltipPaint={} (actual screen draws logged separately)",slotHook,batchHook,tooltipFontHook,tooltipPaintHook);
     listener=ll::event::EventBus::getInstance().emplaceListener<ll::event::AfterUIRenderEvent>([](ll::event::AfterUIRenderEvent& event) {
         if (!shooter::worldToken()) return;
         auto const& tree=event.screenView().mVisualTree;
@@ -351,15 +430,28 @@ void releaseWorld(IClientInstance const* client) {
     std::lock_guard lock(cacheMutex);
     if (clientOwner && clientOwner!=reinterpret_cast<uintptr_t>(client)) return;
     releaseTextures(); world=0; clientOwner=0; countAt=-1; ammoGun.clear(); marker={};
+    tooltipIcons.clear(); tooltipWorld=0; tooltipImage.reset();
     std::lock_guard queueLock(queueMutex); pending.clear();
+}
+void rememberTooltip(std::string text,std::string icon) {
+    auto generation=shooter::worldToken(); if (!enabled || !generation) return;
+    std::lock_guard lock(cacheMutex);
+    if (tooltipWorld!=generation) tooltipIcons.clear();
+    tooltipWorld=generation;
+    if (tooltipIcons.size()>=16) tooltipIcons.clear();
+    tooltipIcons[std::move(text)]=std::move(icon);
 }
 void disable() {
     enabled=false;
     if (slotHook) PackSlotIcon::unhook(); slotHook=false;
+    if (batchHook) PackSlotBatch::unhook(); batchHook=false;
+    if (tooltipFontHook) PackTooltipFont::unhook(); tooltipFontHook=false;
+    if (tooltipPaintHook) PackTooltipPaint::unhook(); tooltipPaintHook=false;
     if (listener) ll::event::EventBus::getInstance().removeListener(listener);
     listener=nullptr;
     std::lock_guard lock(cacheMutex);
     releaseTextures(); world=0; clientOwner=0; countAt=-1; marker={};
+    tooltipIcons.clear(); tooltipWorld=0; tooltipImage.reset();
     std::lock_guard queueLock(queueMutex); pending.clear();
 }
 } // namespace tacz::client::hud

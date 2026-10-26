@@ -227,7 +227,7 @@ void registerCommands() {
         });
     auto giveAmmo=[](Player& player,pack::ResourceId const& id,int count) {
         int left=std::clamp(count,1,64*36),given=0;
-        while (left>0) { int n=nbt::giveAmmo(player,id,left); if (!n) break; left-=n; given+=n; }
+        given=nbt::giveAmmo(player,id,left); left-=given;
         player.sendMessage("[TACZ] Gave "+std::to_string(given)+" x "+id.toString()+(left ? " (inventory full or item BP unavailable)" : ""));
     };
     command.overload<GiveAmmoParams>().text("give").text("ammo").required("ammoId").optional("count")

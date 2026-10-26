@@ -1,5 +1,9 @@
 # 0.3.23 A：HK416D 位置精度与坐标重基
 
+**后续用户验收（0.3.24记录）**：`9fc3404` 的 HK416D 侧字已不再 z-fight，修复通过；
+将顶点位置精度／远 pivot 坐标重基记为本问题的修复原因。保留此方案与0.3.22 UV修复，
+不再继续 alpha/mip/depth 开关实验。下面保留0.3.23实施当时的证据边界；验收并不补造缺失的 GPU buffer 读数。
+
 ## 实际日志：不能误报half已经确认
 
 输入 `F:/Games/Minecraft/LeviLauncher/versions/1.26.51.01-LeviLamina/logs/2026-10-26.12.log`。

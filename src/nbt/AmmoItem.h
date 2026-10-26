@@ -5,13 +5,14 @@
 #include "pack/ResourceId.h"
 
 class ItemStack;
+class ItemStackBase;
 class Player;
 
 // Ammo items, identified like TACZ's by the `AmmoId` NBT key (AmmoItemDataAccessor). There is
-// no dedicated ammo item yet, so any item stack carrying AmmoId counts as ammo.
+// tacz:ammo is the registered base item; legacy stacks carrying AmmoId remain readable.
 namespace tacz::nbt {
 
-std::optional<pack::ResourceId> readAmmoId(ItemStack const& item);
+std::optional<pack::ResourceId> readAmmoId(ItemStackBase const& item);
 
 // Rounds of `ammoId` in the player's inventory.
 int countAmmo(Player const& player, pack::ResourceId const& ammoId);
@@ -20,7 +21,9 @@ int countAmmo(Player const& player, pack::ResourceId const& ammoId);
 // slot by slot. Returns how many were taken and syncs the inventory if any were.
 int extractAmmo(Player& player, pack::ResourceId const& ammoId, int needed);
 
-// Gives a stack of ammo (placeholder base item: iron nugget). False if the inventory is full.
+// Gives as many per-ammo-sized stacks as fit, returns the exact inserted count.
 int giveAmmo(Player& player, pack::ResourceId const& ammoId, int count);
+void enableAmmoInventory();
+void disableAmmoInventory();
 
 } // namespace tacz::nbt

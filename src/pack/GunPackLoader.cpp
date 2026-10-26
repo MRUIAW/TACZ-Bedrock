@@ -147,11 +147,16 @@ void GunPackRegistry::clear() {
     mGuns.clear();
     mAmmo.clear();
     mGunDisplays.clear();
-    mAmmoSlots.clear(); mLanguages.clear();
+    mAmmoSlots.clear(); mLanguages.clear(); mPackDisplayNames.clear();
     mDataScripts.clear();
     mAssetScripts.clear();
     mAssetPaths.clear();
     mAssetIssues.clear();
+}
+
+std::string GunPackRegistry::packDisplayName(ResourceId const& id,std::string const& locale) const {
+    auto name=mPackDisplayNames.find(id.ns);
+    return name==mPackDisplayNames.end() ? std::string{} : localize(name->second,locale);
 }
 
 void GunPackRegistry::loadFolder(fs::path const& folder, LogFn const& info, LogFn const& warn) {
@@ -225,7 +230,24 @@ void GunPackRegistry::load(std::vector<std::unique_ptr<PackSource>> packs, LogFn
     auto gunIndex = parseAll("data/", "index/guns", parseGunIndex);
     auto ammo     = parseAll("data/", "index/ammo", parseAmmoIndex);
     // Locale filenames are not ResourceIds (the default pack includes tr-TR).
+    for (auto code:{"en_us","zh_cn"}) {
+        auto text=builtinAsset(std::string("assets/tacz/lang/")+code+".json");
+        if (text) {
+            auto lang=parseJsonText(std::string(*text));
+            for (auto const& [key,value]:lang.items()) if (value.is_string()) mLanguages[code][key]=value.get<std::string>();
+        }
+    }
     for (auto const& source:valid) for (auto const& file:source->list("assets/")) {
+        if (file.ends_with("/gunpack_info.json")) {
+            auto ns=file.substr(7,file.size()-7-18);
+            if (ns.empty() || ns.find('/')!=std::string::npos) continue;
+            try {
+                auto text=source->read(file); if (!text) continue;
+                auto info=parseJsonText(*text);
+                if (auto name=info.find("name");name!=info.end() && name->is_string()) mPackDisplayNames[ns]=name->get<std::string>();
+            } catch (std::exception const& e) { warn("Invalid pack info "+file+": "+e.what()); }
+            continue;
+        }
         auto mid=file.find("/lang/");
         if (mid==std::string::npos || !file.ends_with(".json")) continue;
         auto code=file.substr(mid+6,file.size()-mid-11);
