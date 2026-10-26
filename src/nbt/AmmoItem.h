@@ -21,7 +21,7 @@ int countAmmo(Player const& player, pack::ResourceId const& ammoId);
 // slot by slot. Returns how many were taken and syncs the inventory if any were.
 int extractAmmo(Player& player, pack::ResourceId const& ammoId, int needed);
 
-// Gives as many per-ammo-sized stacks as fit, returns the exact inserted count.
+// Gives per-ammo-sized stacks; drops overflow like /give. Returns inserted+dropped.
 int giveAmmo(Player& player, pack::ResourceId const& ammoId, int count);
 void enableAmmoInventory();
 void disableAmmoInventory();

@@ -4,6 +4,11 @@ namespace tacz::pack {
 class GunPackRegistry;
 enum class ItemKind { Gun,Ammo,Attachment };
 struct ItemIdentity { ItemKind kind; ResourceId id; bool operator==(ItemIdentity const&) const=default; };
+struct SlotIdentitySelection {
+    std::optional<ItemIdentity> identity;
+    bool ambiguous=false;
+    bool offer(int renderId,int renderAux,int sourceId,int sourceAux,std::optional<ItemIdentity> const& source);
+};
 std::string_view itemType(ItemKind kind);
 std::string_view identityKey(ItemKind kind);
 std::optional<ItemIdentity> itemIdentity(nlohmann::json const& tag);
@@ -18,6 +23,10 @@ int mergeAmmoCount(int target,int source,int limit,bool sameItem,bool sameTag);
 struct AmmoSlot { int count=0; bool compatible=false; }; // count0 = empty
 struct AmmoInsertion { std::vector<int> additions; int remaining=0; };
 AmmoInsertion planAmmoInsertion(std::vector<AmmoSlot> const&,int count,int limit);
+struct PickupPlan { int accepted=0,remaining=0; };
+PickupPlan planPickup(int groundCount,int capacity);
+// Native add can mutate partially and return false; true means no remainder.
+bool nativeAmmoAddComplete(int remaining);
 std::string normalizeLanguage(std::string code);
 using LanguageTable=std::map<std::string,std::map<std::string,std::string>>;
 std::string lookupTranslation(LanguageTable const& languages,std::string const& key,std::string const& locale);

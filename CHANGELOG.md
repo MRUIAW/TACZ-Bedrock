@@ -8,6 +8,56 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 Versioning rule for this project: the patch number goes up by 1 for each small item or test
 round, the minor number goes up by 1 for each finished feature or phase.
 
+## [0.3.25] - 2026-10-27
+
+### Interim testing release — A1 pending
+
+- User-approved interim release: ship slot identity, numeric-tag tooltip counts,
+  partial-pickup bool correction and give-overflow drops now. A1 max-stack
+  unification is NOT complete and continues in the next version. Some operations
+  may still stack ammo to64 instead of the pack limit (e.g.7.62x39 above60).
+  This known limit mismatch is independent of the fixed partial-add true/false
+  duplication root cause; native screen/pickup acceptance is still pending.
+
+### User-tested 0.3.24 / fixes
+
+- `d05b631`:120 ammo gives60+60 and full-stack pickup with free slots accepted.
+  Hotbar/inventory icons still placeholders: `.27.log` calls both hooks but every
+  render-data copy lacks identity; successful tooltip PNG draws rule out a blanket
+  upload/drawImage failure. New slot-update hook resolves complete collection stacks
+  through ContainerScreenController (HUD hotbar through local inventory), validates
+  base/aux, and associates identity with renderer+owner+world. No category-ID reverse
+  guessing or native render-copy mutation; conflicting candidates fail closed.
+- Tooltip0/30 had a different cause: SDK integral tags cannot convert to double,
+  and the Variant visitor silently returned0. Read concrete scalar payloads instead,
+  with native conversion assertions and a pure regression. Test Java's current
+  effective chamber for closed/open/manual bolt and effective capacity40→41/41;
+  no imaginary chamber added to an empty chamber's max. Attachment gameplay remains
+  unimplemented. Add tag-presence diagnostics; keep names live and common-white.
+- Keep native line spacing: changing only Font draw padding would disagree with
+  the already measured background/clipping. Tooltip ammo picture remains a separate
+  drawImage after the font hook locates the ammo line, not an image glyph.
+- Native disassembly disproves the provisional all-or-nothing add assumption:
+  FillingContainer::add can insert partially and return false with a remainder.
+  Player::take uses that false branch to commit the consumed-count transaction and
+  reduce the original ground actor. Correct the old adapter's partial-success true
+  return. Remove provisional A2 remainder-actor splitting; take now only observes
+  actual ground-before/after and inventory gain, preserving native parameters/bool.
+- A1 investigation proves descriptor-only max reads bypass the existing stack getter
+  in ItemStackBase::set/isFullStack/isStackable and
+  FillingContainer::_getSlotWithRemainingSpace/_addResource. The
+  shared Item max getter reads mMaxStackSize (+0xa8); descriptor construction drops
+  NBT. These 64/60 differences are real, but not the proven direct duplication cause.
+  Hopper/container/UI/network/client-prediction paths remain incompletely classified.
+  Current custom add/canAdd remain; this interim release does not claim unified limits.
+- Give ammo now drops each stack's overflow through native Player::drop, continues
+  all split stacks, and reports inserted+dropped; single gun overflow also drops.
+  Keep base/aux/meaningful-NBT merge rules, existing UV/origin precision and installed
+  gunpacks untouched. Native signatures checked; full SDK function_ref (16 bytes),
+  no opaque by-value placeholder or fabricated batch. Sidecar released at world exit.
+- New native GUI/partial pickup behaviour still needs in-game acceptance. Evidence,
+  implementation tradeoffs and test checklist: `docs/ITEMS-0.3.25.md`.
+
 ## [0.3.24] - 2026-10-26
 
 ### User-tested 0.3.23 / corrections

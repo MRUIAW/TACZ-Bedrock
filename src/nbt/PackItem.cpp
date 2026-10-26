@@ -8,6 +8,10 @@
 #include "mc/deps/nbt/StringTag.h"
 #include "mc/deps/nbt/IntTag.h"
 #include "mc/deps/nbt/ByteTag.h"
+#include "mc/deps/nbt/ShortTag.h"
+#include "mc/deps/nbt/Int64Tag.h"
+#include "mc/deps/nbt/FloatTag.h"
+#include "mc/deps/nbt/DoubleTag.h"
 #include "mod/TaczMod.h"
 #ifdef TACZ_CLIENT
 #include "client/gameplay/ClientShooter.h"
@@ -55,7 +59,8 @@ bool giveGun(Player& player,pack::ResourceId const& id) {
     }
     // No language-fixed display.Name: clients resolve the pack name at hover time.
     stack.setUserData(std::move(tag));
-    return player.addAndRefresh(stack);
+    bool added=player.addAndRefresh(stack);
+    return added || stack.isNull() || player.drop(stack,false); // one gun: no partial insertion
 }
 namespace {
 static_assert(std::is_same_v<decltype(&ItemStackBase::getMaxStackSize),uchar (ItemStackBase::*)() const>);
@@ -97,6 +102,8 @@ LL_TYPE_INSTANCE_HOOK(PackHoverName,ll::memory::HookPriority::Normal,ItemStackBa
     auto name=resolvedName(*this); return name ? "§r§f"+pack::stripFormatting(*name) : origin();
 }
 using Redacted=Bedrock::Safety::RedactableString;
+static_assert(std::is_convertible_v<IntTag,int> && !std::is_convertible_v<IntTag,double>);
+static_assert(std::is_convertible_v<ByteTag,int> && !std::is_convertible_v<ByteTag,double>);
 static_assert(std::is_same_v<decltype(&ItemStackBase::getName),std::string (ItemStackBase::*)() const>);
 static_assert(std::is_same_v<decltype(&ItemStackBase::getRedactedHoverName),Redacted (ItemStackBase::*)() const>);
 static_assert(std::is_same_v<decltype(&ItemStackBase::getRedactedName),Redacted (ItemStackBase::*)() const>);
@@ -120,11 +127,16 @@ LL_TYPE_INSTANCE_HOOK(PackTooltip,ll::memory::HookPriority::Normal,ItemStackBase
         if (mUserData) {
             auto number=[&](std::string_view key,int fallback=0) {
                 if (!mUserData->contains(key)) return fallback;
-                auto const& value=(*mUserData)[key]; if (!value.is_number()) return fallback;
-                if (mUserData->contains(key,Tag::Int64)) return static_cast<int>(static_cast<int64_t>(value));
-                double n=static_cast<double>(value);
-                if (std::isnan(n)) return 0;
-                return static_cast<int>(std::clamp(std::floor(n),double(std::numeric_limits<int>::min()),double(std::numeric_limits<int>::max())));
+                auto const& value=(*mUserData)[key];
+                switch(value.index()) {
+                case Tag::Byte: return pack::tooltipTagInteger(value.get<ByteTag>());
+                case Tag::Short: return pack::tooltipTagInteger(value.get<ShortTag>());
+                case Tag::Int: return pack::tooltipTagInteger(value.get<IntTag>());
+                case Tag::Int64: return pack::tooltipTagInteger(value.get<Int64Tag>());
+                case Tag::Float: return pack::tooltipTagInteger(value.get<FloatTag>());
+                case Tag::Double: return pack::tooltipTagInteger(value.get<DoubleTag>());
+                default: return fallback;
+                }
             };
             state.ammo=number("GunCurrentAmmoCount"); state.chamber=number("HasBulletInBarrel")!=0;
             state.hideFlags=static_cast<unsigned>(number("HideFlags")); // Java item default=0, any numeric tag
@@ -142,7 +154,9 @@ LL_TYPE_INSTANCE_HOOK(PackTooltip,ll::memory::HookPriority::Normal,ItemStackBase
         if (tooltip.ammoIcon) client::hud::rememberTooltip(text,*tooltip.ammoIcon);
         static std::atomic<int> samples=0;
         if (samples.fetch_add(1)<12) TaczMod::getInstance().getSelf().getLogger().info(
-            "[pack-items] hover id={} language={} lines={} ammo={} chamber={} hideFlags={}",identity->id.toString(),locale,tooltip.lines.size(),state.ammo,state.chamber,state.hideFlags);
+            "[pack-items] hover id={} language={} lines={} ammo={} chamber={} ammoTagPresent={} chamberTagPresent={} hideFlags={}",
+            identity->id.toString(),locale,tooltip.lines.size(),state.ammo,state.chamber,
+            mUserData && mUserData->contains("GunCurrentAmmoCount"),mUserData && mUserData->contains("HasBulletInBarrel"),state.hideFlags);
         return Redacted(text);
     } catch (std::exception const& e) {
         static std::atomic<bool> warned=false;

@@ -64,6 +64,9 @@
 #include "ll/api/memory/Hook.h"
 #include "mc/client/gui/controls/renderers/InventoryItemRenderer.h"
 #include "mc/client/gui/controls/renderers/HoverTextRenderer.h"
+#include "mc/client/gui/screens/UIScene.h"
+#include "mc/client/gui/screens/controllers/ContainerScreenController.h"
+#include "mc/world/actor/player/Inventory.h"
 #include "mc/deps/minecraft_renderer/resources/OffscreenCaptureDescription.h"
 #include "pack/ItemTooltip.h"
 #include "mc/client/gui/controls/UIControl.h"
@@ -121,6 +124,14 @@ std::vector<Hit> pending;
 ll::event::ListenerPtr listener;
 std::set<std::string> iconScreens;
 std::set<std::string> iconDiagnostics;
+struct SlotIdentity {
+    uint64_t generation=0;
+    uintptr_t owner=0;
+    std::optional<pack::ItemIdentity> identity;
+};
+// No controller/ItemStack/native ownership retained. The renderer address is
+// only a lookup key; every update replaces it, render validates owner + world.
+std::map<InventoryItemRenderer const*,SlotIdentity> slotIdentities;
 std::map<std::string,std::string> tooltipIcons;
 uint64_t tooltipWorld=0;
 thread_local bool tooltipRendering=false;
@@ -234,11 +245,73 @@ bool bindImages(MinecraftUIRenderContext& context) { // cacheMutex held by calle
 }
 using SlotRender=void (InventoryItemRenderer::*)(MinecraftUIRenderContext&,IClientInstance&,UIControl&,int);
 static_assert(std::is_same_v<decltype(&InventoryItemRenderer::$render),SlotRender>);
+using SlotUpdate=bool (InventoryItemRenderer::*)(IClientInstance&,UIControl&,UIScene const&);
+using CollectionVisitor=brstd::function_ref<void(std::string const&,int)>;
+static_assert(sizeof(CollectionVisitor)==16 && !std::is_empty_v<CollectionVisitor>);
+static_assert(std::is_same_v<decltype(&InventoryItemRenderer::$update),SlotUpdate>);
+static_assert(std::is_same_v<decltype(&UIControl::findAllCollectionIndices),void (UIControl::*)(CollectionVisitor)>);
+static_assert(std::is_same_v<decltype(&ContainerScreenController::_getVisualItemStack),ItemStackBase const& (ContainerScreenController::*)(std::string const&,int) const>);
+std::optional<pack::ItemIdentity> slotIdentity(InventoryItemRenderer const* renderer,UIControl const* owner=nullptr) {
+    std::lock_guard lock(cacheMutex);
+    auto it=slotIdentities.find(renderer);
+    if (it==slotIdentities.end() || it->second.generation!=shooter::worldToken()
+        || (owner && it->second.owner!=reinterpret_cast<uintptr_t>(owner))) return std::nullopt;
+    return it->second.identity;
+}
+LL_TYPE_INSTANCE_HOOK(PackSlotUpdate,ll::memory::HookPriority::Normal,InventoryItemRenderer,&InventoryItemRenderer::$update,bool,
+    IClientInstance& client,UIControl& owner,UIScene const& scene) {
+    bool changed=origin(client,owner,scene);
+    auto generation=shooter::worldToken();
+    if (!enabled || !generation || !shooter::ownsClient(&client)) return changed;
+    pack::SlotIdentitySelection selection;
+    std::string sourceCollection,sourceType;
+    int sourceIndex=-1,sourceId=0;
+    auto const& visual=mItemInstance.get();
+    auto view=scene.mScreenView.get();
+    auto controller=view ? view->mController.get() : nullptr;
+    auto containers=controller && controller->_isContainerScreen() ? static_cast<ContainerScreenController*>(controller) : nullptr;
+    auto visit=[&](std::string const& collection,int index) {
+        if (index<0) return;
+        ItemStackBase const* full=nullptr;
+        if (containers) full=&containers->_getVisualItemStack(collection,index);
+        else if (client.getScreenName().starts_with("hud_screen") && collection=="hotbar_items" && index<9) {
+            if (auto player=client.getLocalPlayer()) full=&player->getInventory().getItem(index);
+        }
+        if (!full || full->isNull()) return;
+        auto fullIdentity=nbt::readItemIdentity(*full);
+        bool matched=selection.offer(visual.getId(),visual.getAuxValue(),full->getId(),full->getAuxValue(),fullIdentity);
+        if (fullIdentity || visual.getTypeName().starts_with("tacz:")) {
+            std::lock_guard lock(cacheMutex);
+            auto key="resolve:"+client.getScreenName()+":"+collection+":"+std::to_string(index)+":"+std::to_string(full->getId());
+            if (iconDiagnostics.insert(key).second) logger().info(
+                "[item-icons] resolve screen={} collection={}[{}] renderType={} copyId={} copyAux={} copyNBT={} sourceType={} sourceId={} sourceAux={} sourceNBT={} identity={} matched={}",
+                client.getScreenName(),collection,index,visual.getTypeName(),visual.getId(),visual.getAuxValue(),bool(visual.mUserData),
+                full->getTypeName(),full->getId(),full->getAuxValue(),bool(full->mUserData),fullIdentity ? fullIdentity->id.toString() : "none",matched);
+        }
+        if (!matched) return;
+        sourceCollection=collection; sourceIndex=index; sourceType=full->getTypeName(); sourceId=full->getId();
+    };
+    // This is the fully defined SDK function_ref, NOT an opaque placeholder.
+    owner.findAllCollectionIndices(visit);
+    auto identity=selection.identity; // ambiguity fails closed; never use a neighbour's gun
+    auto previous=slotIdentity(this,&owner);
+    {
+        std::lock_guard lock(cacheMutex);
+        if (slotIdentities.size()>8192) slotIdentities.clear();
+        slotIdentities[this]={generation,reinterpret_cast<uintptr_t>(&owner),identity};
+        auto key="source:"+client.getScreenName()+":"+sourceCollection+":"+std::to_string(sourceIndex)+":"+(identity ? identity->id.toString() : "none");
+        if (identity && iconDiagnostics.insert(key).second)
+            logger().info("[item-icons] source screen={} collection={}[{}] type={} runtimeId={} renderItemId={} copyId={} copyNBT={} copyIdentity={} fullIdentity={}",
+                client.getScreenName(),sourceCollection,sourceIndex,sourceType,sourceId,mItemId,visual.getId(),bool(visual.mUserData),
+                nbt::readItemIdentity(visual).has_value(),identity->id.toString());
+    }
+    return changed || previous!=identity; // same category ID but different GunId must invalidate batching
+}
 static_assert(std::is_same_v<decltype(&InventoryItemRenderer::$getBatchType),UIBatchType (InventoryItemRenderer::*)() const>);
 LL_TYPE_INSTANCE_HOOK(PackSlotBatch,ll::memory::HookPriority::Normal,InventoryItemRenderer,&InventoryItemRenderer::$getBatchType,UIBatchType) {
     auto native=origin();
     if (!enabled || !shooter::worldToken()) return native;
-    auto identity=nbt::readItemIdentity(mItemInstance.get());
+    auto identity=slotIdentity(this);
     {
         std::lock_guard lock(cacheMutex);
         auto key="batch-entry:"+std::to_string(mItemId)+":"+(identity ? identity->id.toString() : "none");
@@ -266,7 +339,7 @@ LL_TYPE_INSTANCE_HOOK(PackSlotIcon,ll::memory::HookPriority::Normal,InventoryIte
     }
     if (enabled && !pass && shooter::worldToken() && shooter::ownsClient(&client) && !mHidingIcon) {
         try {
-            auto identity=nbt::readItemIdentity(mItemInstance.get());
+            auto identity=slotIdentity(this,&owner);
             auto path=identity ? pack::itemIcon(TaczMod::getInstance().gunPacks(),*identity) : std::nullopt;
             {
                 std::lock_guard lock(cacheMutex);
@@ -304,6 +377,8 @@ LL_TYPE_INSTANCE_HOOK(PackTooltipFont,ll::memory::HookPriority::Normal,Font,&Fon
         if (tooltipWorld==shooter::worldToken()) for (auto const& [text,path]:tooltipIcons) {
             auto line=pack::tooltipAmmoIconLine(str,text); if (!line) continue;
             tooltipImage=TooltipImage{x,y+static_cast<float>(*line)*(getWrapHeight()+padding),path};
+            if (iconDiagnostics.insert("tooltip-spacing").second)
+                logger().info("[item-tooltip] native wrapHeight={} padding={} (unchanged: background measurement must match text)",getWrapHeight(),padding);
             break;
         }
     }
@@ -324,7 +399,7 @@ LL_TYPE_INSTANCE_HOOK(PackTooltipPaint,ll::memory::HookPriority::Normal,HoverTex
             logger().info("[item-icons] tooltip painted screen={} path={}",client.getScreenName(),icon.path);
     }
 }
-bool slotHook=false,batchHook=false,tooltipFontHook=false,tooltipPaintHook=false;
+bool slotHook=false,slotUpdateHook=false,batchHook=false,tooltipFontHook=false,tooltipPaintHook=false;
 void draw(MinecraftUIRenderContext& context) {
     auto generation=shooter::worldToken(); if (!generation) return;
     IClientInstance& client=context.mClient;
@@ -414,10 +489,11 @@ void enable() {
     configure();
     enabled=true;
     slotHook=PackSlotIcon::hook()==0;
+    slotUpdateHook=PackSlotUpdate::hook()==0;
     batchHook=PackSlotBatch::hook()==0;
     tooltipFontHook=PackTooltipFont::hook()==0;
     tooltipPaintHook=PackTooltipPaint::hook()==0;
-    logger().info("[item-icons] render={} batchRoute={} tooltipFont={} tooltipPaint={} (actual screen draws logged separately)",slotHook,batchHook,tooltipFontHook,tooltipPaintHook);
+    logger().info("[item-icons] update={} render={} batchRoute={} tooltipFont={} tooltipPaint={} (actual screen draws logged separately)",slotUpdateHook,slotHook,batchHook,tooltipFontHook,tooltipPaintHook);
     listener=ll::event::EventBus::getInstance().emplaceListener<ll::event::AfterUIRenderEvent>([](ll::event::AfterUIRenderEvent& event) {
         if (!shooter::worldToken()) return;
         auto const& tree=event.screenView().mVisualTree;
@@ -431,6 +507,7 @@ void releaseWorld(IClientInstance const* client) {
     if (clientOwner && clientOwner!=reinterpret_cast<uintptr_t>(client)) return;
     releaseTextures(); world=0; clientOwner=0; countAt=-1; ammoGun.clear(); marker={};
     tooltipIcons.clear(); tooltipWorld=0; tooltipImage.reset();
+    slotIdentities.clear();
     std::lock_guard queueLock(queueMutex); pending.clear();
 }
 void rememberTooltip(std::string text,std::string icon) {
@@ -444,6 +521,7 @@ void rememberTooltip(std::string text,std::string icon) {
 void disable() {
     enabled=false;
     if (slotHook) PackSlotIcon::unhook(); slotHook=false;
+    if (slotUpdateHook) PackSlotUpdate::unhook(); slotUpdateHook=false;
     if (batchHook) PackSlotBatch::unhook(); batchHook=false;
     if (tooltipFontHook) PackTooltipFont::unhook(); tooltipFontHook=false;
     if (tooltipPaintHook) PackTooltipPaint::unhook(); tooltipPaintHook=false;
@@ -452,6 +530,7 @@ void disable() {
     std::lock_guard lock(cacheMutex);
     releaseTextures(); world=0; clientOwner=0; countAt=-1; marker={};
     tooltipIcons.clear(); tooltipWorld=0; tooltipImage.reset();
+    slotIdentities.clear();
     std::lock_guard queueLock(queueMutex); pending.clear();
 }
 } // namespace tacz::client::hud

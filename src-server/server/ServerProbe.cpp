@@ -228,7 +228,7 @@ void registerCommands() {
     auto giveAmmo=[](Player& player,pack::ResourceId const& id,int count) {
         int left=std::clamp(count,1,64*36),given=0;
         given=nbt::giveAmmo(player,id,left); left-=given;
-        player.sendMessage("[TACZ] Gave "+std::to_string(given)+" x "+id.toString()+(left ? " (inventory full or item BP unavailable)" : ""));
+        player.sendMessage("[TACZ] Gave "+std::to_string(given)+" x "+id.toString()+(left ? " (item registration or overflow drop failed)" : ""));
     };
     command.overload<GiveAmmoParams>().text("give").text("ammo").required("ammoId").optional("count")
         .execute([giveAmmo](CommandOrigin const& origin,CommandOutput& output,GiveAmmoParams const& params) {

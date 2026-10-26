@@ -4,6 +4,11 @@
 #include <algorithm>
 #include <stdexcept>
 namespace tacz::pack {
+bool SlotIdentitySelection::offer(int renderId,int renderAux,int sourceId,int sourceAux,std::optional<ItemIdentity> const& source) {
+    if (ambiguous || !source || renderId!=sourceId || renderAux!=sourceAux) return false;
+    if (identity && identity!=source) { identity.reset(); ambiguous=true; return false; }
+    identity=source; return true;
+}
 std::string_view itemType(ItemKind k) {
     switch (k) { case ItemKind::Gun:return "tacz:modern_kinetic_gun"; case ItemKind::Ammo:return "tacz:ammo"; default:return "tacz:attachment"; }
 }
@@ -72,6 +77,12 @@ AmmoInsertion planAmmoInsertion(std::vector<AmmoSlot> const& slots,int count,int
     }
     return plan;
 }
+PickupPlan planPickup(int groundCount,int capacity) {
+    groundCount=std::max(0,groundCount);
+    int accepted=std::min(groundCount,std::max(0,capacity));
+    return {accepted,groundCount-accepted};
+}
+bool nativeAmmoAddComplete(int remaining) { return remaining==0; }
 std::string normalizeLanguage(std::string code) {
     for (auto& c:code) { if (c=='-') c='_'; else if (c>='A' && c<='Z') c+= 'a'-'A'; }
     return code;

@@ -61,7 +61,7 @@ ItemTooltip buildItemTooltip(GunPackRegistry const& packs,ItemIdentity const& id
         auto entry=packs.ammo(*data.ammoId);
         line(indent+"§6"+(entry ? tr(entry->index.name) : itemName(packs,ammo,locale)));
         int chamber=state.chamber && data.bolt!=Bolt::OpenBolt ? 1 : 0;
-        int current=std::max(0,state.ammo)+chamber,max=data.ammoAmount+chamber;
+        int current=std::max(0,state.ammo)+chamber,max=std::max(0,state.capacity.value_or(data.ammoAmount))+chamber;
         auto count=display && display->ammoPercent ? percent(double(current)/std::max(1,max),0)
             : std::to_string(current)+"/"+std::to_string(max);
         if (state.dummy) count+=" ("+std::to_string(std::max(0,*state.dummy))+")";

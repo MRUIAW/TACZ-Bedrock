@@ -15,6 +15,8 @@
 #include "mc/world/actor/player/Inventory.h"
 #include "mc/world/actor/player/Player.h"
 #include "mc/world/item/ItemStack.h"
+#include "mc/world/actor/item/ItemActor.h"
+#include "mc/world/level/Level.h"
 
 #include "nbt/GunNbt.h"
 #include "pack/PackItems.h"
@@ -109,22 +111,54 @@ LL_TYPE_INSTANCE_HOOK(AmmoCanAdd,ll::memory::HookPriority::Normal,Inventory,&Inv
 LL_TYPE_INSTANCE_HOOK(AmmoAdd,ll::memory::HookPriority::Normal,Inventory,&Inventory::$add,bool,ItemStack& item) {
     int limit=limitFor(item); if (!limit) return origin(item);
     auto id=readAmmoId(item)->toString(); int requested=item.mCount;
+    // FillingContainer::add may insert partially, but returns FALSE when it
+    // stops with a remainder. Player::take uses that false branch to commit
+    // the inventory transaction and reduce the original ground actor. Returning
+    // inserted>0 here (0.3.24) incorrectly selected the full-success branch.
     int inserted=insertAmmo(*this,item,limit);
+    bool complete=pack::nativeAmmoAddComplete(item.mCount);
     if (inventorySamples.fetch_add(1)<40) TaczMod::getInstance().getSelf().getLogger().info(
-        "[ammo-stack] add id={} requested={} inserted={} remaining={} limit={}",id,requested,inserted,item.mCount,limit);
-    return inserted>0;
+        "[ammo-stack] add id={} requested={} inserted={} remaining={} limit={} complete={}",id,requested,inserted,item.mCount,limit,complete);
+    return complete;
 }
-bool addHook=false,canAddHook=false,sameDataHook=false;
+static_assert(std::is_same_v<decltype(&Player::take),bool (Player::*)(Actor&,int,int)>);
+static_assert(std::is_same_v<decltype(&Player::$drop),bool (Player::*)(ItemStack const&,bool)>);
+LL_TYPE_INSTANCE_HOOK(AmmoPickup,ll::memory::HookPriority::Normal,Player,&Player::take,bool,Actor& actor,int count,int favoredSlot) {
+    if (isClientSide() || actor.isClientSide()) return origin(actor,count,favoredSlot);
+    auto item=ItemActor::tryGetFromEntity(actor.getEntityContext(),false);
+    int limit=item ? limitFor(item->mItem.get()) : 0;
+    if (!limit) return origin(actor,count,favoredSlot);
+    int before=item->mItem->mCount;
+    auto ammoId=*readAmmoId(item->mItem.get());
+    auto actorId=item->getOrCreateUniqueID();
+    int inventoryBefore=countAmmo(*this,ammoId);
+    // Observational only: no A2 actor reservation/splitting, hand-written pickup
+    // packets, forced refresh, cancellation override or extra ground mutation.
+    bool result=origin(actor,count,favoredSlot);
+    int inserted=countAmmo(*this,ammoId)-inventoryBefore;
+    // Native may have removed the actor. Reacquire by ID rather than using the
+    // original actor/stack reference after take has completed.
+    auto liveActor=getLevel().fetchEntity(actorId,false);
+    auto liveItem=liveActor ? ItemActor::tryGetFromEntity(liveActor->getEntityContext(),false) : nullptr;
+    int after=!liveItem || liveItem->mRemoved || liveItem->mItem->isNull() ? 0 : int(liveItem->mItem->mCount);
+    TaczMod::getInstance().getSelf().getLogger().info(
+        "[ammo-pickup] id={} groundBefore={} requested={} groundAfter={} native={} inserted={} conserved={} mode=observe",
+        ammoId.toString(),before,count,after,result,inserted,before==inserted+after);
+    return result;
+}
+bool addHook=false,canAddHook=false,sameDataHook=false,pickupHook=false;
 }
 void enableAmmoInventory() {
     addHook=AmmoAdd::hook()==0; canAddHook=AmmoCanAdd::hook()==0;
     sameDataHook=AmmoSameData::hook()==0;
-    TaczMod::getInstance().getSelf().getLogger().info("[ammo-stack] addHook={} canAddHook={} sameDataHook={}",addHook,canAddHook,sameDataHook);
+    pickupHook=AmmoPickup::hook()==0;
+    TaczMod::getInstance().getSelf().getLogger().info("[ammo-stack] addHook={} canAddHook={} sameDataHook={} pickupHook={}",addHook,canAddHook,sameDataHook,pickupHook);
 }
 void disableAmmoInventory() {
     if (addHook) AmmoAdd::unhook(); if (canAddHook) AmmoCanAdd::unhook();
     if (sameDataHook) AmmoSameData::unhook();
-    addHook=canAddHook=sameDataHook=false; inventorySamples=0;
+    if (pickupHook) AmmoPickup::unhook();
+    addHook=canAddHook=sameDataHook=pickupHook=false; inventorySamples=0;
 }
 
 std::optional<pack::ResourceId> readAmmoId(ItemStackBase const& item) {
@@ -163,18 +197,22 @@ int giveAmmo(Player& player, pack::ResourceId const& ammoId, int count) {
     auto const& packs=TaczMod::getInstance().gunPacks();
     auto ammo=packs.ammo(ammoId); if (!ammo || count<=0) return 0;
     auto& inventory=player.getInventory();
-    int limit=pack::ammoStackLimit(ammo->index.stackSize),given=0;
+    int limit=pack::ammoStackLimit(ammo->index.stackSize),given=0,dropped=0;
     for (int chunk:pack::splitAmmo(count,limit)) {
         ItemStack stack; stack.reinit("tacz:ammo",chunk,0);
         if (stack.isNull()) break;
         auto tag=std::make_unique<CompoundTag>(); (*tag)[AmmoId]=StringTag{ammoId.toString()};
         stack.setUserData(std::move(tag));
         int inserted=insertAmmo(inventory,stack,limit); given+=inserted;
-        if (inserted<chunk) break; // full; unissued rounds are never reported as given
+        if (!stack.isNull()) {
+            int remaining=stack.mCount;
+            if (!player.drop(stack,false)) break;
+            dropped+=remaining;
+        }
     }
     if (given) player.refreshInventory();
-    TaczMod::getInstance().getSelf().getLogger().info("[ammo-stack] give id={} requested={} inserted={} limit={}",ammoId.toString(),count,given,limit);
-    return given;
+    TaczMod::getInstance().getSelf().getLogger().info("[ammo-stack] give id={} requested={} inserted={} dropped={} limit={}",ammoId.toString(),count,given,dropped,limit);
+    return given+dropped;
 }
 
 } // namespace tacz::nbt
