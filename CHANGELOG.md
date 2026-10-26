@@ -8,6 +8,87 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 Versioning rule for this project: the patch number goes up by 1 for each small item or test
 round, the minor number goes up by 1 for each finished feature or phase.
 
+## [0.3.23] - 2026-10-26
+
+### User-tested 0.3.22
+
+- `0d1be46`: Timeless_50 and block_17 slide decals now correct; cz75/glock_17
+  magazines, AK47 and other gun regression checks OK. Gun packs remain untouched;
+  preserve the fix in this mod's upload compatibility layer. HK416D side text still z-fights.
+- Read the specified `2026-10-26.12.log`: its13 mesh-enabled entries are frame
+  statistics with builds=0, not packed-position diagnostics. There are no
+  `[gun-packed]`/position-format values. Do not report half as runtime-confirmed.
+
+### HK416D precision hardening
+
+- Add per-group binary-grid origin rebasing on far-pivot/narrow-span axes, only
+  if it halves worst simulated half-rounding error. Upload p-origin once, restore
+  origin in per-draw bone matrix. No authored geometry/inflate changes, global
+  depth bias, unsafe float-layout fabrication, extra per-frame mesh rebuild,
+  named-bone folding or draw-order changes; arms retain their separate path.
+- HK label origin(-.375,0,0): simulated half previously collapsed cube0/2
+  .00006249547-block outward separation to0. Now it preserves .00006103515625;
+  cube3 preserves -.00030517578125 vs source-.00031125546. Example .25..2-block
+  first-person projections retain distinct front depth, including simulatedD24.
+  **This is offline proof of precision improvement, not a captured GPU format or
+  an in-game HK fix claim.** Actual backend format/HK result still needs acceptance.
+- mesh1 now also inspects existing cached meshes when the setting changes;
+  log layout slot8/12, origin, and actual decoded positions if raw CPU bytes remain.
+  Empty raw data is reported, never forced re-encoded. No need to rebuild just
+  to get the format metadata that was missing from the user's run.
+
+### Real category items / names / icons
+
+- BP registers `tacz:modern_kinetic_gun`(stack1), `tacz:ammo`(base64),
+  `tacz:attachment`(stack1); no durability/use/charge/vanilla weapon components.
+  RP has original schematic fallback PNGs and item atlas. BP/RP versions0.3.23,
+  same UUIDs and explicit BP→RP dependency; attachment NBT accessors only.
+- `/tacz give gun <GunId>` gives a real item with creative-tab initial NBT.
+  `setgun` is now a give-gun alias, no longer overwrites the selected stack.
+  `/tacz give ammo <AmmoId> [count=1]` and `/tacz ammo <count>` give real ammo,
+  split by the ammo's effective stack limit; counts1..2304. Missing BP/unknown
+  identity fails instead of substituting a vanilla item. Legacy GunId/AmmoId
+  stacks still read/fire/reload; do not migrate or delete old items.
+- Typed dual-side ItemStackBase getMaxStackSize hook returns per-AmmoId index
+  limit within Bedrock1..64. twx_ldp1/twx_nl1 declare25565: explicit64 fallback
+  plus warning, not support for arbitrary Java stack sizes. Native drag/merge
+  paths and over-limit legacy stacks still need in-game checks.
+- Client common `InventoryItemRenderer::$render` hook replaces pass0 icon using
+  gun/ammo display `slot` PNG via the existing guarded UI texture cache. Full
+  reference/int signature assertions; no by-value empty UIItemRenderInfo,
+  RenderMetadata or function_ref hooks/shared atlas mutation. Targets hotbar,
+  inventory/container slots using this renderer; per-screen rendered logs added.
+  **No screen has been newly game-tested by the agent**; other UI/atlas/drag/glint
+  paths may retain fallback icons. Failure/menu/outside session calls native origin.
+- Load pack lang JSON (including tr-TR locale filenames), current language per-key
+  →en_us→key fallback. New items store native display.Name in English so names
+  survive client-hook failure. Client getHoverName hook resolves current locale
+  without rewriting inventory NBT; keep real player/anvil names. Only the client
+  SDK exports this name method; server writes the English fallback.
+- **Not yet:** third-person/dropped real gun/item appearance (category placeholder
+  expected), attachment mechanics, ammo box, per-gun creative entries, special
+  UI coverage and >64 ammo stacks. Milestone1 single-player item code is landed,
+  but native item/icon/name/survival/RTX acceptance is still pending, not declared done.
+
+### Validation / scope
+
+- Production installed325/325 gun models and reference54/54 default audited;
+  all source positions roundtrip `(p-origin)+origin` exactly (max0), selected
+  Timeless/block_17/AK47/cz75/glock_17 UV regression0 failures. Installed325/325
+  gun and80/80 ammo slot assets exist. Offline regression script passes.
+- 168 tests /203,996 assertions passed,0 failures/skips. Pure tests cover item
+  NBT schema/initial state, stack caps, language fallback, slot mapping, BP behavior
+  constraints, half preservation/depth examples and prior UV/animation regressions.
+  No installed gunpack changed or game process started/terminated.
+- Windows x64 release client/server builds and BP/RP JSON/PNG validation passed;
+  `git diff --check` passed. Game closed; client0.3.23 deployed. Final DLL/PDB/
+  manifest hashes match; manifest platform/version and exact RP/BP paths+hashes
+  checked (11/5 files). No new in-game acceptance claimed.
+  Client DLL SHA256: `4ae1147c53104f8c621968961b376038f12fd7d4a1eb2a82fcd0e05875219650`;
+  server: `fd9c6bdecf8af279ad8283f32a066f42024fb447a3c72380ede5f27dea79dbf2`.
+- Detailed limits, actual-log findings and tests: `docs/HK-DEPTH-0.3.23.md`,
+  `docs/ITEMS-0.3.23.md`. BDS testing/data sync/server-only warning remain **last**.
+
 ## [0.3.22] - 2026-10-26
 
 ### User-tested 0.3.21

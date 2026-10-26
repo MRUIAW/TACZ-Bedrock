@@ -1,0 +1,11 @@
+{
+  "format_version": "1.21.80",
+  "minecraft:item": {
+    "description": {"identifier": "tacz:ammo", "menu_category": {"category": "equipment"}},
+    "components": {
+      "minecraft:max_stack_size": 64,
+      "minecraft:icon": {"textures": {"default": "tacz_ammo"}},
+      "minecraft:display_name": {"value": "item.tacz:ammo.name"}
+    }
+  }
+}

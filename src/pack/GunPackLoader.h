@@ -12,6 +12,7 @@
 #include "pack/GunData.h"
 #include "pack/GunDisplay.h"
 #include "pack/ResourceId.h"
+#include "pack/PackItems.h"
 
 // Discovers TACZ gun packs in a folder (same layout as Java's .minecraft/tacz)
 // and loads their common data. Mirrors GunPackLoader + CommonAssetsManager.
@@ -65,6 +66,10 @@ public:
     [[nodiscard]] GunEntry const*   gun(ResourceId const& id) const;
     [[nodiscard]] AmmoEntry const*  ammo(ResourceId const& id) const;
     [[nodiscard]] GunDisplay const* gunDisplay(ResourceId const& id) const;
+    [[nodiscard]] std::optional<ResourceId> ammoSlot(ResourceId const& id) const {
+        auto it=mAmmoSlots.find(id); return it==mAmmoSlots.end() ? std::nullopt : std::optional(it->second);
+    }
+    [[nodiscard]] std::string localize(std::string const& key,std::string const& locale) const { return lookupTranslation(mLanguages,key,locale); }
 
     // Reads a file by pack-relative path (e.g. "assets/tacz/textures/gun/uv/ak47.png");
     // the last pack containing it wins, as with resource pack stacking.
@@ -87,6 +92,8 @@ private:
     std::map<ResourceId, GunEntry>           mGuns;
     std::map<ResourceId, AmmoEntry>          mAmmo;
     std::map<ResourceId, GunDisplay>         mGunDisplays;
+    std::map<ResourceId,ResourceId>          mAmmoSlots;
+    LanguageTable                          mLanguages;
     std::map<ResourceId, std::string>        mDataScripts;
     std::map<ResourceId, std::string>        mAssetScripts;
     std::set<std::string,std::less<>>        mAssetPaths;

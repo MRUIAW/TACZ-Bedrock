@@ -21,6 +21,6 @@ int countAmmo(Player const& player, pack::ResourceId const& ammoId);
 int extractAmmo(Player& player, pack::ResourceId const& ammoId, int needed);
 
 // Gives a stack of ammo (placeholder base item: iron nugget). False if the inventory is full.
-bool giveAmmo(Player& player, pack::ResourceId const& ammoId, int count);
+int giveAmmo(Player& player, pack::ResourceId const& ammoId, int count);
 
 } // namespace tacz::nbt

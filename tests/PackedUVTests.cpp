@@ -22,7 +22,8 @@ TEST_CASE("Native packed UV overflow reproduces Timeless inverted whole-texture 
     CHECK(pieces[0].vertices[2].pos==pieces[1].vertices[1].pos);
 }
 TEST_CASE("Packed repeat preserves reversal, winding, range, coverage and linear interpolation") {
-    for (auto rect:{glm::vec4(0,.7890625f,.533203125f,1.005859375f),glm::vec4(-2.4f,3.1f,2.2f,-1.25f),
+    for (auto rect:{glm::vec4(0,.7890625f,.533203125f,1.005859375f),glm::vec4(0,.505859375f,.5068359375f,1.0126953125f),
+        glm::vec4(-2.4f,3.1f,2.2f,-1.25f),
         glm::vec4(2,2,3,3),glm::vec4(-1,-1,0,0),glm::vec4(2,3,2,3),glm::vec4(.9f,.2f,.1f,.8f)}) {
         auto q=quad(rect.x,rect.y,rect.z,rect.w);
         double area=0;

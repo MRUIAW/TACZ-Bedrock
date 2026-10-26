@@ -1,4 +1,4 @@
-# 路线图（0.3.22，逐版更新）
+# 路线图（0.3.23，逐版更新）
 
 ## 对照原里程碑 1「AK47 单枪可玩原型」
 
@@ -20,15 +20,20 @@
 - **0.3.22**：证实原生UV0低16位溢出导致端点插值倒扫纹理；枪上传缓存边界分面/整数平移，保留mesh-once。
   安装325枪+参考default54枪源面UV审计通过，实机贴花/RTX待验；HK命名骨无helper折叠差异，不能称已修复。
   新候选是half位置量化抹掉0.001pixel外扩，待读实际buffer；见`UV-PACKING-0.3.22.md`和两份UV-AUDIT。
-- **里程碑1仍未完整**：UI/透明材质实机验收；真实枪/弹药物品、GunId 图标名称；手动拉栓；
-  BDS+客户端联调、data同步、只装服务端提示、击杀计数overlay。当前为单人/内置服务器原型，probe UI 默认关闭，`/tacz setgun` 仍是测试设施。
-- **已知视觉待办**：Timeless_50 UV分面实机验收、HK416D白字位置精度/GPU深度定位（非UV越界）、B93R 原动画弹匣离屏、P320 等检视倾斜、View Bobbing 瞄准行走左右摆。
+- **0.3.22用户验收**：Timeless/block_17滑套贴花正确，枪包未改；cz75/glock_17弹匣、AK47和其他枪回归OK。HK侧字仍z-fight。
+- **0.3.23**：远pivot group坐标重基，保留作者inflate的half精度加固；修正mesh1只在build时读日志的问题。
+  用户指定日志13条其实是builds=0帧统计，没有实际格式读数，不能宣称half根因已实机确证；见`HK-DEPTH-0.3.23.md`。
+  三个真实类别物品、give命令、公共UI槽renderer的slot图与多语言名称已实现；配件仅注册/NBT，见`ITEMS-0.3.23.md`。
+- **里程碑1单人收尾：代码落地，验收待完成**：新类别物品注册、各UI槽图/名称、生存新ammo换弹、语言切换与HK/RTX需本轮实机确认；
+  不将编译/离线测试当成里程碑完整通过。当前为单人/内置服务器原型；`setgun`现为`give gun`别名，旧vanilla GunId物品仍读兼容。
+  手动拉栓、击杀计数overlay、皮肤等后续机制/表现与BDS联调仍Not yet，不因“真实物品已注册”抹掉它们。
+- **已知视觉待办**：HK416D白字坐标重基实机验收与真实packed position读取（非UV越界）、新物品slot各screen覆盖、B93R 原动画弹匣离屏、P320 等检视倾斜、View Bobbing 瞄准行走左右摆。
   皮肤/Persona 仍有占位路径，不把“手臂能动”等同皮肤完成。
 
 ## 后续队列（按顺序）
 
-1. **材质验收**：Timeless/block_17 UV分面、其他枪/RTX不变；HK实际packed position精度与深度定位；保留已通过HUD/准星/命中反馈；击杀计数 Not yet。
-2. **物品**：BP 注册 `tacz:modern_kinetic_gun`（及 ammo/attachment），NBT GunId 驱动图标/名称；验证基岩端可行性，失败再讨论退路。
+1. **材质验收**：保留Timeless/block_17已通过结果，HK位置重基/RTX验收及新缓存读数；保留已通过HUD/准星/命中反馈；击杀计数 Not yet。
+2. **物品验收**：真实gun/ammo/attachment BP、NBT slot图/名称、背包/容器、语言切换和生存换弹；特殊UI/拖拽预览可能仍占位，超64 ammo声明暂降到64；第三人称/掉落物真实外观Not yet。
 3. **机制**：手动拉栓优先（AWP 等）→ 背包直读+热量（minigun 当前默认30发）→ 充能 → 爆炸 → 近战 → builtin attachments（AUG 默认镜）。
    弹丸散布/每发多弹丸已有基础实现；第三方自定义 shoot/bolt Lua API、扩展字段按审计清单逐项实现，不无条件放行。
 4. **效果**：抛壳 → 枪口焰 → 曳光（间隔判定、发光束、第一人称枪口偏移/近处隐藏）及专用 ammo entity 模型。

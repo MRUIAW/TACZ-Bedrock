@@ -147,6 +147,7 @@ void GunPackRegistry::clear() {
     mGuns.clear();
     mAmmo.clear();
     mGunDisplays.clear();
+    mAmmoSlots.clear(); mLanguages.clear();
     mDataScripts.clear();
     mAssetScripts.clear();
     mAssetPaths.clear();
@@ -223,10 +224,29 @@ void GunPackRegistry::load(std::vector<std::unique_ptr<PackSource>> packs, LogFn
     auto gunData  = parseAll("data/", "data/guns", parseGunData);
     auto gunIndex = parseAll("data/", "index/guns", parseGunIndex);
     auto ammo     = parseAll("data/", "index/ammo", parseAmmoIndex);
+    // Locale filenames are not ResourceIds (the default pack includes tr-TR).
+    for (auto const& source:valid) for (auto const& file:source->list("assets/")) {
+        auto mid=file.find("/lang/");
+        if (mid==std::string::npos || !file.ends_with(".json")) continue;
+        auto code=file.substr(mid+6,file.size()-mid-11);
+        if (code.empty() || code.find('/')!=std::string::npos) continue;
+        try {
+            auto text=source->read(file); if (!text) continue;
+            auto lang=parseJsonText(*text);
+            if (lang.is_object()) for (auto it=lang.begin();it!=lang.end();++it) if (it->is_string())
+                mLanguages[normalizeLanguage(code)][it.key()]=it->get<std::string>();
+        } catch (std::exception const& e) { warn("Invalid language "+file+": "+e.what()); }
+    }
     // Client-side display definitions. Small, so both sides load them; only the client uses them.
     for (auto& [id, entry] : parseAll("assets/", "display/guns", parseGunDisplay)) mGunDisplays.emplace(id, std::move(entry.first));
 
     for (auto& [id, entry] : ammo) {
+        if (entry.first.display) try {
+            auto text=readFile(assetPath(*entry.first.display,"display/ammo",".json"));
+            if (text) { auto display=parseJsonText(*text); auto s=display.find("slot");
+                if (s!=display.end() && s->is_string()) if (auto slot=ResourceId::parse(s->get<std::string>())) mAmmoSlots[id]=*slot;
+            }
+        } catch (std::exception const& e) { warn("Invalid ammo slot "+id.toString()+": "+e.what()); }
         entry.first.sort = std::clamp(entry.first.sort, 0, 65536);
         mAmmo.emplace(id, AmmoEntry{id, std::move(entry.first), std::move(entry.second)});
     }

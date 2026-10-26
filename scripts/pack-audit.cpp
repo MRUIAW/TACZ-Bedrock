@@ -14,6 +14,7 @@
 #include "model/GeoModel.h"
 #include "model/RigidGunModel.h"
 #include "model/PackedUV.h"
+#include "model/LocalMeshFrame.h"
 #include "gun/ShootRules.h"
 
 namespace {
@@ -27,11 +28,15 @@ nlohmann::json hkDepth(tacz::model::GeoModel const& geo,tacz::model::RigidGunMod
     json report={{"targets",json::array()},{"nativePositionHalfActive","unverified: capability dependent; half below is a bounded simulation"}};
     auto const& db=geo.bones[decal];
     auto half=[](glm::vec3 v) { for (int a=0;a<3;++a) v[a]=glm::unpackHalf1x16(glm::packHalf1x16(v[a])); return v; };
+    std::map<int,glm::vec3> origins;
+    for (auto const& g:rigid.groups) origins.try_emplace(g.bone,model::localMeshOrigin(g.vertices));
     for (size_t qi:{0u,2u,3u}) {
         auto const& q=db.quads.at(qi);
         auto local=q.pos[0]/16.f;
         glm::vec3 wp=frame.world[decal]*glm::vec4(local,1);
         glm::vec3 hp=frame.world[decal]*glm::vec4(half(local),1);
+        auto newLocal=half(local-origins[decal])+origins[decal];
+        glm::vec3 newWorld=frame.world[decal]*glm::vec4(newLocal,1);
         size_t matched=0,clipMismatches=0;
         int groupBone=-1;
         for (auto const& group:rigid.groups) if (group.bone==decal) {
@@ -60,15 +65,18 @@ nlohmann::json hkDepth(tacz::model::GeoModel const& geo,tacz::model::RigidGunMod
                 float gap=wp.x-bl.x;
                 if (std::abs(gap)>.002f) continue;
                 glm::vec3 hbody=frame.world[bi]*glm::vec4(half(bq.pos[0]/16.f),1);
+                glm::vec3 newBody=frame.world[bi]*glm::vec4(half(bq.pos[0]/16.f-origins[static_cast<int>(bi)])+origins[static_cast<int>(bi)],1);
                 candidates.push_back({{"bone",geo.bones[bi].name},{"parsedBone",bi},{"quad",i},{"gapBlocks",gap},
-                    {"absGap",std::abs(gap)},{"bodyWorldX",bl.x},{"decalHalfWorldX",hp.x},{"bodyHalfWorldX",hbody.x},{"halfGapBlocks",hp.x-hbody.x}});
+                    {"absGap",std::abs(gap)},{"bodyWorldX",bl.x},{"decalHalfWorldX",hp.x},{"bodyHalfWorldX",hbody.x},{"halfGapBlocks",hp.x-hbody.x},
+                    {"rebasedHalfDecalWorldX",newWorld.x},{"rebasedHalfBodyWorldX",newBody.x},{"rebasedHalfGapBlocks",newWorld.x-newBody.x}});
             }
         }
         std::sort(candidates.begin(),candidates.end(),[](auto const& a,auto const& b) { return a.at("absGap").template get<float>()<b.at("absGap").template get<float>(); });
         if (candidates.size()>4) candidates.resize(4);
         report["targets"].push_back({{"cube",qi},{"groupBone",groupBone},{"bone",db.name},{"namedBoundaryRetained",groupBone==decal},
             {"matchingQuads",matched},{"prepackClipDepthBitMismatches",clipMismatches},{"prepackClipComparisons",matched*4*256},
-            {"localX",local.x},{"worldX",wp.x},{"halfWorldX",hp.x},{"nearbyParallelOverlaps",candidates}});
+            {"localX",local.x},{"worldX",wp.x},{"halfWorldX",hp.x},{"origin",{origins[decal].x,origins[decal].y,origins[decal].z}},
+            {"rebasedHalfLocalX",newLocal.x-origins[decal].x},{"nearbyParallelOverlaps",candidates}});
     }
     return report;
 }
@@ -116,6 +124,10 @@ int main(int argc,char** argv) {
             auto i=pack::parseGunIndex(index.first);
             if (i.data) row["data"]=read(*i.data,"data/guns",".json");
             if (auto g=packs.gun(id)) {
+                row["item"]={{"type",pack::itemType(pack::ItemKind::Gun)},
+                    {"en_us",pack::itemName(packs,{pack::ItemKind::Gun,id},"en_us")},
+                    {"zh_cn",pack::itemName(packs,{pack::ItemKind::Gun,id},"zh_cn")}};
+                if (auto icon=pack::itemIcon(packs,{pack::ItemKind::Gun,id})) row["item"]["slot"]=*icon;
                 auto initial=gun::initialAmmo(g->data);
                 row["initial"]={{"magazine",initial.magazine},{"rawChamber",initial.barrel},
                     {"effectiveChamber",gun::hasChamberedRound(g->data.bolt,initial.barrel)}};
@@ -130,6 +142,12 @@ int main(int argc,char** argv) {
                         auto raw=read(*d->model,"geo_models",".json");
                         auto geo=model::parseGeoModel(raw);
                         auto rigid=model::compileRigidGunModel(geo);
+                        size_t shifted=0; float roundtrip=0;
+                        for (auto const& g:rigid.groups) {
+                            auto origin=model::localMeshOrigin(g.vertices); shifted+=origin!=glm::vec3(0);
+                            for (auto const& v:g.vertices) roundtrip=std::max(roundtrip,glm::length((v.pos-origin)+origin-v.pos));
+                        }
+                        row["positionFrames"]={{"rebasedGroups",shifted},{"maxLocalRoundtrip",roundtrip}};
                         if (id.toString()=="tacz:hk416d") row["decalDepth"]=hkDepth(geo,rigid);
                          row["geometry"]={{"bones",geo.bones.size()},{"groups",rigid.groups.size()},
                             {"instanceBones",rigid.magazineTraversal.size()},{"magazine",geo.find("magazine")>=0},
@@ -251,6 +269,13 @@ int main(int argc,char** argv) {
     report["loadedCount"]=packs.guns().size();
     report["ammoCount"]=packs.ammos().size();
     report["scriptCount"]=packs.dataScripts().size();
+    report["ammoItems"]=json::array();
+    for (auto const& [id,ammo]:packs.ammos()) {
+        json a={{"id",id.toString()},{"stackDeclared",ammo.index.stackSize},{"stackBedrock",pack::ammoStackLimit(ammo.index.stackSize)},
+            {"en_us",pack::itemName(packs,{pack::ItemKind::Ammo,id},"en_us")},{"zh_cn",pack::itemName(packs,{pack::ItemKind::Ammo,id},"zh_cn")}};
+        if (auto slot=pack::itemIcon(packs,{pack::ItemKind::Ammo,id})) a["slot"]=*slot;
+        report["ammoItems"].push_back(std::move(a));
+    }
     std::ofstream out(fs::path(argv[2]),std::ios::binary);
     out<<report.dump(2);
     if (!out) return 1;

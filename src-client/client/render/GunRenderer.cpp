@@ -88,6 +88,8 @@
 #include "model/MeshDiagnostics.h"
 #include "model/RigidGunModel.h"
 #include "model/PackedUV.h"
+#include "model/LocalMeshFrame.h"
+#include <glm/gtc/packing.hpp>
 #include <cstring>
 #include "model/GunAlpha.h"
 #include "client/render/CameraBones.h"
@@ -115,7 +117,7 @@ ll::io::Logger& logger() { return TaczMod::getInstance().getSelf().getLogger(); 
 
 // Everything needed to draw one gun display, built on first use on the render thread.
 struct GunVisual {
-    struct GroupMesh { std::optional<mce::Mesh> mesh; uint count=0; };
+    struct GroupMesh { std::optional<mce::Mesh> mesh; uint count=0; glm::vec3 origin{0}; };
     bool                              failed = false; // logged once; retry after resource-scope refresh
     glm::mat4                         transform{1.0f};
     glm::mat4                         idleView{1}, ironView{1};
@@ -307,6 +309,27 @@ bool uploadTexture(IClientInstance& client, std::string const& png, std::string 
 
 // Baked vertices -> buffered quad mesh. With `twoSided` every quad is emitted a second time
 // with reversed winding, so face culling cannot hide the model.
+void inspectCachedMesh(mce::Mesh const& mesh,int bone,std::string const& name,glm::vec3 origin) {
+    std::array<unsigned char,110> layout{};
+    std::memcpy(layout.data(),&mesh.mVertexLayout,layout.size());
+    auto word=[&](size_t at) { uint16_t v; std::memcpy(&v,layout.data()+at,2); return v; };
+    size_t stride=word(0x20),position=word(2),end=stride;
+    for (size_t f=1;f<15;++f) if ((word(0)&(1u<<f)) && word(2+2*f)>position) end=std::min<size_t>(end,word(2+2*f));
+    size_t slot=end>=position ? end-position : 0;
+    auto const& raw=mesh.mRawData.get();
+    logger().info("[gun-packed-cache] bone={} name={} positionSlotBytes={} stride={} split={} rawBytes={} origin=({},{},{})",
+        bone,name,slot,stride,layout[0x6c],raw.size(),origin.x,origin.y,origin.z);
+    if (layout[0x6c] || (slot!=8 && slot!=12) || !stride || position+slot>stride) return;
+    for (size_t i=0;i<4 && raw.size()>=stride*(i+1);++i) {
+        glm::vec3 p;
+        for (size_t axis=0;axis<3;++axis) {
+            if (slot==8) { uint16_t h; std::memcpy(&h,raw.data()+stride*i+position+axis*2,2); p[axis]=glm::unpackHalf1x16(h); }
+            else std::memcpy(&p[axis],raw.data()+stride*i+position+axis*4,4);
+        }
+        logger().info("[gun-packed-position] bone={} i={} packedLocal=({},{},{}) restoredLocal=({},{},{}) format={}",
+            bone,i,p.x,p.y,p.z,p.x+origin.x,p.y+origin.y,p.z+origin.z,slot==8 ? "half4" : "float3");
+    }
+}
 mce::Mesh uploadMesh(ScreenContext& screen, std::span<model::Vertex const> vertices, bool twoSided,uint& uploadedCount,float* uploadDelta=nullptr) {
     // Gun-only upload/cache boundary; Java UVs stay untouched in GeoModel and
     // rigid groups. Arms have a separate uploader. No per-frame default rebuild.
@@ -380,7 +403,10 @@ void ensureRigidMeshes(ScreenContext& screen,GunVisual& visual,bool twoSided) {
         if (debug::meshDiagnostics) logger().info("[gun-packed-group] bone={} name={} sourceVertices={}",group.bone,
             visual.model.bones[static_cast<size_t>(group.bone)%visual.model.bones.size()].name,group.vertices.size());
         auto gpu=std::make_unique<GunVisual::GroupMesh>(); // stable address, never moved/re-emplaced after drawing
-        gpu->mesh.emplace(uploadMesh(screen,group.vertices,twoSided,gpu->count));
+        gpu->origin=model::localMeshOrigin(group.vertices);
+        auto local=group.vertices;
+        if (gpu->origin!=glm::vec3(0)) for (auto& v:local) v.pos-=gpu->origin;
+        gpu->mesh.emplace(uploadMesh(screen,local,twoSided,gpu->count));
         vertices+=gpu->count;
         meshes.push_back(std::move(gpu));
     }
@@ -607,6 +633,13 @@ bool drawGun(ItemInHandRenderer& renderer, BaseActorRenderContext& context) {
 
     int revision = debug::renderRevision;
     bool debugChanged = revision != loggedRevision;
+    if (debugChanged && debug::meshDiagnostics && path==1) {
+        auto const& meshes=visual->rigidMeshes[twoSided ? 1 : 0];
+        for (size_t i=0;i<meshes.size();++i) {
+            auto const& g=visual->rigid.groups[i];
+            inspectCachedMesh(*meshes[i]->mesh,g.bone,visual->model.bones[static_cast<size_t>(g.bone)%visual->model.bones.size()].name,meshes[i]->origin);
+        }
+    }
     if (debugChanged) {
         loggedRevision = revision;
         logger().info(
@@ -783,7 +816,7 @@ bool drawGun(ItemInHandRenderer& renderer, BaseActorRenderContext& context) {
                 if (!model::drawableRigidBone(visual->frame,group.bone)) return;
                 auto boneMatrix=camera.worldMatrixStack->push(false);
                 boneMatrix.stack->_isDirty=true;
-                boneMatrix.mat->_m=boneMatrix.mat->_m.get()*visual->frame.world[group.bone];
+                boneMatrix.mat->_m=boneMatrix.mat->_m.get()*model::localMeshMatrix(visual->frame.world[group.bone],meshes[i]->origin);
                 try {
                     meshes[i]->mesh->renderMesh(screen,*mat,texture,0,meshes[i]->count,OffscreenCaptureDescription{},nullptr);
                     ++gunCalls; ++counters.draws;

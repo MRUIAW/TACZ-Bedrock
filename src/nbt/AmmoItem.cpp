@@ -13,6 +13,8 @@
 #include "mc/world/item/ItemStack.h"
 
 #include "nbt/GunNbt.h"
+#include "pack/PackItems.h"
+#include "mod/TaczMod.h"
 
 namespace tacz::nbt {
 
@@ -48,14 +50,21 @@ int extractAmmo(Player& player, pack::ResourceId const& ammoId, int needed) {
     return taken;
 }
 
-bool giveAmmo(Player& player, pack::ResourceId const& ammoId, int count) {
+int giveAmmo(Player& player, pack::ResourceId const& ammoId, int count) {
+    auto const& packs=TaczMod::getInstance().gunPacks();
+    auto ammo=packs.ammo(ammoId); if (!ammo || count<=0) return 0;
     ItemStack stack;
-    stack.reinit("minecraft:iron_nugget", std::clamp(count, 1, 64), 0);
-    if (stack.isNull()) return false;
+    stack.reinit("tacz:ammo", std::min(count,pack::ammoStackLimit(ammo->index.stackSize)), 0);
+    if (stack.isNull()) return 0;
     auto tag      = std::make_unique<CompoundTag>();
     (*tag)[AmmoId] = StringTag{ammoId.toString()};
+    auto name=pack::itemName(packs,{pack::ItemKind::Ammo,ammoId},"en_us");
+    (*tag)["display"]=CompoundTag{{"Name",StringTag{name}}};
+    (*tag)["TaczAutoName"]=StringTag{name};
     stack.setUserData(std::move(tag));
-    return player.addAndRefresh(stack);
+    int before=countAmmo(player,ammoId);
+    player.addAndRefresh(stack);
+    return std::max(0,countAmmo(player,ammoId)-before);
 }
 
 } // namespace tacz::nbt

@@ -8,6 +8,7 @@
 #include <memory>
 #include <mutex>
 #include <optional>
+#include <set>
 #include <type_traits>
 #include <vector>
 #include <stb_image.h>
@@ -59,6 +60,10 @@
 #include "mod/TaczMod.h"
 #include "nbt/AmmoItem.h"
 #include "nbt/GunItem.h"
+#include "nbt/PackItem.h"
+#include "ll/api/memory/Hook.h"
+#include "mc/client/gui/controls/renderers/InventoryItemRenderer.h"
+#include "mc/client/gui/controls/UIControl.h"
 #include "model/GunHudLayout.h"
 #include "debug/RenderDebug.h"
 #include "mc/deps/nbt/CompoundTag.h"
@@ -111,6 +116,7 @@ model::hud::HitMarker marker;
 struct Hit { uint64_t world; int64_t at; pack::ResourceId gun; bool head,kill; };
 std::vector<Hit> pending;
 ll::event::ListenerPtr listener;
+std::set<std::string> iconScreens;
 
 class HitHandler final : public ll::network::PacketHandlerBase<HitHandler,net::HitFeedbackPacket> {
 public:
@@ -134,7 +140,7 @@ void releaseTextures() {
         image.pointer.reset();
         if (owner && image.location) owner->unloadTexture(*image.location,false);
     }
-    images.clear(); textureOwner.reset(); resourceKey.reset();
+    images.clear(); textureOwner.reset(); resourceKey.reset(); iconScreens.clear();
 }
 Texture* texture(MinecraftUIRenderContext& context,std::string const& path) {
     auto [it,inserted]=images.try_emplace(path); auto& result=it->second;
@@ -159,13 +165,14 @@ Texture* texture(MinecraftUIRenderContext& context,std::string const& path) {
     result.failed=false;
     return &result;
 }
-void image(MinecraftUIRenderContext& context,std::string const& path,glm::vec2 pos,glm::vec2 size,
+bool image(MinecraftUIRenderContext& context,std::string const& path,glm::vec2 pos,glm::vec2 size,
     mce::Color color=White,float alpha=1,glm::vec2 uv={0,0},glm::vec2 span={1,1}) {
-    auto icon=texture(context,path); if (!icon || !icon->pointer) return;
+    auto icon=texture(context,path); if (!icon || !icon->pointer) return false;
     std::shared_ptr<BedrockTextureData const> data=icon->pointer->mClientTexture;
-    if (!data) return;
+    if (!data) return false;
     context.drawImage(*data->mClientTexture,pos,size,uv,span,false);
     context.flushImages(color,alpha,HashedString{"ui_textured_and_glcolor"});
+    return true;
 }
 void text(MinecraftUIRenderContext& context,Font& font,std::string value,glm::vec2 pos,float scale,mce::Color color,bool shadow=false) {
     TextMeasureData const measure{scale,0,shadow,false,false,ui::TextAlignment::Left};
@@ -193,22 +200,19 @@ void configure() {
         std::ofstream out{path}; out<<config.dump(2)<<'\n';
     } catch (std::exception const& e) { logger().warn("[hud] config unavailable: {}; using dot_1",e.what()); crosshair="dot_1"; }
 }
-void draw(MinecraftUIRenderContext& context) {
-    auto generation=shooter::worldToken(); if (!generation) return; // before ALL native queries
+bool bindImages(MinecraftUIRenderContext& context) { // cacheMutex held by caller
+    auto generation=shooter::worldToken(); if (!generation || !enabled) return false;
     IClientInstance& client=context.mClient;
-    if (!shooter::ownsClient(&client)) return;
-    auto player=client.getLocalPlayer(); if (!player || !player->isAlive() || player->isSpectator()) return;
-    if (!client.getScreenName().starts_with("hud_screen")) return;
-    std::shared_ptr<mce::TextureGroup> group=context.mTextureGroup; if (!group) return;
+    if (!shooter::ownsClient(&client)) return false;
+    std::shared_ptr<mce::TextureGroup> group=context.mTextureGroup; if (!group) return false;
     ScreenContext& screenContext=context.mScreenContext;
     auto buffers=screenContext.tessellator.mBufferResourceService.lock();
     auto* builder=renderDragonFrameBuilder();
     int lighting=builder && builder->isRayTracingEnabled() ? 1 : builder && builder->isDeferredEnabled() ? 2 : 0;
     model::RenderResourceKey key{generation,reinterpret_cast<uintptr_t>(&client),reinterpret_cast<uintptr_t>(group.get()),
         reinterpret_cast<uintptr_t>(buffers.get()),reinterpret_cast<uintptr_t>(builder),lighting};
-    std::lock_guard lock(cacheMutex);
-    if (!enabled || generation!=shooter::worldToken()) return;
-    if (!key.ready()) { releaseTextures(); return; }
+    if (!enabled || generation!=shooter::worldToken()) return false;
+    if (!key.ready()) { releaseTextures(); return false; }
     if (!resourceKey || *resourceKey!=key) {
         releaseTextures();
         if (world!=generation) marker={};
@@ -216,6 +220,43 @@ void draw(MinecraftUIRenderContext& context) {
         countAt=-1; ammoGun.clear(); warned=false;
         logger().info("[hud] bind world={} client={} textureGroup={} lighting={}",world,clientOwner,key.textures,lighting);
     }
+    return true;
+}
+using SlotRender=void (InventoryItemRenderer::*)(MinecraftUIRenderContext&,IClientInstance&,UIControl&,int);
+static_assert(std::is_same_v<decltype(&InventoryItemRenderer::$render),SlotRender>);
+LL_TYPE_INSTANCE_HOOK(PackSlotIcon,ll::memory::HookPriority::Normal,InventoryItemRenderer,&InventoryItemRenderer::$render,void,
+    MinecraftUIRenderContext& context,IClientInstance& client,UIControl& owner,int pass) {
+    // This common slot renderer serves hotbar/inventory/container slots. No
+    // by-value UIItemRenderInfo, RenderMetadata or function_ref placeholder hooks.
+    if (!pass && shooter::worldToken() && shooter::ownsClient(&client) && !mHidingIcon) {
+        try {
+            auto identity=nbt::readItemIdentity(mItemInstance.get());
+            auto path=identity ? pack::itemIcon(TaczMod::getInstance().gunPacks(),*identity) : std::nullopt;
+            if (path) {
+                std::lock_guard lock(cacheMutex);
+                if (bindImages(context)) {
+                    owner._setCachedPosition();
+                    auto pos=owner.mCachedPosition.get(),size=owner.mSize.get();
+                    if (size.x>0 && size.y>0 && image(context,*path,pos,size,White,owner.mAlpha)) {
+                        if (iconScreens.insert(client.getScreenName()).second) logger().info("[item-icons] rendered screen={} path={} pos=({}, {}) size=({}, {})",
+                            client.getScreenName(),*path,pos.x,pos.y,size.x,size.y);
+                        return;
+                    }
+                }
+            }
+        } catch (std::exception const& e) { if (!warned.exchange(true)) logger().warn("[item-icons] {}; using native placeholder",e.what()); }
+    }
+    origin(context,client,owner,pass);
+}
+bool slotHook=false;
+void draw(MinecraftUIRenderContext& context) {
+    auto generation=shooter::worldToken(); if (!generation) return;
+    IClientInstance& client=context.mClient;
+    if (!shooter::ownsClient(&client)) return;
+    auto player=client.getLocalPlayer(); if (!player || !player->isAlive() || player->isSpectator()) return;
+    if (!client.getScreenName().starts_with("hud_screen")) return;
+    std::lock_guard lock(cacheMutex);
+    if (!bindImages(context)) return;
     auto now=nowMs();
     std::vector<Hit> hits;
     { std::lock_guard queueLock(queueMutex); hits.swap(pending); }
@@ -296,6 +337,8 @@ void draw(MinecraftUIRenderContext& context) {
 void enable() {
     configure();
     enabled=true;
+    slotHook=PackSlotIcon::hook()==0;
+    logger().info("[item-icons] common InventoryItemRenderer hook={} (screen coverage awaits in-game acceptance)",slotHook);
     listener=ll::event::EventBus::getInstance().emplaceListener<ll::event::AfterUIRenderEvent>([](ll::event::AfterUIRenderEvent& event) {
         if (!shooter::worldToken()) return;
         auto const& tree=event.screenView().mVisualTree;
@@ -312,6 +355,7 @@ void releaseWorld(IClientInstance const* client) {
 }
 void disable() {
     enabled=false;
+    if (slotHook) PackSlotIcon::unhook(); slotHook=false;
     if (listener) ll::event::EventBus::getInstance().removeListener(listener);
     listener=nullptr;
     std::lock_guard lock(cacheMutex);

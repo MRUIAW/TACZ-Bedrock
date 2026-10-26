@@ -1,0 +1,9 @@
+{
+  "resource_pack_name": "tacz_rp",
+  "texture_name": "atlas.items",
+  "texture_data": {
+    "tacz_gun": {"textures": "textures/items/tacz_gun"},
+    "tacz_ammo": {"textures": "textures/items/tacz_ammo"},
+    "tacz_attachment": {"textures": "textures/items/tacz_attachment"}
+  }
+}

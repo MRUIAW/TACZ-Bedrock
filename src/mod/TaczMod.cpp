@@ -5,6 +5,7 @@
 #include "server/BulletSystem.h"
 #include "server/ServerProbe.h"
 #include "server/Shooter.h"
+#include "nbt/PackItem.h"
 #ifdef TACZ_CLIENT
 #include "client/ClientProbe.h"
 #include "client/gameplay/ClientShooter.h"
@@ -44,6 +45,7 @@ void TaczMod::reloadGunPacks() {
 
 bool TaczMod::enable() {
     getSelf().getLogger().debug("Enabling...");
+    nbt::enablePackItems();
     server::probe::enable();
     server::bullet::enable();
     server::shooter::enable();
@@ -58,6 +60,7 @@ bool TaczMod::enable() {
 
 bool TaczMod::disable() {
     getSelf().getLogger().debug("Disabling...");
+    nbt::disablePackItems();
 #ifdef TACZ_CLIENT
     client::hud::disable();
     client::render::disable();

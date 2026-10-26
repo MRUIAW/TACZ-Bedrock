@@ -28,6 +28,7 @@
 #include "mod/TaczMod.h"
 #include "nbt/AmmoItem.h"
 #include "nbt/GunItem.h"
+#include "nbt/PackItem.h"
 #include "net/DebugPackets.h"
 
 namespace tacz::server::probe {
@@ -62,6 +63,7 @@ struct BulletDebugParams {
 struct AmmoParams {
     int count;
 };
+struct GiveAmmoParams { std::string ammoId; int count=1; };
 
 struct AnimationParams {
     std::string name;
@@ -72,7 +74,7 @@ namespace {
 void registerCommands() {
     auto& command = ll::command::CommandRegistrar::getServerInstance().getOrCreateCommand(
         "tacz",
-        "TACZ debug command",
+        "TACZ items and diagnostics",
         CommandPermissionLevel::GameDirectors
     );
     // /tacz nbt : dump the selected item's user data
@@ -223,12 +225,24 @@ void registerCommands() {
             if (auto* player = originPlayer(origin)) player->sendMessage(msg);
             output.success(msg);
         });
-    // /tacz ammo <count> : give ammo for the held gun (an item carrying TACZ's AmmoId NBT; there is
-    // no dedicated ammo item yet, so it looks like an iron nugget)
+    auto giveAmmo=[](Player& player,pack::ResourceId const& id,int count) {
+        int left=std::clamp(count,1,64*36),given=0;
+        while (left>0) { int n=nbt::giveAmmo(player,id,left); if (!n) break; left-=n; given+=n; }
+        player.sendMessage("[TACZ] Gave "+std::to_string(given)+" x "+id.toString()+(left ? " (inventory full or item BP unavailable)" : ""));
+    };
+    command.overload<GiveAmmoParams>().text("give").text("ammo").required("ammoId").optional("count")
+        .execute([giveAmmo](CommandOrigin const& origin,CommandOutput& output,GiveAmmoParams const& params) {
+            auto* player=originPlayer(origin); if (!player) return output.error("Player only");
+            auto id=pack::ResourceId::parse(params.ammoId);
+            if (!id || !TaczMod::getInstance().gunPacks().ammo(*id)) return output.error("Unknown ammo id");
+            if (params.count<1 || params.count>64*36) return output.error("count: 1..2304");
+            giveAmmo(*player,*id,params.count);
+        });
+    // /tacz ammo <count> : real TACZ ammo for the held gun, including legacy guns.
     command.overload<AmmoParams>()
         .text("ammo")
         .required("count")
-        .execute([](CommandOrigin const& origin, CommandOutput& output, AmmoParams const& params) {
+        .execute([giveAmmo](CommandOrigin const& origin, CommandOutput& output, AmmoParams const& params) {
             auto* player = originPlayer(origin);
             if (!player) return output.error("Player only");
             auto gun   = nbt::readGun(player->getSelectedItem());
@@ -237,25 +251,10 @@ void registerCommands() {
                 player->sendMessage("[TACZ] Hold a gun first");
                 return output.error("Hold a gun first");
             }
-            int left = std::clamp(params.count, 1, 64 * 36);
-            int given = 0;
-            while (left > 0) {
-                int stack = std::min(left, 64);
-                if (!nbt::giveAmmo(*player, *entry->data.ammoId, stack)) break;
-                given += stack;
-                left -= stack;
-            }
-            player->sendMessage(
-                "[TACZ] Gave " + std::to_string(given) + " x " + entry->data.ammoId->toString()
-                + (left > 0 ? " (inventory full)" : "")
-            );
+            if (params.count<1 || params.count>64*36) return output.error("count: 1..2304");
+            giveAmmo(*player,*entry->data.ammoId,params.count);
         });
-    // /tacz setgun <gunId> : turn the selected item into a gun as TACZ's creative tab hands it out
-    // (first fire mode, full magazine; open-bolt raw chamber flag is not an extra round)
-    command.overload<SetGunParams>()
-        .text("setgun")
-        .required("gunId")
-        .execute([](CommandOrigin const& origin, CommandOutput& output, SetGunParams const& params) {
+    auto giveGun=[](CommandOrigin const& origin, CommandOutput& output, SetGunParams const& params) {
             auto* player = originPlayer(origin);
             if (!player) return output.error("Player only");
             auto id  = pack::ResourceId::parse(params.gunId);
@@ -264,13 +263,12 @@ void registerCommands() {
                 player->sendMessage("[TACZ] Unknown gun id: " + params.gunId);
                 return output.error("Unknown gun id");
             }
-            auto state = nbt::freshGun(gun->id, gun->data);
-            if (!nbt::writeSelectedGun(*player, state)) return output.error("Hold an item first");
-            player->sendMessage(
-                "[TACZ] Selected item is now " + gun->id.toString() + " (" + nbt::fireModeName(state.fireMode) + ", "
-                + std::to_string(state.ammo) + (gun::hasChamberedRound(gun->data.bolt,state.barrel) ? "+1 rounds)" : " rounds)")
-            );
-        });
+            if (!nbt::giveGun(*player,gun->id)) return output.error("Inventory full or tacz item BP unavailable");
+            player->sendMessage("[TACZ] Gave "+gun->id.toString()+" (creative-tab initial NBT)");
+    };
+    command.overload<SetGunParams>().text("give").text("gun").required("gunId").execute(giveGun);
+    // Compatibility command alias; old vanilla stacks with GunId still work.
+    command.overload<SetGunParams>().text("setgun").required("gunId").execute(giveGun);
 }
 
 // Client -> server ping used by the probe HUD (R key). Replies with what the server sees.
