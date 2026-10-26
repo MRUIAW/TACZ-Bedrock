@@ -22,17 +22,59 @@ def strip_lua_comments(text):
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("gunpacks", type=Path)
-    parser.add_argument("--output", type=Path, default=ROOT / "docs/GUNS-0.3.19.md")
+    parser.add_argument("--output", type=Path, default=ROOT / "docs/GUNS-0.3.22.md")
+    parser.add_argument("--metadata", type=Path, default=TEMP / "guns-0.3.22.json")
+    parser.add_argument("--uv-only", action="store_true", help="UV counts, worst source faces and production split/pack verification only")
     parser.add_argument("--reuse-metadata", action="store_true", help="Only for formatting a previously completed audit")
     args = parser.parse_args()
     if not args.gunpacks.is_dir():
         parser.error("gunpacks must be an existing directory (audit never creates it)")
-    metadata = TEMP / "guns-0.3.19.json"
+    metadata = args.metadata
+    if metadata.resolve().is_relative_to(args.gunpacks.resolve()) or args.output.resolve().is_relative_to(args.gunpacks.resolve()):
+        parser.error("metadata/output must be outside read-only gunpacks")
+    metadata.parent.mkdir(parents=True, exist_ok=True)
     if not args.reuse_metadata:
         subprocess.run(["xmake", "build", "tacz-pack-audit"], cwd=ROOT, check=True)
         subprocess.run(["xmake", "run", "tacz-pack-audit", str(args.gunpacks.resolve()), str(metadata)], cwd=ROOT, check=True)
     report = json.loads(metadata.read_text(encoding="utf-8"))
+    if "input" in report and Path(report["input"]).resolve() != args.gunpacks.resolve():
+        parser.error("metadata input does not match requested gunpacks")
     rows = report["guns"]
+    if args.uv_only:
+        lines = ["# 0.3.22 UV 越界离线审计", "", f"输入：`{args.gunpacks.as_posix()}`；{len(rows)} index / {report['loadedCount']} loaded。",
+                 "生产 GeoModel 的全部源面（包含隐藏弹匣和 hand locator；按枪计，复用模型不去重）。",
+                 "验证生产 splitRepeatUV + native16位编码后的逐片插值，9个内部采样点/片；不等于实机/GPU/像素完全一致。",
+                 "[0,1]内部有 ≤1/65535 正常量化；通过阈值2/65535。未修改源纹理或枪包。", "",
+                 "| 物理包 | 枪数 | 解析面数 | 越界枪数 | 越界面数 | 其中非零UV面积 / hand locator | 分割/平移后片数 | 通过片数 | 最大UV误差 |", "|---|---:|---:|---:|---:|---:|---:|---:|---:|"]
+        grouped = collections.defaultdict(list)
+        for row in rows: grouped[row["pack"]].append(row)
+        failed = []
+        for pack, guns in sorted(grouped.items()):
+            us = [g.get("geometry", {}).get("uv", {}) for g in guns]
+            values = [pack, len(guns), sum(u.get("faces", 0) for u in us), sum(bool(u.get("outside")) for u in us),
+                      sum(u.get("outside", 0) for u in us),
+                      f"{sum(u.get('outsideNonzeroUV',0) for u in us)} / {sum(u.get('outsideHandLocator',0) for u in us)}",
+                      sum(u.get("pieces", 0) for u in us),
+                      sum(u.get("verifiedPieces", 0) for u in us), f"{max((u.get('maxPackedError', 0) for u in us), default=0):.9g}"]
+            lines.append("| " + " | ".join(map(str, values)) + " |")
+        lines += ["", "## 每枪最坏源面（UV按description归一化；最多5项）", "",
+                  "| GunId / 模型 | 越界/总面 | 骨 / parser quad | min → max | 超界量 |", "|---|---:|---|---|---:|"]
+        for g in rows:
+            u = g.get("geometry", {}).get("uv")
+            if u is None:
+                failed.append((g["id"], g.get("geometryError", "no UV audit")))
+                continue
+            failed.extend((g["id"], f) for f in u["failures"])
+            for e in u["examples"]:
+                lines.append(f"| `{g['id']}` / `{g.get('display', {}).get('model', '?')}` | {u['outside']}/{u['faces']} | {e['bone']} / {e['quad']} | {e['min']} → {e['max']} | {e['overflow']:.9g} |")
+        lines += ["", "## 失败", "", json.dumps(failed, ensure_ascii=False), "",
+                  "注意：classicr:kar98/spr_15 的最坏面是righthand_pos源占位面；枪上传修复不改原生手臂上传。",
+                  "cz75/glock_17大部分为零UV面积面；数值越界不代表每个面此前都有可见贴花错误。"]
+        args.output.parent.mkdir(parents=True, exist_ok=True)
+        args.output.write_text("\n".join(lines) + "\n", encoding="utf-8")
+        print(f"Wrote {args.output}; failures={len(failed)}")
+        if failed: raise SystemExit(1)
+        return
     # Index Lua by module name. Later folder order matches the registry; walk only
     # plaintext scripts. No encrypted taczpack.dat or removed Vanguard pack access.
     modules = {}
@@ -135,7 +177,7 @@ def main():
     def cell(value):
         if isinstance(value, list): value = ", ".join(map(str, value)) or "—"
         return str(value).replace("|", "\\|").replace("\n", " ")
-    lines = ["# 0.3.19 枪包离线审计（可重跑）", "",
+    lines = ["# 0.3.22 枪包离线审计（可重跑）", "",
              "生成：`python scripts/audit-gunpacks.py <gunpacks目录>`；使用生产 C++ parser/registry/模型编译器。",
              "只读本机第三方包；不复制素材、不执行包 Lua、不解密、不安装 Arcana。表内标记是静态特征/风险，不是实机成功或必现 bug。", "",
              f"本次目录：`{args.gunpacks.as_posix()}`。共 **{len(rows)} 个枪械 index / {report['loadedCount']} 个加载成功**，"

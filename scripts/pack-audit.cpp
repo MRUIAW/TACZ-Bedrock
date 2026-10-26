@@ -4,13 +4,75 @@
 #include <set>
 #include <array>
 #include <cmath>
+#include <cstring>
+#include <glm/gtc/packing.hpp>
+#include <glm/gtc/matrix_transform.hpp>
 #include "model/GunModelRules.h"
 #include "pack/GunPackLoader.h"
 #include "pack/GunPackParser.h"
 #include "pack/GunAnimations.h"
 #include "model/GeoModel.h"
 #include "model/RigidGunModel.h"
+#include "model/PackedUV.h"
 #include "gun/ShootRules.h"
+
+namespace {
+nlohmann::json hkDepth(tacz::model::GeoModel const& geo,tacz::model::RigidGunModel const& rigid) {
+    using namespace tacz;
+    using json=nlohmann::json;
+    model::BoneFrame frame;
+    model::evaluateBoneFrame(geo,rigid,{},[](auto const&,auto*) { return model::Visit::Draw; },frame);
+    int decal=geo.find("bone"),body=geo.find("gun_body2");
+    if (decal<0 || body<0) return {{"error","missing target bones"}};
+    json report={{"targets",json::array()},{"nativePositionHalfActive","unverified: capability dependent; half below is a bounded simulation"}};
+    auto const& db=geo.bones[decal];
+    auto half=[](glm::vec3 v) { for (int a=0;a<3;++a) v[a]=glm::unpackHalf1x16(glm::packHalf1x16(v[a])); return v; };
+    for (size_t qi:{0u,2u,3u}) {
+        auto const& q=db.quads.at(qi);
+        auto local=q.pos[0]/16.f;
+        glm::vec3 wp=frame.world[decal]*glm::vec4(local,1);
+        glm::vec3 hp=frame.world[decal]*glm::vec4(half(local),1);
+        size_t matched=0,clipMismatches=0;
+        int groupBone=-1;
+        for (auto const& group:rigid.groups) if (group.bone==decal) {
+            groupBone=group.bone;
+            for (size_t vi=0;vi+4<=group.vertices.size();vi+=4) if (group.vertices[vi].uv==q.uv[0]) {
+                ++matched;
+                for (int k=0;k<4;++k) for (int camera=0;camera<256;++camera) {
+                    auto clip=glm::perspective(.8f,.5625f,.01f,100.f)
+                        *glm::rotate(glm::translate(glm::mat4(1),{.14f,-.3f,-1.2f}),camera*.024f,glm::normalize(glm::vec3(1,2,3)));
+                    auto java=(clip*frame.world[decal])*glm::vec4(q.pos[k]/16.f,1);
+                    auto native=(clip*frame.world[group.bone])*glm::vec4(group.vertices[vi+k].pos,1);
+                    clipMismatches+=std::memcmp(&java.z,&native.z,sizeof(float))!=0 || std::memcmp(&java.w,&native.w,sizeof(float))!=0;
+                }
+            }
+        }
+        glm::vec3 lo(1e9f),hi(-1e9f);
+        for (auto p:q.pos) { glm::vec3 w=frame.world[decal]*glm::vec4(p/16.f,1); lo=glm::min(lo,w);hi=glm::max(hi,w); }
+        std::vector<json> candidates;
+        for (size_t bi=0;bi<geo.bones.size();++bi) {
+            if (static_cast<int>(bi)==decal) continue;
+            for (size_t i=0;i<geo.bones[bi].quads.size();++i) {
+                auto const& bq=geo.bones[bi].quads[i];
+                glm::vec3 bl(1e9f),bh(-1e9f);
+                for (auto p:bq.pos) { glm::vec3 w=frame.world[bi]*glm::vec4(p/16.f,1);bl=glm::min(bl,w);bh=glm::max(bh,w); }
+                if (bh.x-bl.x>1e-7f || std::min(hi.y,bh.y)<=std::max(lo.y,bl.y) || std::min(hi.z,bh.z)<=std::max(lo.z,bl.z)) continue;
+                float gap=wp.x-bl.x;
+                if (std::abs(gap)>.002f) continue;
+                glm::vec3 hbody=frame.world[bi]*glm::vec4(half(bq.pos[0]/16.f),1);
+                candidates.push_back({{"bone",geo.bones[bi].name},{"parsedBone",bi},{"quad",i},{"gapBlocks",gap},
+                    {"absGap",std::abs(gap)},{"bodyWorldX",bl.x},{"decalHalfWorldX",hp.x},{"bodyHalfWorldX",hbody.x},{"halfGapBlocks",hp.x-hbody.x}});
+            }
+        }
+        std::sort(candidates.begin(),candidates.end(),[](auto const& a,auto const& b) { return a.at("absGap").template get<float>()<b.at("absGap").template get<float>(); });
+        if (candidates.size()>4) candidates.resize(4);
+        report["targets"].push_back({{"cube",qi},{"groupBone",groupBone},{"bone",db.name},{"namedBoundaryRetained",groupBone==decal},
+            {"matchingQuads",matched},{"prepackClipDepthBitMismatches",clipMismatches},{"prepackClipComparisons",matched*4*256},
+            {"localX",local.x},{"worldX",wp.x},{"halfWorldX",hp.x},{"nearbyParallelOverlaps",candidates}});
+    }
+    return report;
+}
+}
 
 // Production parser/registry/model compiler, not a second approximate JSON parser.
 // Writes metadata only to the caller's output path; never modifies a gun pack.
@@ -21,7 +83,8 @@ int main(int argc,char** argv) {
     using json=nlohmann::json;
     if (!fs::is_directory(fs::path(argv[1]))) { std::cerr<<"gunpacks directory does not exist\n"; return 2; }
     pack::GunPackRegistry packs;
-    json report={{"messages",json::array()},{"guns",json::array()},{"packs",json::array()}};
+    json report={{"input",fs::absolute(fs::path(argv[1])).lexically_normal().generic_string()},
+        {"messages",json::array()},{"guns",json::array()},{"packs",json::array()}};
     auto log=[&](auto const& text) { report["messages"].push_back(text); };
     packs.loadFolder(fs::path(argv[1]),log,log);
     for (auto const& p:packs.packs()) report["packs"].push_back({{"name",p.name},{"namespace",p.meta.ns}});
@@ -67,9 +130,70 @@ int main(int argc,char** argv) {
                         auto raw=read(*d->model,"geo_models",".json");
                         auto geo=model::parseGeoModel(raw);
                         auto rigid=model::compileRigidGunModel(geo);
-                        row["geometry"]={{"bones",geo.bones.size()},{"groups",rigid.groups.size()},
+                        if (id.toString()=="tacz:hk416d") row["decalDepth"]=hkDepth(geo,rigid);
+                         row["geometry"]={{"bones",geo.bones.size()},{"groups",rigid.groups.size()},
                             {"instanceBones",rigid.magazineTraversal.size()},{"magazine",geo.find("magazine")>=0},
-                            {"additional",geo.find("additional_magazine")>=0},{"thin",json::array()},{"illuminated",json::array()}};
+                             {"additional",geo.find("additional_magazine")>=0},{"thin",json::array()},{"illuminated",json::array()}};
+                        json uv={{"faces",0},{"outside",0},{"pieces",0},{"verifiedPieces",0},{"maxPackedError",0.},
+                            {"failures",json::array()},{"examples",json::array()}};
+                        size_t faceCount=0,outside=0,pieceCount=0,verified=0,nonzeroUV=0,handLocator=0;
+                        double maxError=0;
+                        std::vector<json> examples;
+                        for (size_t bi=0;bi<geo.bones.size();++bi) {
+                            auto const& bone=geo.bones[bi];
+                            for (size_t qi=0;qi<bone.quads.size();++qi) {
+                                auto const& q=bone.quads[qi];
+                                ++faceCount;
+                                glm::vec2 lo=q.uv[0],hi=lo;
+                                std::array<model::Vertex,4> vertices;
+                                for (int k=0;k<4;++k) {
+                                    lo=glm::min(lo,q.uv[k]); hi=glm::max(hi,q.uv[k]);
+                                    vertices[k]={q.pos[k]/16.f,q.uv[k],q.normal};
+                                }
+                                bool overflow=lo.x<0 || lo.y<0 || hi.x>1 || hi.y>1;
+                                if (!overflow) continue;
+                                ++outside;
+                                nonzeroUV+=hi.x>lo.x && hi.y>lo.y;
+                                bool hand=false;
+                                for (int ancestor=static_cast<int>(bi);ancestor>=0;ancestor=geo.bones[ancestor].parent)
+                                    hand|=geo.bones[ancestor].name=="righthand_pos" || geo.bones[ancestor].name=="lefthand_pos";
+                                handLocator+=hand;
+                                double severity=std::max({-lo.x,-lo.y,hi.x-1,hi.y-1});
+                                std::string owner=bone.name.empty() && bone.parent>=0 ? geo.bones[bone.parent].name+"/(cube helper)" : bone.name;
+                                examples.push_back({{"bone",owner},{"parsedBone",bi},{"quad",qi},{"min",{lo.x,lo.y}},
+                                    {"max",{hi.x,hi.y}},{"overflow",severity},{"handLocator",hand}});
+                                try {
+                                    auto pieces=model::splitRepeatUV(vertices);
+                                    pieceCount+=pieces.size();
+                                    for (auto const& p:pieces) {
+                                        bool good=true;
+                                        for (double s:{.01,.37,.99}) for (double t:{.01,.61,.99}) {
+                                            double a=p.domain.x+(p.domain.z-p.domain.x)*s,b=p.domain.y+(p.domain.w-p.domain.y)*t;
+                                            glm::dvec2 expected=glm::dvec2(q.uv[0])*(1-a)*(1-b)+glm::dvec2(q.uv[1])*a*(1-b)
+                                                +glm::dvec2(q.uv[2])*a*b+glm::dvec2(q.uv[3])*(1-a)*b;
+                                            glm::dvec2 decoded(0);
+                                            for (int k=0;k<4;++k) {
+                                                auto const& v=p.vertices[k];
+                                                good&=v.uv.x>=0 && v.uv.x<=1 && v.uv.y>=0 && v.uv.y<=1;
+                                                double w=(k==0 || k==3 ? 1-s : s)*(k<2 ? 1-t : t);
+                                                for (int axis=0;axis<2;++axis) decoded[axis]+=w*model::packUV16(v.uv[axis])/65535.;
+                                            }
+                                            auto error=glm::abs(decoded+p.tile-expected);
+                                            maxError=std::max({maxError,error.x,error.y});
+                                            good&=error.x<2./65535 && error.y<2./65535;
+                                        }
+                                        if (good) ++verified;
+                                        else uv["failures"].push_back({{"bone",owner},{"quad",qi},{"reason","packed interpolation"}});
+                                    }
+                                } catch (std::exception const& e) { uv["failures"].push_back({{"bone",owner},{"quad",qi},{"reason",e.what()}}); }
+                            }
+                        }
+                        std::sort(examples.begin(),examples.end(),[](auto const& a,auto const& b) { return a.at("overflow").template get<double>()>b.at("overflow").template get<double>(); });
+                        for (size_t i=0;i<std::min<size_t>(5,examples.size());++i) uv["examples"].push_back(examples[i]);
+                        uv["faces"]=faceCount; uv["outside"]=outside; uv["pieces"]=pieceCount;
+                        uv["verifiedPieces"]=verified; uv["maxPackedError"]=maxError;
+                        uv["outsideNonzeroUV"]=nonzeroUV; uv["outsideHandLocator"]=handLocator;
+                        row["geometry"]["uv"]=std::move(uv);
                         for (auto const& bone:geo.bones) if (bone.illuminated && !bone.name.empty()) row["geometry"]["illuminated"].push_back(bone.name);
                         for (auto const& bone:raw.at("minecraft:geometry").at(0).at("bones")) {
                             if (!bone.contains("cubes")) continue;

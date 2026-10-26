@@ -87,6 +87,8 @@
 #include "model/FunctionalBones.h"
 #include "model/MeshDiagnostics.h"
 #include "model/RigidGunModel.h"
+#include "model/PackedUV.h"
+#include <cstring>
 #include "model/GunAlpha.h"
 #include "client/render/CameraBones.h"
 #include "mod/TaczMod.h"
@@ -305,7 +307,12 @@ bool uploadTexture(IClientInstance& client, std::string const& png, std::string 
 
 // Baked vertices -> buffered quad mesh. With `twoSided` every quad is emitted a second time
 // with reversed winding, so face culling cannot hide the model.
-mce::Mesh uploadMesh(ScreenContext& screen, std::span<model::Vertex const> vertices, bool twoSided,float* uploadDelta=nullptr) {
+mce::Mesh uploadMesh(ScreenContext& screen, std::span<model::Vertex const> vertices, bool twoSided,uint& uploadedCount,float* uploadDelta=nullptr) {
+    // Gun-only upload/cache boundary; Java UVs stay untouched in GeoModel and
+    // rigid groups. Arms have a separate uploader. No per-frame default rebuild.
+    auto safeVertices=model::packedRepeatUVQuads(vertices);
+    vertices=safeVertices;
+    uploadedCount=static_cast<uint>(vertices.size()*(twoSided ? 2 : 1));
     Tessellator batch(screen.tessellator.mBufferResourceService);
     batch.begin({}, mce::PrimitiveMode::QuadList, static_cast<int>(vertices.size() * (twoSided ? 2 : 1)), false);
     batch.color(1.f, 1.f, 1.f, 1.f);
@@ -333,13 +340,34 @@ mce::Mesh uploadMesh(ScreenContext& screen, std::span<model::Vertex const> verti
         }
     }
     auto mesh=batch.end(Tessellator::UploadMode::Buffered, "tacz gun", SupplementaryFieldAutoGenerationMode{});
+    if (debug::meshDiagnostics) {
+        // Read-only 1.26.51 layout evidence; never construct/mutate the SDK's
+        // empty VertexLayout placeholder. Bounds-check before inspecting raw bytes.
+        std::array<unsigned char,110> layout{};
+        std::memcpy(layout.data(),&mesh.mVertexLayout,layout.size());
+        auto word=[&](size_t at) { uint16_t value; std::memcpy(&value,layout.data()+at,2); return value; };
+        auto const& raw=mesh.mRawData.get();
+        size_t offset=word(0xa),stride=word(0x20);
+        size_t positionEnd=stride,positionOffset=word(2);
+        for (size_t field=1;field<15;++field) if ((word(0)&(1u<<field)) && word(2+2*field)>positionOffset)
+            positionEnd=std::min<size_t>(positionEnd,word(2+2*field));
+        logger().info("[gun-packed] rawBytes={} stride={} UV0offset={} positionSlotBytes={} splitStream={} sourceVertices={} uploadedVertices={} (read-only CPU packed bytes, not GPU capture)",
+            raw.size(),stride,offset,positionEnd>=positionOffset ? positionEnd-positionOffset : 0,layout[0x6c],safeVertices.size(),uploadedCount);
+        if (!layout[0x6c] && (word(0)&0x10) && offset+4<=stride && stride && raw.size()>=stride*std::min<size_t>(8,uploadedCount)) {
+            for (size_t i=0;i<std::min<size_t>(4,safeVertices.size());++i) {
+                uint16_t u,v;
+                std::memcpy(&u,raw.data()+stride*i+offset,2); std::memcpy(&v,raw.data()+stride*i+offset+2,2);
+                logger().info("[gun-packed-UV] i={} CPU=({}, {}) words=({}, {}) expected=({}, {}) decode=({}, {})",
+                    i,safeVertices[i].uv.x,safeVertices[i].uv.y,u,v,model::packUV16(safeVertices[i].uv.x),model::packUV16(safeVertices[i].uv.y),u/65535.,v/65535.);
+            }
+        }
+    }
     ++counters.builds;
     return mesh;
 }
 void buildMesh(ScreenContext& screen,GunVisual& visual,bool twoSided) {
-    visual.vertexCount=static_cast<uint>(visual.vertices.size()*(twoSided ? 2 : 1));
     visual.meshTwoSided=twoSided;
-    visual.mesh.emplace(uploadMesh(screen,visual.vertices,twoSided,&visual.diagnostics.uploadDelta));
+    visual.mesh.emplace(uploadMesh(screen,visual.vertices,twoSided,visual.vertexCount,&visual.diagnostics.uploadDelta));
 }
 void ensureRigidMeshes(ScreenContext& screen,GunVisual& visual,bool twoSided) {
     size_t variant=twoSided ? 1 : 0;
@@ -349,9 +377,10 @@ void ensureRigidMeshes(ScreenContext& screen,GunVisual& visual,bool twoSided) {
     meshes.clear(); meshes.reserve(visual.rigid.groups.size());
     size_t vertices=0;
     for (auto const& group:visual.rigid.groups) {
+        if (debug::meshDiagnostics) logger().info("[gun-packed-group] bone={} name={} sourceVertices={}",group.bone,
+            visual.model.bones[static_cast<size_t>(group.bone)%visual.model.bones.size()].name,group.vertices.size());
         auto gpu=std::make_unique<GunVisual::GroupMesh>(); // stable address, never moved/re-emplaced after drawing
-        gpu->count=static_cast<uint>(group.vertices.size()*(twoSided ? 2 : 1));
-        gpu->mesh.emplace(uploadMesh(screen,group.vertices,twoSided));
+        gpu->mesh.emplace(uploadMesh(screen,group.vertices,twoSided,gpu->count));
         vertices+=gpu->count;
         meshes.push_back(std::move(gpu));
     }

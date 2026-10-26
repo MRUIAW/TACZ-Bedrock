@@ -1,4 +1,4 @@
-# 路线图（0.3.21，逐版更新）
+# 路线图（0.3.22，逐版更新）
 
 ## 对照原里程碑 1「AK47 单枪可玩原型」
 
@@ -15,14 +15,19 @@
   四张贴花面UV/texel矩形对照相同，增加离线采样图片与显式单mip实验。根因未证明，默认保留旧上传。
   用户已确认Timeless/HK416D在blend0/1均错且无差别，不再把alpha阈值当作已成立修复路线。
   详见 `HUD-SAMPLING-0.3.21.md`。
+- **0.3.21用户验收**：HUD已很接近Java、fresh闭膛031本来就正确、空/低弹红色正确；RTX/菜单/换世界稳定。
+  Timeless/HK的depth1/2和sampler0/1均无差异。
+- **0.3.22**：证实原生UV0低16位溢出导致端点插值倒扫纹理；枪上传缓存边界分面/整数平移，保留mesh-once。
+  安装325枪+参考default54枪源面UV审计通过，实机贴花/RTX待验；HK命名骨无helper折叠差异，不能称已修复。
+  新候选是half位置量化抹掉0.001pixel外扩，待读实际buffer；见`UV-PACKING-0.3.22.md`和两份UV-AUDIT。
 - **里程碑1仍未完整**：UI/透明材质实机验收；真实枪/弹药物品、GunId 图标名称；手动拉栓；
   BDS+客户端联调、data同步、只装服务端提示、击杀计数overlay。当前为单人/内置服务器原型，probe UI 默认关闭，`/tacz setgun` 仍是测试设施。
-- **已知视觉待办**：Timeless_50 slide pattern、HK416D白字（alpha A/B失败，UV矩形一致；实际sampler/GPU深度仍待证）、B93R 原动画弹匣离屏、P320 等检视倾斜、View Bobbing 瞄准行走左右摆。
+- **已知视觉待办**：Timeless_50 UV分面实机验收、HK416D白字位置精度/GPU深度定位（非UV越界）、B93R 原动画弹匣离屏、P320 等检视倾斜、View Bobbing 瞄准行走左右摆。
   皮肤/Persona 仍有占位路径，不把“手臂能动”等同皮肤完成。
 
 ## 后续队列（按顺序）
 
-1. **UI/材质验收**：HUD同比例截图、Timeless/HK416D sampler实验与实际GPU采样/深度定位；保留已通过准星/命中反馈；击杀计数 Not yet。
+1. **材质验收**：Timeless/block_17 UV分面、其他枪/RTX不变；HK实际packed position精度与深度定位；保留已通过HUD/准星/命中反馈；击杀计数 Not yet。
 2. **物品**：BP 注册 `tacz:modern_kinetic_gun`（及 ammo/attachment），NBT GunId 驱动图标/名称；验证基岩端可行性，失败再讨论退路。
 3. **机制**：手动拉栓优先（AWP 等）→ 背包直读+热量（minigun 当前默认30发）→ 充能 → 爆炸 → 近战 → builtin attachments（AUG 默认镜）。
    弹丸散布/每发多弹丸已有基础实现；第三方自定义 shoot/bolt Lua API、扩展字段按审计清单逐项实现，不无条件放行。

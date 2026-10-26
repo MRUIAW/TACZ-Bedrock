@@ -50,6 +50,28 @@ def render(pixels, w, h, rect, ow, oh, repeat=True, linear=False):
             for y in range(oh) for x in range(ow)]
 
 
+def packed_word(value):
+    return math.ceil(f32(f32(value)*65535)) & 65535
+
+
+def fixed_axis(a, b, t):
+    # Offline image analogue of production splitRepeatUV, whose pieces/encoding
+    # are independently tested by tacz-pack-audit across every source gun quad.
+    edges = [0., 1.]
+    if a != b:
+        edges += [(k-a)/(b-a) for k in range(math.floor(min(a, b))+1, math.ceil(max(a, b))) if min(a,b)<k<max(a,b)]
+    edges.sort()
+    lo, hi = next((lo, hi) for lo, hi in zip(edges, edges[1:]) if lo <= t <= hi)
+    tile = 0 if 0 <= a <= 1 and 0 <= b <= 1 else math.floor(a+(b-a)*(lo+hi)/2)
+    va, vb = (min(1., max(0., a+(b-a)*e-tile)) for e in (lo, hi))
+    return (packed_word(va)*(hi-t)+packed_word(vb)*(t-lo))/(hi-lo)/65535
+
+
+def render_fixed(pixels, w, h, rect, ow, oh):
+    return [sample(pixels, w, h, fixed_axis(rect[0],rect[2],(x+.5)/ow),
+                   fixed_axis(rect[1],rect[3],(y+.5)/oh), True, False) for y in range(oh) for x in range(ow)]
+
+
 def mip(pixels, w, h, levels=2):
     for _ in range(levels):
         nw, nh = max(w//2, 1), max(h//2, 1)
@@ -100,16 +122,25 @@ def main(root, output):
                "physical_size_model_pixels": cube["size"], "origin": cube["origin"],
                "UV_equal": java == native, "actual_native_sampler": "unverified, opaque SDK descriptor"}
         row["adjacent_png_mcmeta_exists"] = texture_path.with_suffix(".png.mcmeta").exists()
+        words = [packed_word(x) for x in native]
+        broken = [x/65535 for x in words]
+        row["native16_words"] = words
+        row["native16_decoded_endpoints"] = broken
         raw_w, raw_h = max(1, math.ceil(abs(du)*w/tw)), max(1, math.ceil(abs(dv)*h/th))
         write_png(output/(label+"-crop.png"), raw_w, raw_h, render(pixels, w, h, java, raw_w, raw_h))
         # Common tiny screen footprint, enlarged without interpolation for comparison.
         ow, oh = 48, 12
-        mp, mw, mh = mip(pixels, w, h)
         controls = [("java-point-repeat", render(pixels, w, h, java, ow, oh)),
-                    ("native-UV-point-repeat-control", render(pixels, w, h, native, ow, oh)),
+                    ("native16-broken", render(pixels, w, h, broken, ow, oh)),
+                    ("native16-split-fixed", render_fixed(pixels, w, h, native, ow, oh)),
                     ("point-clamp-hypothesis", render(pixels, w, h, native, ow, oh, False)),
-                    ("linear-clamp-hypothesis", render(pixels, w, h, native, ow, oh, False, True)),
-                    ("mip2-linear-repeat-hypothesis", render(mp, mw, mh, native, ow, oh, True, True))]
+                    ("linear-clamp-hypothesis", render(pixels, w, h, native, ow, oh, False, True))]
+        expected = render(pixels, w, h, java, raw_w, raw_h)
+        fixed = render_fixed(pixels, w, h, native, raw_w, raw_h)
+        row["fixed_vs_java_nearest_changed_pixels"] = sum(a != b for a,b in zip(expected,fixed))
+        row["crop_pixels"] = raw_w*raw_h
+        write_png(output/(label+"-broken-crop.png"), raw_w, raw_h, render(pixels,w,h,broken,raw_w,raw_h))
+        write_png(output/(label+"-fixed-crop.png"), raw_w, raw_h, fixed)
         row["controls"] = [name for name, _ in controls]
         cards.append(controls)
         for name, image in controls:

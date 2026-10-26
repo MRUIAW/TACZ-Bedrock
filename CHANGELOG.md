@@ -8,6 +8,80 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 Versioning rule for this project: the patch number goes up by 1 for each small item or test
 round, the minor number goes up by 1 for each finished feature or phase.
 
+## [0.3.22] - 2026-10-26
+
+### User-tested 0.3.21
+
+- HUD now closely matches Java; fresh closed-bolt AK47 was always correctly031,
+  empty/low ammo red works; RTX toggle/menu/world-switch stability passed.
+- Timeless/HK416D unchanged by depth1/2 or sampler0/1. Timeless looks like much
+  of the gun texture compressed into its decal. Do not keep treating alpha/mips
+  or a missing chamber as established causes.
+
+### Fixed / proved
+
+- Trace float32 Vertex UV → Tessellator mNextUV0/vertex → MeshData UV vector →
+  default native layout field4/type4 → Mesh raw buffer. Version-pinned binary
+  evidence proves **2×16-bit normalized UV**: multiply65535, ceilf, store low16,
+  **no clamp**. This is not float32/half UV; default UV branch selection is proved,
+  not inferred from finding an unused packer. Read-only reproducible script added.
+- Timeless V `.7890625→1.005859375` packs to words `51712→383`, decoded
+  `.78907454→.00584421`, interpolating backwards across most of the texture.
+  This explains the user's observation without assuming material shader frac.
+- Add tested gun-upload compatibility transform: split in original linear UV
+  coordinates at integer repeat boundaries, then integer-rebase each piece into
+  [0,1]. Timeless becomes two quads at36/37 of its original V span. Preserve
+  reversal, negative/zero/multi-tile UVs, positions at original corners, normals,
+  winding, original face order; use post-split native draw counts for both variants.
+  In-range faces copied unchanged. Java source-model UVs and rigid groups remain
+  immutable; default mesh-once/bone path, RTX selection, arms and cache safety retained.
+- No unsafe float-layout/sampler fabrication or shared native state edits. Java
+  default gun textures repeat, not clamp (no installed PNG mcmeta found). Native
+  normal16-bit quantization remains; actual GPU sampler is not claimed captured.
+- Extend production pack audit + `audit-gunpacks.py --uv-only`: installed325/325
+  guns/1,180,714 source faces plus independent reference54/54 default guns.
+  ClassicRCCRP4 guns/28 outside faces, default2/1223, other3 packs0; all1265
+  resulting installed pieces pass production split/pack/interpolation checks.
+  Worst examples: kar98 locator V3, block_17 V1.0126953125, Timeless V1.005859375;
+  cz75/glock_17 have many zero-UV-area faces. Counts include hidden/locator faces,
+  not1265 proven visible defects or325 in-game tests. Separate per-pack reports added.
+- Offline images now show Java / broken packed endpoints / fixed split controls.
+  Timeless fixed nearest crop matches Java0/7672 differing pixels (all3 HK crops
+  likewise match); third-party images stay outside repository/gunpacks.
+
+### HK416D evidence / unresolved
+
+- Refute the proposed helper-fold divergence for the actual3 white-text faces:
+  both decal `bone` and body `gun_body2` retain named bone boundaries; labels
+  have no cube helper. Production prepack clip z/w:3072 comparisons against
+  same-source Java-style path,0 bit mismatches. Keep Java DFS draw order.
+- Java entityCutout inherits **LEQUAL**; however these authored decals have
+  inflate, so they are not strictly coplanar with the body. Do not claim arbitrary
+  coplanar polygons or differing named-bone chains guarantee bit-identical GPU depth.
+- Stronger next candidate: native **position half** encoding can erase the
+  0.001pixel outward separation on cube0/2 (localX~-.34 becomes a plane exactly
+  coincident with the body). Numeric production audit + regression fixture added.
+  Actual position branch is backend-capability-dependent and **not read back in
+  this run**; no speculative geometry/transform rewrite. **HK white-text flicker
+  remains unresolved**, and its UVs do not overflow.
+- Opt-in mesh diagnostics log bounded read-only native layout/raw metadata,
+  position slot size and packed UV words where CPU bytes remain available.
+  No forced re-encoding/GPU readback; empty raw bytes are reported honestly.
+
+### Validation / scope
+
+- Windows x64 release client/server builds passed;162 tests /81,789 assertions
+  passed,0 failed/skipped. Installed and reference UV audits have0 failures;
+  no new in-game/GPU/RTX acceptance claimed. Existing LL hook macro warnings remain.
+- Game closed; client0.3.22 deployed without starting/terminating the game.
+  DLL/PDB/manifest SHA256 match final build; manifest version/platform and exact
+  RP/BP file sets + hashes verified (4/2 files). `git diff --check` passed.
+  Client DLL SHA256: `83083cda06e6f0b876565131fcb5addd5dd4335fa50781954d74394bc4ff944a`;
+  server: `9e4d6b0f35dd17b3cc66d01f729ce234a2d85455f5c2eb69d9ef5b5f2180737c`.
+- Version0.3.22; details/reproduction/risks: `docs/UV-PACKING-0.3.22.md`,
+  `docs/UV-AUDIT-INSTALLED-0.3.22.md`, `docs/UV-AUDIT-DEFAULT-0.3.22.md`.
+  ROADMAP retains BDS testing/data sync/server-only warning **last**.
+
 ## [0.3.21] - 2026-10-26
 
 ### User-tested 0.3.20
