@@ -4,9 +4,17 @@
 #include <algorithm>
 #include <stdexcept>
 namespace tacz::pack {
+bool validSlotCollectionIndex(std::string_view name,int index) {
+    // Defensive UI bound, not a guessed inventory offset. Unusual oversized
+    // collections fail closed rather than passing pointer-like indices native.
+    if (name.empty() || name.size()>128 || index<0 || index>=4096) return false;
+    return std::all_of(name.begin(),name.end(),[](unsigned char c) {
+        return (c>='a' && c<='z') || (c>='A' && c<='Z') || (c>='0' && c<='9') || c=='_' || c=='.' || c==':' || c=='-';
+    });
+}
 std::optional<size_t> nearestSlotCollectionLevel(std::vector<std::vector<SlotCollectionIndex>> const& levels) {
     for (size_t i=0;i<levels.size();++i)
-        for (auto const& slot:levels[i]) if (!slot.collection.empty() && slot.index>=0) return i;
+        for (auto const& slot:levels[i]) if (validSlotCollectionIndex(slot.collection,slot.index)) return i;
     return std::nullopt;
 }
 bool SlotIdentitySelection::offer(int renderId,int renderAux,int sourceId,int sourceAux,std::optional<ItemIdentity> const& source) {

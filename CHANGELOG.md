@@ -8,6 +8,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 Versioning rule for this project: the patch number goes up by 1 for each small item or test
 round, the minor number goes up by 1 for each finished feature or phase.
 
+## [0.3.28] - 2026-10-27
+
+### 0.3.27 user results / Part 1 — scalar slot index
+
+- Creative pickup matches vanilla; survival scripted pickup accepted. Icons remain
+  placeholders: `.5.log` finds correct ancestor collection names, but every callback
+  index is1188008220 (0x46CF9F9C), not a slot. Treat the function_ref int as unusable;
+  collect names only and use signature-checked UIControl::findCollectionIndex.
+  Validate names and reject pointer-like/out-of-range indices; preserve ambiguity
+  rejection and world cleanup. Log each distinct scalar index with its source.
+- New ammo failures remain unfixed in this measurement release: pickup during
+  shooting/reload can leave client counts stale until Q/rejoin; chest→inventory
+  shift-click can fail with matching ammo already present; chest53 + inventory60+60
+  shift transfer yields chest60+49, inventory60+4, consistent with mixed64/60 limits.
+  Do not claim full A1 coverage or change gameplay to hide these failures.
+
 ## [0.3.27] - 2026-10-27
 
 ### Part 2 — item icon ancestor slot lookup

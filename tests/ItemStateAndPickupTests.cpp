@@ -50,6 +50,19 @@ TEST_CASE("Slot collection lookup walks owner-to-root and never substitutes an o
     depth=pack::nearestSlotCollectionLevel({Level{},Level{{"container_items",7},{"other",3}},Level{{"hotbar_items",1}}});
     REQUIRE(depth); CHECK(*depth==1); // resolve/ambiguity check remains within the nearest scope
 }
+TEST_CASE("Slot scalar indices reject the callback pointer regression and malformed names") {
+    CHECK(pack::validSlotCollectionIndex("hotbar_items",0));
+    CHECK(pack::validSlotCollectionIndex("inventory_items",26));
+    CHECK(pack::validSlotCollectionIndex("container_items",53));
+    CHECK_FALSE(pack::validSlotCollectionIndex("hotbar_items",0x46CF9F9C));
+    CHECK_FALSE(pack::validSlotCollectionIndex("hotbar_items",-1));
+    CHECK_FALSE(pack::validSlotCollectionIndex("hotbar_items",4096));
+    CHECK_FALSE(pack::validSlotCollectionIndex("bad name",0));
+    CHECK_FALSE(pack::validSlotCollectionIndex("",0));
+    CHECK_FALSE(pack::validSlotCollectionIndex(std::string(129,'a'),0));
+    auto level=pack::nearestSlotCollectionLevel({{{"hotbar_items",0x46CF9F9C}},{{"hotbar_items",4}}});
+    REQUIRE(level); CHECK(*level==1);
+}
 TEST_CASE("Tooltip current and maximum follow Java's effective current chamber for all bolt types") {
     pack::GunPackRegistry packs;
     std::vector<std::unique_ptr<pack::PackSource>> sources;

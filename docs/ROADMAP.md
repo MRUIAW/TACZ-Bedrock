@@ -1,4 +1,4 @@
-# 路线图（0.3.27，逐版更新）
+# 路线图（0.3.28，逐版更新）
 
 ## 对照原里程碑 1「AK47 单枪可玩原型」
 
@@ -55,6 +55,13 @@
 - Part1按用户决定移除Actor::isCreative覆盖及其scope，创造模式容量不足时按原版丢弃余量；保留生存add返回语义与修正后的拾取日志。
 - Part2完成owner→parent链最近槽位collection查找，有限日志记录每级control名称/collection/index，保持歧义拒绝和world清理。
   Mojang模板指出grid/item上下文，实际祖先名称/层级需新ancestor日志确认；热栏/背包/箱子绘制尚未实机验收。其他A1点仍待续。
+
+## 0.3.28
+
+- 0.3.27创造/生存拾取测试通过；槽图祖先名称正确，但callback index恒0x46CF9F9C。
+- Part1仅以callback收集名称，用typed findCollectionIndex取标量索引；检查范围及真实槽身份，仍待实机像素/索引验收。
+- 新ammo问题：站在地面弹药上射击/换弹后客户端数量迟同步；箱子→背包shift失败；转移量64而槽上限60留下4。
+- A1本轮先descriptor bridge观测，后续根据caller RVA/命中率分类再决定上限覆盖，不提前改变native返回值。
 
 ## 后续队列（按顺序）
 

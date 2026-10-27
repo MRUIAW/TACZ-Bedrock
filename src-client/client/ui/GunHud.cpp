@@ -250,6 +250,7 @@ using CollectionVisitor=brstd::function_ref<void(std::string const&,int)>;
 static_assert(sizeof(CollectionVisitor)==16 && !std::is_empty_v<CollectionVisitor>);
 static_assert(std::is_same_v<decltype(&InventoryItemRenderer::$update),SlotUpdate>);
 static_assert(std::is_same_v<decltype(&UIControl::findAllCollectionIndices),void (UIControl::*)(CollectionVisitor)>);
+static_assert(std::is_same_v<decltype(&UIControl::findCollectionIndex),int (UIControl::*)(std::string const&) const>);
 static_assert(std::is_same_v<decltype(&ContainerScreenController::_getVisualItemStack),ItemStackBase const& (ContainerScreenController::*)(std::string const&,int) const>);
 std::optional<pack::ItemIdentity> slotIdentity(InventoryItemRenderer const* renderer,UIControl const* owner=nullptr) {
     std::lock_guard lock(cacheMutex);
@@ -286,7 +287,20 @@ LL_TYPE_INSTANCE_HOOK(PackSlotUpdate,ll::memory::HookPriority::Normal,InventoryI
         if (std::find(seen.begin(),seen.end(),current)!=seen.end()) break;
         seen.push_back(current);
         std::vector<pack::SlotCollectionIndex> indices;
-        auto collect=[&](std::string const& collection,int index) { indices.push_back({collection,index}); };
+        // The SDK function_ref callback's int is pointer-like in 26.51. Never
+        // use it as an index. String names match the native UI bindings; validate
+        // their contents and query the plain, separately checked scalar getter.
+        auto collect=[&](std::string const& collection,int) {
+            if (!pack::validSlotCollectionIndex(collection,0)) return;
+            int index=current->findCollectionIndex(collection);
+            if (std::none_of(indices.begin(),indices.end(),[&](auto const& slot){return slot.collection==collection;}))
+                indices.push_back({collection,index});
+            std::lock_guard lock(cacheMutex);
+            auto key="slot-index:"+client.getScreenName()+":"+collection+":"+std::to_string(index);
+            if (iconDiagnostics.size()<4096 && iconDiagnostics.insert(key).second)
+                logger().info("[item-icons] slot-index screen={} depth={} control={} collection={}[{}] via=findCollectionIndex nameValid=true inRange={}",
+                    client.getScreenName(),depth,current->mName.get(),collection,index,pack::validSlotCollectionIndex(collection,index));
+        };
         current->findAllCollectionIndices(collect);
         levels.push_back(std::move(indices));
         if (diagnose) {
@@ -299,7 +313,7 @@ LL_TYPE_INSTANCE_HOOK(PackSlotUpdate,ll::memory::HookPriority::Normal,InventoryI
     }
     auto sourceDepth=pack::nearestSlotCollectionLevel(levels);
     auto visit=[&](std::string const& collection,int index) {
-        if (collection.empty() || index<0) return;
+        if (!pack::validSlotCollectionIndex(collection,index)) return;
         ItemStackBase const* full=nullptr;
         if (containers) full=&containers->_getVisualItemStack(collection,index);
         else if (client.getScreenName().starts_with("hud_screen") && collection=="hotbar_items" && index<9) {
