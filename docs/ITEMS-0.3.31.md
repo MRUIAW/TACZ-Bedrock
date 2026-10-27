@@ -1,5 +1,11 @@
 # 0.3.31：消耗同步边界与撤回 alpha 实验
 
+> **0.3.32实测更正**：0.3.31仅通过“无地面弹药，开火30→换弹，背包60→30”。
+> 地面补弹仍交替失败；`mLastSlots`不是这次漏同步的根因，也不是own-inventory的发送机制。
+> `.3.log`中枪NBT的1→1普通写入先留下未平衡事务，拾取的入包/地面动作虽互相抵消，旧/新枪NBT物品组仍未平衡，
+> 原生发送被挡，随后服务器tick丢弃事务；下一轮通过mismatch全刷偶然恢复。
+> 0.3.32修枪写回的原生forceBalanced边界，**不靠修改快照或拾取补包修复**。证据见`ITEMS-0.3.32.md`。
+
 目标：Minecraft Bedrock **1.26.51.01 / LeviLamina 26.51.7**。
 代码检查点：`45422e7`（按要求先双端/测试、提交并部署；其包版本暂仍为0.3.30）。
 正式版本随后统一为0.3.31。未启动游戏代替用户验收。
@@ -33,7 +39,7 @@
 
 确认的问题是**自定义服务器消耗/发包没有作为完整原生同步边界提交**：旧全刷只改变客户端，
 不发送则客户端连扣量也收不到；原生另有自己的menu快照、net-manager和事务平衡机制。
-`mLastSlots`过时是需要修正的一致性缺口，但**并未证明它单独导致本次拾取缺包**，尤其own menu的slotChanged本来就被抑制。
+`mLastSlots`提交只保持显式发送的快照一致；**0.3.32实测已排除它是本次拾取缺包原因**，own menu的slotChanged本来就被抑制。
 同样未证明“客户端拒绝stale net ID”或“网络包乱序”，不把这些猜测写成根因。
 
 采用的原生写入链为：
@@ -51,13 +57,13 @@
 | --- | --- |
 | `AmmoItem.cpp::extractAmmo` | 复制原栈，只扣需要量，调用原生setItemWithForceBalance(true)，立即发送该槽并提交该槽基线；含扣空槽。去掉全刷，不靠tick纠正 |
 | `AmmoItem.cpp::insertAmmo` / give | 相同原生平衡写入和目标槽同步；原有兼容NBT、先合并后空槽、split、脚边溢出不变 |
-| `GunItem.cpp::writeSelectedGun` | 保留用户实测有效的setSelectedItem及**单槽**InventorySlotPacket；仅补对应基线提交，不把弹药等其他槽的中间值发出去 |
+| `GunItem.cpp::writeSelectedGun` | 当时保留setSelectedItem及**单槽**InventorySlotPacket；0.3.32发现普通setter留下NBT未平衡组，已改原生平衡写入；单槽包保留 |
 | `PackItem.cpp::giveGun` | 不再使用addAndRefresh（会全刷但只记录新枪槽不够）；改用原生Inventory::add，只有由空变非空的目标槽发送并提交；满包仍原生drop，不截获通用add |
 | 换弹/取消/退弹 | Shooter的脚本供弹调用统一extractAmmo，枪状态写回统一writeSelectedGun；当前ScriptApi没有独立“向背包退弹”写入器，putAmmoInMagazine返回溢出数不等于实现背包退款；不擅自新加退款玩法 |
 | 普通拾取、箱子shift、漏斗、drag/split | 不改变任何原生容量/插入/预测/创造策略；take hook只在诊断开启时观察，不纠正物品/actor/数量 |
 
 `recordSentInventorySlot`使用完整`ItemStack::operator=`，与原生broadcast的base+net-ID复制语义一致；
-测试覆盖count、NBT、ID及“未发送的其他槽不能被顺手提交”。未来原生真实变化（例如丢枪1→0、补弹56→60）仍能被比较到。
+测试覆盖count、NBT、ID及“未发送的其他槽不能被顺手提交”。变化仍能被比较到，但**比较到不等于向own inventory发送**；不能以此宣称补弹已同步。
 未初始化/越界基线不扩大、不调用全容器broadcast初始化，保留原生建表；诊断写`baseline=not-initialized`。
 
 **线程**：所有实际写入调用来自服务器命令、服务器玩法/level tick及服务器包处理；没有异步投递或渲染线程写基线。

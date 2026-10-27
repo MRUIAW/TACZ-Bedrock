@@ -8,6 +8,40 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 Versioning rule for this project: the patch number goes up by 1 for each small item or test
 round, the minor number goes up by 1 for each finished feature or phase.
 
+## [0.3.32] - 2026-10-28
+
+### 0.3.31 user results / corrected root cause
+
+- No-ground reload now works: fire30, reload, backpack60→30 immediately. Full
+  inventory + ground ammo still alternates between a stale reduced count and60;
+  ground consumption is always correct. Log `2026-10-28.3.log`,02:03:54–02:03:59.
+- The missing refill is NOT an mLastSlots baseline problem. First extraction
+  sends60→35 and the client applies it. The subsequent gun NBT rewrite (slot2,
+  count1→1,forceBalanced=false) leaves a pending transaction; pickup35→59→60
+  remains pending too. Own-menu slotChanged is suppressed and cannot rescue it.
+- Native disassembly: transaction groups include item/aux/NBT, so old-gun−1 and
+  new-gun+1 do not cancel. Pickup's matching ammo +N/−N cancels only its own group;
+  remaining gun groups block the normal transaction send, then server tick cleanup
+  discards it. The next reload starts from server60/client35, leading to native
+  mismatch recovery/full content60. See `docs/ITEMS-0.3.32.md` for RVAs/log lines.
+
+### Fixed — balance the server gun rewrite, preserve native pickup
+
+- writeSelectedGun now uses native Inventory::setItemWithForceBalance(...,true),
+  rather than setSelectedItem's ordinary setItem(false). Keep the existing explicit
+  single-slot gun packet and matching full-stack baseline commit for immediate NBT
+  display/drop. No hand-written net IDs, transaction clearing or gameplay changes.
+- Retain0.3.31's accepted extraction path. Do NOT add an after-take absolute-slot
+  correction: it would mask the display symptom while leaving the poisoned native
+  transaction. Native pickup/add/canAdd/survival remainder/creative discard remain
+  authoritative; the existing take hook is diagnostic-only.
+- Add pending nonzero/gun/ammo group counts to capped action diagnostics; split gun
+  samples into their own budget. Determine server/client action labels from the
+  actual ServerPlayer component, not isClientSide alone in an integrated session.
+- Tests cover the shared native balanced-write call and a clearly labelled balance
+  model reproducing NBT1→1 blocking ammo pickup, including consecutive refills.
+  Both builds/pure tests do not constitute new in-game acceptance.
+
 ## [0.3.31] - 2026-10-28
 
 ### Fixed / awaiting in-game acceptance — inventory synchronization boundary
