@@ -35,14 +35,16 @@ TEST_CASE("Embedded generic tooltip translations are exact authorized source val
     CHECK(registry().packDisplayName(ak.id,"zh_CN")=="TAC Zero 默认枪械包");
     CHECK(registry().packDisplayName({"missing","x"},"zh_CN").empty());
 }
-TEST_CASE("Release manifests agree on 0.3.30 and category identity stays language neutral") {
+TEST_CASE("Release manifests agree on 0.3.31 and category identity stays language neutral") {
     auto root=std::filesystem::path(TACZ_PROJECT_DIR);
     std::ifstream toothFile(root/"tooth.json"); auto tooth=nlohmann::json::parse(toothFile);
-    CHECK(tooth.at("version")=="0.3.30");
+    CHECK(tooth.at("version")=="0.3.31");
     for (auto relative:{"packs/behavior_packs/tacz_bp/manifest.json","packs/resource_packs/tacz_rp/manifest.json"}) {
         std::ifstream file(root/relative); auto manifest=nlohmann::json::parse(file);
-        CHECK(manifest.at("header").at("version")==nlohmann::json::array({0,3,30}));
+        CHECK(manifest.at("header").at("version")==nlohmann::json::array({0,3,31}));
         for (auto const& module:manifest.at("modules")) CHECK(module.at("version")==manifest.at("header").at("version"));
+        if (manifest.contains("dependencies")) for (auto const& dependency:manifest.at("dependencies"))
+            CHECK(dependency.at("version")==manifest.at("header").at("version"));
     }
     auto tag=pack::itemUserData(ak,&registry().gun(ak.id)->data);
     CHECK_FALSE(tag.contains("display")); CHECK_FALSE(tag.contains("TaczAutoName"));

@@ -1,5 +1,7 @@
 #include "nbt/InventorySync.h"
+#include <string_view>
 #include <type_traits>
+#include <vector>
 #include "debug/AmmoSyncDebug.h"
 #include "ll/api/memory/Hook.h"
 #include "ll/api/service/Bedrock.h"
@@ -196,7 +198,7 @@ bool contentHook=false,transactionHook=false;
 bool slotHook=false,pickupHook=false,rangedHook=false,sendHook=false,actionHook=false;
 }
 void sendTrackedInventorySlot(Player& player,int slot,int before,char const* reason) {
-    if (!inventoryMenu(player)) return;
+    if (!inventoryMenu(player) || slot<0 || slot>=player.getInventory().getContainerSize()) return;
     Reason scope(reason);
     InventorySlotPacket packet{InventorySlotPacketPayload{ContainerID::Inventory,slot,player.getInventory().getItem(slot)}};
     player.sendNetworkPacket(packet);
@@ -205,13 +207,14 @@ void sendTrackedInventorySlot(Player& player,int slot,int before,char const* rea
 void recordSentInventorySlot(Player& player,int slot,int before,char const* reason) {
     auto menu=inventoryMenu(player); if (!menu) return;
     auto& slots=menu->mLastSlots.get();
-    // Native broadcast initializes an absent baseline. Do not resize it ourselves.
-    if (slots.size()!=size_t(player.getInventory().getContainerSize())) {
-        Reason scope(reason);
-        menu->broadcastChanges();
-    }
+    // Never initialize/resize the whole native baseline from a one-slot send:
+    // unsent slots might contain transient values. Native owns initial setup.
     int last=baselineCount(*menu,slot);
-    if (slot<0 || size_t(slot)>=slots.size()) return;
+    if (slot<0 || size_t(slot)>=slots.size()) {
+        if (debug::ammoSync && debug::ammoServerSamples.take())
+            logger().info("[ammo-sync] server path=explicit-InventorySlotPacket reason={} slot={} baseline=not-initialized",reason,slot);
+        return;
+    }
     auto const& current=player.getInventory().getItem(slot);
     model::commitSentInventorySlot(slots,slot,current);
     if (debug::ammoSync && debug::ammoServerSamples.take())

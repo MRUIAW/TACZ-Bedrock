@@ -8,6 +8,58 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 Versioning rule for this project: the patch number goes up by 1 for each small item or test
 round, the minor number goes up by 1 for each finished feature or phase.
 
+## [0.3.31] - 2026-10-28
+
+### Fixed / awaiting in-game acceptance — inventory synchronization boundary
+
+- Preserve the user-verified gun NBT single-slot InventorySlotPacket (immediate
+  firing count and gun drop work). Pair explicit sends with a full ItemStack copy
+  into only that InventoryMenu::mLastSlots entry, including the native net ID.
+  Never initialize an absent baseline by copying unrelated, unsent slots.
+- Ammo extraction now uses native setItemWithForceBalance(slot, remaining, true)
+  and sends/commits the changed slot immediately. A normal unbalanced mutation
+  must not coalesce with the subsequent pickup; sending nothing was user-tested
+  and failed even without the ground refill. No full resend or tick correction.
+- Give-ammo uses the same balanced mutation and tracked per-slot sends, retaining
+  splitting/overflow drop. Give-gun keeps native Inventory::add but removes
+  addAndRefresh's full resend; sends/commits only newly occupied slots. No separate
+  inventory refund writer exists in the current script API; reload extraction and
+  gun writes all pass through these boundaries. No changes to native pickup,
+  creative overflow, chest/hopper rules or bridge enforcement.
+- Static evidence (1.26.51.01): broadcastChanges compares counts/stacks and copies
+  base stack + net ID after slotChanged; ServerPlayer::slotChanged explicitly skips
+  its own InventoryMenu. Thus "removeItem notifies listeners, so it must send" and
+  "just broadcast own menu" are invalid. Native inventoryChanged/addAction also
+  distinguishes forceBalanced. A stale-net-ID rejection or packet-order race has
+  NOT been established; final consume/refill packet traces still require gameplay.
+- Add opt-in `/tacz rdebug ammosync 0|1` (default off, 256 samples per category,
+  repeat 1 to rearm): action/balance, outgoing slot/content/transaction, native
+  pickup, vanilla ranged control and client received/applied counts. Diagnostic
+  hooks are read-only, session-guarded and signature-checked against 26.51.7.
+
+### Reverted — unnecessary icon alpha experiments
+
+- User confirmed affected cyber_armorer PNG backgrounds are genuinely opaque:
+  the alleged black transparency bug was a misread, not an established blend bug.
+- Remove icon debug command/state/preRender bypass; remove PackSlotMaterial,
+  sprite flush selection/SlotIconMaterial, alpha sampling/helper/test and the
+  AlphaUsage ordering change. Restore ui_textured_and_glcolor for all UI images.
+- Keep verified continuous dirty redraw, owner/clone re-resolution, cursor/flying
+  icons, one flat pass, Default batch and native fallback. No PNG or gunpack edits.
+
+### 0.3.30 user results and correction of earlier conclusions
+
+- User accepted survival partial pickup, creative full-inventory pickup,
+  chest/hopper/drag/split and hotbar/inventory/chest/hopper icons after reopening,
+  including drag preview (latest supplied log: `2026-10-27.9.log`).
+- **Retract the earlier 0.3.29 reload-on-ground "fixed" claim.** Full inventory +
+  60 rounds: consume 4 to 56, server picks up 4 to 60, client stays 56. The stack
+  limit bridge fixed container capacity, not this consume/sync boundary. Vanilla
+  bow/arrows work in the equivalent control experiment. No-send extraction later
+  also failed: 60 minus 30 still displayed 60 until interaction/rejoin.
+- This release's engine behavior and transparency revert still await in-game
+  regression; pure slot-commit/budget tests do not prove native network acceptance.
+
 ## [0.3.30] - 2026-10-27
 
 ### Part 3 — lean enforcing bridge
@@ -40,8 +92,9 @@ round, the minor number goes up by 1 for each finished feature or phase.
 
 ### Part 1 — vanilla inventory and pickup, bridge limits
 
-- User-tested0.3.29: chest shift-click both ways (including53+60), hoppers, and
-  pickup during shooting/reload accepted. Creative full-inventory pickup was
+- User-tested0.3.29: chest shift-click both ways (including53+60), hoppers accepted.
+  The planner's pickup-during-reload acceptance was a misread (corrected in0.3.31).
+  Creative full-inventory pickup was
   blocked by the obsolete canAdd adapter (native=true, adapter=false).
 - Remove Inventory add/canAdd adapters and the Player::take observation hook;
   vanilla owns capacity prediction, mutation, remainder/sync, creative discard
@@ -70,6 +123,8 @@ round, the minor number goes up by 1 for each finished feature or phase.
 - Expected to fix with the same cause: chest shift-click loss (60+49 / 4 left behind), shift-click
   back to the inventory, hopper jamming once a target stack reaches the pack limit, client/server
   desync when reloading while standing on ground ammo with a full inventory.
+  **0.3.31 correction:** the last scenario was never fixed by this bridge; earlier
+  reports calling it fixed were incorrect. See the consume/sync investigation above.
 - Not changed yet: the older per-path ammo hooks (`Inventory::add/canAdd`, `hasSameUserData`,
   `ItemStackBase::getMaxStackSize`, observe-only `Player::take`) stay until the user test confirms
   the bridge; the probe logging/overhead remains for that test. Icon drawing (empty after
