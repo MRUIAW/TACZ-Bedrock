@@ -1,8 +1,10 @@
 #include "nbt/PackItem.h"
 #include "nbt/AmmoItem.h"
+#include "nbt/InventorySync.h"
 #include "ll/api/memory/Hook.h"
 #include "mc/world/item/ItemStack.h"
 #include "mc/world/actor/player/Player.h"
+#include "mc/world/actor/player/Inventory.h"
 #include "mc/deps/nbt/CompoundTag.h"
 #include "mc/deps/nbt/CompoundTagVariant.h"
 #include "mc/deps/nbt/StringTag.h"
@@ -59,7 +61,13 @@ bool giveGun(Player& player,pack::ResourceId const& id) {
     }
     // No language-fixed display.Name: clients resolve the pack name at hover time.
     stack.setUserData(std::move(tag));
-    bool added=player.addAndRefresh(stack);
+    auto& inventory=player.getInventory();
+    std::vector<ItemStack> before;
+    for (int slot=0;slot<inventory.getContainerSize();++slot) before.emplace_back(inventory.getItem(slot));
+    // Native insertion, without addAndRefresh's unrelated full-container resend.
+    bool added=inventory.add(stack);
+    for (int slot=0;slot<int(before.size());++slot) if (before[slot].isNull() && !inventory.getItem(slot).isNull())
+        sendTrackedInventorySlot(player,slot,0,"give-gun/native-add");
     return added || stack.isNull() || player.drop(stack,false); // one gun: no partial insertion
 }
 namespace {

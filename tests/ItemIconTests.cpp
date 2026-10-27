@@ -14,14 +14,6 @@ TEST_CASE("Slot identity remains usable on repeated render frames without a fres
     CHECK_FALSE(clone.matches(3,101,852,0)); // must resolve its actual owner before painting
     binding.identity.reset(); CHECK_FALSE(binding.matches(3,101,852,0));
 }
-TEST_CASE("PNG alpha is inspected without dropping or changing zero and partial alpha") {
-    uint8_t rgba[]={30,40,50,0,60,70,80,128,90,100,110,255};
-    auto a=model::iconAlpha(rgba); CHECK(a.valid); CHECK(a.transparent==1); CHECK(a.partial==1); CHECK(a.opaque==1);
-    CHECK(rgba[3]==0); CHECK(rgba[7]==128); CHECK(rgba[11]==255);
-    CHECK_FALSE(model::iconAlpha({}).valid);
-    CHECK_FALSE(model::iconAlpha(std::span<uint8_t const>(rgba,3)).valid);
-    CHECK(model::SlotIconMaterial=="ui_textured_and_glcolor_sprite");
-}
 TEST_CASE("Only cursor-specific UI controls may borrow the authoritative cursor stack") {
     CHECK(model::cursorIconControl("selected_item_icon"));
     CHECK(model::cursorIconControl("common.inventory_selected_icon"));

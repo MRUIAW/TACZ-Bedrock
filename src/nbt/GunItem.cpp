@@ -7,10 +7,13 @@
 #include "mc/deps/nbt/CompoundTagVariant.h"
 #include "mc/deps/nbt/IntTag.h"
 #include "mc/deps/nbt/StringTag.h"
+#include "mc/network/packet/InventorySlotPacket.h"
+#include "mc/world/ContainerID.h"
 #include "mc/world/actor/player/Player.h"
 #include "mc/world/item/ItemStack.h"
 
 #include "nbt/GunNbt.h"
+#include "nbt/InventorySync.h"
 #include "gun/ShootRules.h"
 
 namespace tacz::nbt {
@@ -52,6 +55,7 @@ std::optional<GunItemState> readGun(ItemStack const& item) {
 bool writeSelectedGun(Player& player, GunItemState const& state) {
     ItemStack item(player.getSelectedItem());
     if (item.isNull()) return false;
+    int before=item.mCount;
     auto tag = item.mUserData ? item.mUserData->clone() : std::make_unique<CompoundTag>();
     (*tag)[GunId]               = StringTag{state.gunId.toString()};
     (*tag)[GunFireMode]         = StringTag{fireModeName(state.fireMode)};
@@ -59,7 +63,11 @@ bool writeSelectedGun(Player& player, GunItemState const& state) {
     (*tag)[HasBulletInBarrel]   = ByteTag{state.barrel ? 1 : 0};
     item.setUserData(std::move(tag));
     player.setSelectedItem(item);
-    player.sendInventory(false);
+    // Keep the user-verified immediate NBT-only single-slot update. Commit only
+    // its corresponding native baseline, never other slots' intermediate counts.
+    InventorySlotPacket packet{InventorySlotPacketPayload{ContainerID::Inventory,player.getSelectedItemSlot(),player.getSelectedItem()}};
+    player.sendNetworkPacket(packet);
+    recordSentInventorySlot(player,player.getSelectedItemSlot(),before,"gun-nbt");
     return true;
 }
 

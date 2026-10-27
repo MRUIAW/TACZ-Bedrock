@@ -16,6 +16,7 @@
 #include "mc/world/item/ItemStack.h"
 
 #include "nbt/GunNbt.h"
+#include "nbt/InventorySync.h"
 #include "pack/PackItems.h"
 #include "mod/TaczMod.h"
 #ifdef TACZ_CLIENT
@@ -70,7 +71,8 @@ pack::AmmoInsertion insertionPlan(Inventory const& inventory,ItemStack const& so
     }
     return pack::planAmmoInsertion(slots,source.mCount,limit);
 }
-int insertAmmo(Inventory& inventory,ItemStack& source,int limit) {
+int insertAmmo(Player& player,ItemStack& source,int limit) {
+    auto& inventory=player.getInventory();
     auto incoming=canonicalAmmo(source);
     auto plan=insertionPlan(inventory,source,limit);
     // Merge all compatible stacks first, then use empty slots. Do not replace
@@ -81,7 +83,8 @@ int insertAmmo(Inventory& inventory,ItemStack& source,int limit) {
         bool empty=target.isNull();
         auto copy=empty ? ItemStack(incoming) : canonicalAmmo(target);
         int old=empty ? 0 : target.mCount;
-        copy.set(old+amount); inventory.setItem(slot,copy);
+        copy.set(old+amount); inventory.setItemWithForceBalance(slot,copy,true);
+        sendTrackedInventorySlot(player,slot,old,"give-ammo");
     }
     int inserted=int(source.mCount)-plan.remaining;
     source.set(plan.remaining); // leave uninserted rounds in the ground/caller stack
@@ -100,10 +103,12 @@ LL_TYPE_INSTANCE_HOOK(AmmoSameData,ll::memory::HookPriority::Normal,ItemStackBas
 bool sameDataHook=false;
 }
 void enableAmmoInventory() {
+    enableInventorySyncDiagnostics();
     sameDataHook=AmmoSameData::hook()==0;
     TaczMod::getInstance().getSelf().getLogger().info("[ammo-stack] nativeInventory=true nativePickup=true legacyAutoNameHook={}",sameDataHook);
 }
 void disableAmmoInventory() {
+    disableInventorySyncDiagnostics();
     if (sameDataHook) AmmoSameData::unhook();
     sameDataHook=false;
 }
@@ -133,31 +138,34 @@ int extractAmmo(Player& player, pack::ResourceId const& ammoId, int needed) {
         auto const& item = inventory.getItem(slot);
         if (readAmmoId(item) != ammoId) continue;
         int amount = std::min<int>(item.mCount, needed - taken);
-        inventory.removeItem(slot, amount);
+        int before=item.mCount;
+        // External server-authoritative consumption must not remain an ordinary
+        // unbalanced inventory action that can coalesce with the next pickup.
+        ItemStack remaining(item);
+        remaining.remove(amount);
+        inventory.setItemWithForceBalance(slot,remaining,true);
+        sendTrackedInventorySlot(player,slot,before,"extract");
         taken += amount;
     }
-    if (taken > 0) player.sendInventory(false);
     return taken;
 }
 
 int giveAmmo(Player& player, pack::ResourceId const& ammoId, int count) {
     auto const& packs=TaczMod::getInstance().gunPacks();
     auto ammo=packs.ammo(ammoId); if (!ammo || count<=0) return 0;
-    auto& inventory=player.getInventory();
     int limit=pack::ammoStackLimit(ammo->index.stackSize),given=0,dropped=0;
     for (int chunk:pack::splitAmmo(count,limit)) {
         ItemStack stack; stack.reinit("tacz:ammo",chunk,0);
         if (stack.isNull()) break;
         auto tag=std::make_unique<CompoundTag>(); (*tag)[AmmoId]=StringTag{ammoId.toString()};
         stack.setUserData(std::move(tag));
-        int inserted=insertAmmo(inventory,stack,limit); given+=inserted;
+        int inserted=insertAmmo(player,stack,limit); given+=inserted;
         if (!stack.isNull()) {
             int remaining=stack.mCount;
             if (!player.drop(stack,false)) break;
             dropped+=remaining;
         }
     }
-    if (given) player.refreshInventory();
     TaczMod::getInstance().getSelf().getLogger().info("[ammo-stack] give id={} requested={} inserted={} dropped={} limit={}",ammoId.toString(),count,given,dropped,limit);
     return given+dropped;
 }

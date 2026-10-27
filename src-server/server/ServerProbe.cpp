@@ -24,6 +24,7 @@
 #include "mc/world/item/ItemStack.h"
 
 #include "debug/RenderDebug.h"
+#include "debug/AmmoSyncDebug.h"
 #include "gun/ShootRules.h"
 #include "mod/TaczMod.h"
 #include "nbt/AmmoItem.h"
@@ -189,6 +190,12 @@ void registerCommands() {
             ++debug::renderRevision;
             if (auto* player = originPlayer(origin)) player->sendMessage("[TACZ] freeze=" + std::to_string(params.value) + " (integrated client only)");
             output.success("Render pose freeze changed");
+        });
+    command.overload<RenderToggleParams>().text("rdebug").text("ammosync").required("value")
+        .execute([](CommandOrigin const&,CommandOutput& output,RenderToggleParams const& params) {
+            if (params.value<0 || params.value>1) return output.error("ammosync: 0 or 1 (default off; 1 re-arms capped logs)");
+            debug::setAmmoSync(params.value!=0);
+            output.success("Ammo sync diagnostics changed (256 samples/path; integrated client shares switch)");
         });
     command.overload<RenderToggleParams>().text("rdebug").text("depth").required("value")
         .execute([](CommandOrigin const& origin, CommandOutput& output, RenderToggleParams const& params) {

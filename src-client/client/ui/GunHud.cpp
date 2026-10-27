@@ -175,25 +175,24 @@ Texture* texture(MinecraftUIRenderContext& context,std::string const& path) {
     std::unique_ptr<stbi_uc,decltype(&stbi_image_free)> owned(pixels,stbi_image_free);
     if (w<1 || h<1 || w>8192 || h>8192) return nullptr;
     mce::Image image(static_cast<uint32>(w),static_cast<uint32>(h),mce::ImageFormat::RGBA8Unorm,mce::ImageUsage::SRGB);
+    image.mAlphaUsage=mce::AlphaUsage::Transparent;
     image.setRawImage(mce::Blob(pixels,size_t(w)*h*4));
-    image.mAlphaUsage=mce::AlphaUsage::Transparent; // set AFTER raw-image replacement
-    auto alpha=model::iconAlpha({pixels,size_t(w)*h*4});
     auto name="tacz/ui/"+std::to_string(world)+"/"+std::to_string(++serial);
     result.location=std::make_unique<ResourceLocation>(Core::PathView(name),ResourceFileSystem::Raw);
     std::shared_ptr<mce::TextureGroup> group=context.mTextureGroup;
     auto& uploaded=group->uploadTexture(*result.location,cg::ImageBuffer(std::move(image)));
     result.pointer.emplace(uploaded,*result.location,cg::TextureSetLayerType::Color);
     result.failed=false;
-    logger().info("[ui-texture] uploaded path={} size={}x{} world={} RGBA8=true alphaZero={} alphaPartial={} alphaOpaque={}",path,w,h,world,alpha.transparent,alpha.partial,alpha.opaque);
+    logger().info("[ui-texture] uploaded path={} size={}x{} world={}",path,w,h,world);
     return &result;
 }
 bool image(MinecraftUIRenderContext& context,std::string const& path,glm::vec2 pos,glm::vec2 size,
-    mce::Color color=White,float alpha=1,glm::vec2 uv={0,0},glm::vec2 span={1,1},bool sprite=false) {
+    mce::Color color=White,float alpha=1,glm::vec2 uv={0,0},glm::vec2 span={1,1}) {
     auto icon=texture(context,path); if (!icon || !icon->pointer) return false;
     std::shared_ptr<BedrockTextureData const> data=icon->pointer->mClientTexture;
     if (!data) return false;
     context.drawImage(*data->mClientTexture,pos,size,uv,span,false);
-    context.flushImages(color,alpha,HashedString{sprite ? model::SlotIconMaterial : "ui_textured_and_glcolor"});
+    context.flushImages(color,alpha,HashedString{"ui_textured_and_glcolor"});
     return true;
 }
 void text(MinecraftUIRenderContext& context,Font& font,std::string value,glm::vec2 pos,float scale,mce::Color color,bool shadow=false) {
@@ -389,14 +388,9 @@ LL_TYPE_INSTANCE_HOOK(PackSlotUpdate,ll::memory::HookPriority::Normal,InventoryI
     return changed || identityChanged || (enabled && shooter::worldToken() && shooter::ownsClient(&client) && slotHasIcon(this));
 }
 static_assert(std::is_same_v<decltype(&InventoryItemRenderer::$getNumRenderPasses),int (InventoryItemRenderer::*)() const>);
-static_assert(std::is_same_v<decltype(&InventoryItemRenderer::$getUIMaterialType),UIMaterialType (InventoryItemRenderer::*)(int) const>);
 LL_TYPE_INSTANCE_HOOK(PackSlotPasses,ll::memory::HookPriority::Normal,InventoryItemRenderer,&InventoryItemRenderer::$getNumRenderPasses,int) {
     if (enabled && shooter::worldToken() && slotHasIcon(this)) return 1;
     return origin();
-}
-LL_TYPE_INSTANCE_HOOK(PackSlotMaterial,ll::memory::HookPriority::Normal,InventoryItemRenderer,&InventoryItemRenderer::$getUIMaterialType,UIMaterialType,int pass) {
-    if (!pass && enabled && shooter::worldToken() && slotHasIcon(this)) return UIMaterialType::TexturedAndGlcolorSprite;
-    return origin(pass);
 }
 static_assert(std::is_same_v<decltype(&InventoryItemRenderer::$getBatchType),UIBatchType (InventoryItemRenderer::*)() const>);
 LL_TYPE_INSTANCE_HOOK(PackSlotBatch,ll::memory::HookPriority::Normal,InventoryItemRenderer,&InventoryItemRenderer::$getBatchType,UIBatchType) {
@@ -451,11 +445,11 @@ LL_TYPE_INSTANCE_HOOK(PackSlotIcon,ll::memory::HookPriority::Normal,InventoryIte
                 if (bindImages(context)) {
                     owner._setCachedPosition();
                     auto pos=owner.mCachedPosition.get(),size=owner.mSize.get();
-                    if (size.x>0 && size.y>0 && image(context,*path,pos,size,White,owner.mAlpha,{0,0},{1,1},true)) {
+                    if (size.x>0 && size.y>0 && image(context,*path,pos,size,White,owner.mAlpha)) {
                         if (iconScreens.insert(client.getScreenName()+":"+*path).second) logger().info("[item-icons] rendered screen={} path={} pos=({}, {}) size=({}, {})",
                             client.getScreenName(),*path,pos.x,pos.y,size.x,size.y);
                         auto count=++iconDrawCounts[client.getScreenName()+":"+*path];
-                        if (count==1 || count==120 || count==1200) logger().info("[item-icons] redraw screen={} path={} draws={} material={}",client.getScreenName(),*path,count,model::SlotIconMaterial);
+                        if (count==1 || count==120 || count==1200) logger().info("[item-icons] redraw screen={} path={} draws={}",client.getScreenName(),*path,count);
                         return;
                     }
                 }
@@ -475,7 +469,7 @@ LL_TYPE_STATIC_HOOK(PackFlyingIcon,ll::memory::HookPriority::Normal,FlyingItemRe
         auto path=identity ? pack::itemIcon(TaczMod::getInstance().gunPacks(),*identity) : std::nullopt;
         if (path) {
             std::lock_guard lock(cacheMutex);
-            if (bindImages(context) && image(context,*path,{x,y},{16*scale,16*scale},White,alpha,{0,0},{1,1},true)) {
+            if (bindImages(context) && image(context,*path,{x,y},{16*scale,16*scale},White,alpha)) {
                 if (iconDiagnostics.insert("flying:"+client.getScreenName()+":"+*path).second)
                     logger().info("[item-icons] flying rendered screen={} identity={} x={} y={} scale={} zOrder={}",client.getScreenName(),identity->id.toString(),x,y,scale,zOrder);
                 return;
@@ -518,7 +512,7 @@ LL_TYPE_INSTANCE_HOOK(PackTooltipPaint,ll::memory::HookPriority::Normal,HoverTex
             logger().info("[item-icons] tooltip painted screen={} path={}",client.getScreenName(),icon.path);
     }
 }
-bool slotHook=false,slotUpdateHook=false,batchHook=false,tooltipFontHook=false,tooltipPaintHook=false,passesHook=false,materialHook=false,flyingHook=false,cloneHook=false;
+bool slotHook=false,slotUpdateHook=false,batchHook=false,tooltipFontHook=false,tooltipPaintHook=false,passesHook=false,flyingHook=false,cloneHook=false;
 void draw(MinecraftUIRenderContext& context) {
     auto generation=shooter::worldToken(); if (!generation) return;
     IClientInstance& client=context.mClient;
@@ -611,13 +605,12 @@ void enable() {
     slotUpdateHook=PackSlotUpdate::hook()==0;
     batchHook=PackSlotBatch::hook()==0;
     passesHook=PackSlotPasses::hook()==0;
-    materialHook=PackSlotMaterial::hook()==0;
     flyingHook=PackFlyingIcon::hook()==0;
     cloneHook=PackSlotClone::hook()==0;
     tooltipFontHook=PackTooltipFont::hook()==0;
     tooltipPaintHook=PackTooltipPaint::hook()==0;
     logger().info("[item-icons] update={} render={} batchRoute={} tooltipFont={} tooltipPaint={} (actual screen draws logged separately)",slotUpdateHook,slotHook,batchHook,tooltipFontHook,tooltipPaintHook);
-    logger().info("[item-icons] flatPasses={} spriteMaterial={} flying={} clone={} cursor=controller-slot",passesHook,materialHook,flyingHook,cloneHook);
+    logger().info("[item-icons] flatPasses={} flying={} clone={} cursor=controller-slot",passesHook,flyingHook,cloneHook);
     listener=ll::event::EventBus::getInstance().emplaceListener<ll::event::AfterUIRenderEvent>([](ll::event::AfterUIRenderEvent& event) {
         if (!shooter::worldToken()) return;
         auto const& tree=event.screenView().mVisualTree;
@@ -649,7 +642,6 @@ void disable() {
     if (slotUpdateHook) PackSlotUpdate::unhook(); slotUpdateHook=false;
     if (batchHook) PackSlotBatch::unhook(); batchHook=false;
     if (passesHook) PackSlotPasses::unhook(); passesHook=false;
-    if (materialHook) PackSlotMaterial::unhook(); materialHook=false;
     if (flyingHook) PackFlyingIcon::unhook(); flyingHook=false;
     if (cloneHook) PackSlotClone::unhook(); cloneHook=false;
     if (tooltipFontHook) PackTooltipFont::unhook(); tooltipFontHook=false;
