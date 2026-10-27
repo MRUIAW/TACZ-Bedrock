@@ -10,6 +10,23 @@ round, the minor number goes up by 1 for each finished feature or phase.
 
 ## [0.3.30] - 2026-10-27
 
+### Part 2 — continuous sprite icons and cursor/flying previews
+
+- Keep pack slots dirty on update rather than caching an empty immediate-draw mesh;
+  draw on each render using cached renderer/owner/world/base/aux identity. Refresh
+  on render if the owner/cache changed. Native clone copies only value sidecar data
+  and must resolve its own owner before painting. Unknown identity/failed paint
+  falls back native; no blanket placeholder hiding.
+- Use one flat sprite pass/material for known slot PNGs, not native item/glint
+  passes. The installed vanilla sprite material uses source-over destination alpha
+  (OneMinusSrcAlpha rather than DestColor). Preserve RGBA8 and set alpha usage after
+  raw-image replacement; log transparent/partial/opaque pixel counts. HUD and tooltip
+  keep their existing material selection. Real alpha/persistent screen pixels need testing.
+- Cursor-specific inventory_selected_icon controls resolve the controller's active
+  cursor SlotData, not the hovered slot. FlyingItemRenderer::_renderGuiIcon uses
+  its full FlyingItem ItemStack and native coordinates/scale; missing identity stays
+  native. Held/dropped3D appearance remains out of scope.
+
 ### Part 1 — vanilla inventory and pickup, bridge limits
 
 - User-tested0.3.29: chest shift-click both ways (including53+60), hoppers, and

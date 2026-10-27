@@ -4,6 +4,15 @@ namespace tacz::pack {
 class GunPackRegistry;
 enum class ItemKind { Gun,Ammo,Attachment };
 struct ItemIdentity { ItemKind kind; ResourceId id; bool operator==(ItemIdentity const&) const=default; };
+struct SlotIconBinding {
+    uint64_t generation=0;
+    uintptr_t owner=0;
+    int renderId=0,aux=0;
+    std::optional<ItemIdentity> identity;
+    bool matches(uint64_t current,uintptr_t requestedOwner,int id,int auxiliary) const {
+        return identity && current && current==generation && (!requestedOwner || requestedOwner==owner) && id==renderId && auxiliary==aux;
+    }
+};
 struct SlotIdentitySelection {
     std::optional<ItemIdentity> identity;
     bool ambiguous=false;

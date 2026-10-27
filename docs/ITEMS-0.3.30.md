@@ -28,3 +28,40 @@ hasSameUserData只留下**至少一侧带StringTag TaczAutoName**的旧自动名
 Part1验证：双端Release、192项测试／917,613条断言、diff检查通过。
 确认游戏关闭后已部署；DLL/PDB/manifest、RP/BP全文件哈希一致。
 DLL SHA256：`2d208dacad4e105a5899a6e3c5cccec2ea9ffb94051b2c4af0567f1e7fce5286`。
+
+## Part2：持续sprite绘制、alpha与拖拽
+
+0.3.29已有正确source及rendered，只证明入口/上传/一次提交，不证明后续帧、offscreen composite或像素。
+旧update仅在身份变化时返回changed，而本模块drawImage/flushImages是即时提交，不生成可重播的原生item mesh。
+现在已知pack图标的update持续返回dirty；每次slot render使用缓存身份绘制，未知/owner不符时通过当前scene重新解析。
+绑定额外验证base/aux；clone仅复制身份值并标为owner未绑定，绘制前必须重新解析当前owner。无world时不做自定义工作。
+已知PNG改用单次sprite材质/渲染pass，不让原生占位mesh/glint后续pass覆盖。数量标签仍为UI独立原生控件。
+未知身份/资源或绘制失败直接origin，不修改mHidingIcon，不全局隐藏原图；尊重原生hidden状态。
+
+### Alpha证据
+
+本机 `data/resource_packs/vanilla/materials/ui.material`：ui_base第10–14行已有Blending；
+ui_textured_and_glcolor第222行alphaDst=DestColor，而ui_textured_and_glcolor_sprite第238–240行改为OneMinusSrcAlpha。
+因此不是盲目声称“旧材质完全没开混合”，而是槽图显式使用原版sprite/source-over目标alpha路径与UIMaterialType::TexturedAndGlcolorSprite。
+RGBA8上传不删alpha、不预乘；setRawImage后再设置AlphaUsage::Transparent，避免metadata被替换。
+上传日志记录alphaZero/alphaPartial/alphaOpaque；HUD及tooltip的材质参数保持原有选择不改。
+这是源码材质与提交路径的修复；黑边/透明像素、RTX/offscreen合成仍需实机确认。
+
+### Cursor与flying
+
+Mojang ui_common.json的inventory_selected_icon继承common.item_renderer，但绑定#inventory_selected_item而不是普通collection；
+inventory_icon_panel使用selected_item_icon，inventory_selected_icon_button跟随cursor。只对这些明确cursor控件，
+且controller::_isCursorSelectedActive时，读mCursorSlotData()，再走_getVisualItemStack。
+不使用hovered/当前热栏枪替换cursor，不猜GunId；仍校验base/aux与完整栈身份。
+飞行动画另由FlyingItemRenderer::_renderGuiIcon处理，当前26.51.7 SDK有完整ui::FlyingItem（内含ItemStack），
+本次typed static hook直接用该栈身份、native x/y/scale/alpha，缺身份/PNG时origin。
+所有新签名均static_assert，未构造UIItemRenderInfo等opaque by-value类型。
+
+`[item-icons] redraw`在draws=1/120/1200记录，确认持续提交而非一次性rendered；
+cursor-source、flying rendered及alpha上传计数用于区分数据/绘制/透明问题。
+目标：热栏、背包、箱子、漏斗公共renderer，光标持有图与飞行动画；特殊资源包UI名称可能不在cursor识别表内，安全回退。
+飞行动画定位/缩放与native叠层需复测；手持/地面3D模型明确不在本版实现。
+
+Part2验证：双端Release、195项测试／917,818条断言、diff检查通过；游戏关闭时已部署，两端文件与RP/BP哈希匹配。
+DLL SHA256：`ce7bc5c9900558569fe68be9d839fb7869d77c957dc5763a243d6f81c01bb1cf`。
+本轮未启动游戏，连续显示/透明/拖拽仍待实机验收，不能据纯测试宣布里程碑已全部通过。
