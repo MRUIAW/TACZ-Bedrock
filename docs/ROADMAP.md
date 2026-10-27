@@ -61,7 +61,8 @@
 - 0.3.27创造/生存拾取测试通过；槽图祖先名称正确，但callback index恒0x46CF9F9C。
 - Part1仅以callback收集名称，用typed findCollectionIndex取标量索引；检查范围及真实槽身份，仍待实机像素/索引验收。
 - 新ammo问题：站在地面弹药上射击/换弹后客户端数量迟同步；箱子→背包shift失败；转移量64而槽上限60留下4。
-- A1本轮先descriptor bridge观测，后续根据caller RVA/命中率分类再决定上限覆盖，不提前改变native返回值。
+- Part2安装descriptor bridge与Item/ComponentItem上限探针，仅观察；按caller RVA/线程每秒汇总、退出打印total。
+  候选缓存的地址复用/复制/时效边界仍有限制；后续根据命中率分类再决定上限覆盖，不提前改变native返回值，三个ammo bug仍待修复。
 
 ## 后续队列（按顺序）
 

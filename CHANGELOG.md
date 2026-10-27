@@ -10,6 +10,22 @@ round, the minor number goes up by 1 for each finished feature or phase.
 
 ## [0.3.28] - 2026-10-27
 
+### Part 2 — descriptor stack-limit probe (observe only)
+
+- Observe ItemStackBase::getDescriptor and Item/ComponentItem max-stack getters.
+  Bridge mImpl BaseDescriptor allocation + thread to validated AmmoId/pack limit;
+  keep moves on the same allocation, propagate observed InternalItemDescriptor
+  clones/descriptor assignments, invalidate observed Item/name constructors.
+- This is a bounded250ms, per-world candidate cache, NOT a lifetime proof. Unseen
+  constructors/destruction/address reuse and inlined/cross-thread copies remain
+  limits. Never dereference cached pointers or change descriptors/Item fields.
+- Every inner getter returns its native result unchanged. Once-per-second caller
+  RVA/thread summaries record native/would histograms, candidate resolution and
+  misses/expiry; world exit prints totals and clears state. Existing AmmoId stack
+  getter and custom inventory behaviour remain unchanged; the three ammo bugs are
+  not fixed by measurement. Current26.51.7 SDK signatures/sizes checked; older
+  26.20.7 source used only to identify candidates, not to copy layouts/signatures.
+
 ### 0.3.27 user results / Part 1 — scalar slot index
 
 - Creative pickup matches vanilla; survival scripted pickup accepted. Icons remain

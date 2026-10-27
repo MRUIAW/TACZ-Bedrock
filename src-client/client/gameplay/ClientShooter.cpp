@@ -43,6 +43,7 @@
 #include "gun/ClientWorldSession.h"
 #include "mod/TaczMod.h"
 #include "nbt/AmmoItem.h"
+#include "nbt/StackLimitProbe.h"
 #include "nbt/GunItem.h"
 #include "net/GunPackets.h"
 
@@ -422,6 +423,7 @@ void endWorld(IClientInstance const* client) {
     // global service when exit callbacks arrive. Request-leave runs before that teardown.
     sound::stopAnimation();
     worldSession.close();
+    nbt::releaseStackLimitProbe();
     hud::releaseWorld(client);
     recoil::requestClear();
     render::releaseWorld(client);
