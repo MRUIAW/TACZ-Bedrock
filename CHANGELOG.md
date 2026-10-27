@@ -10,6 +10,17 @@ round, the minor number goes up by 1 for each finished feature or phase.
 
 ## [0.3.30] - 2026-10-27
 
+### Part 3 — lean enforcing bridge
+
+- Keep descriptor identity/clone/constructor invalidation, Item/aux/thread/session/
+  TTL checks and AmmoId enforcement unchanged. Remove runtime caller maps, histograms,
+  return-address/PE-image collection, per-second summary/bridge and exit total dumps.
+  Retain one install line and one world-exit error-count line (`stats=off`).
+- Resolve the enforcement limit under one cache lock; steady-state world tick
+  returns immediately after Item registration. Historical statistics pure fixtures
+  move to tests only, not production code. Add explicit validated-limit/native-fallback
+  regression tests. No stack policy, creative behaviour or bridge lifetime changes.
+
 ### Part 2 — continuous sprite icons and cursor/flying previews
 
 - Keep pack slots dirty on update rather than caching an empty immediate-draw mesh;

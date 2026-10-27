@@ -12,6 +12,10 @@
 单元测试 `tests/DescriptorProbeTests.cpp`。测量与验收记录：`docs/ITEMS-0.3.25.md`、
 `docs/ITEMS-0.3.28.md`、`CHANGELOG.md` 0.3.28 / 0.3.29。
 
+**0.3.30更新**：生产运行时已移除caller/RVA/周期summary/total统计，保留桥与enforce；
+只打印安装状态和world-exit错误数。逐路径add/canAdd/take及重复外层max hook已移除，
+仅保留旧TaczAutoName兼容。以下测量示例为0.3.28–0.3.29历史，详见`ITEMS-0.3.30.md`。
+
 ---
 
 ## 1. 能做到什么
@@ -72,7 +76,7 @@ struct InternalItemDescriptor : ItemDescriptor::BaseDescriptor {   // 24 字节
 | `ItemStackBase::isStackable` | `0x2488ce8` |
 | `FillingContainer::_getSlotWithRemainingSpace` | `0x25a4835` |
 | `FillingContainer::_addResource`（源/目标） | `0x25a3ebb` / `0x25a4051` |
-| `ItemStackBase::getMaxStackSize` 本身 | `0x247de54` |
+| `ItemStackBase::getMaxStackSize` 本身 | `0x247df8a`（0.3.30重新核对0x247df40函数的调用后地址） |
 | 物品请求/容器转移相关 | `0x7c98b20`、`0x7c993dc`、`0x7c9a5e4`、`0x2060bd7`、`0x206194e`、`0x2061ca8`、`0x4601fc8`、`0x997035f`、`0x998e523`、`0x998e69e` |
 
 ### 2.3 只 hook 外层会出什么问题
@@ -124,7 +128,6 @@ struct DescriptorRecord {
     int limit=0;           // 该种类的堆叠上限
     std::string ammo;      // 种类 ID，便于日志
     uint64_t bornMs=0;     // 生成时间
-    uint64_t producer=0;   // 生产调用者地址（诊断）
     bool copied=false;     // 是否经复制传播而来
 };
 class DescriptorBridge {
@@ -208,13 +211,15 @@ int observe(Item const& item,ItemDescriptor const& descriptor,int native,...) {
 
 ### 4.5 开关与日志
 
-- `constexpr bool EnforceLimit` 控制是否真正改返回值；为 `false` 时是纯测量模式，只统计不改行为。
-- 每秒输出 `[stack-probe] summary`，退出世界输出 `total` 与 `world-exit`，按"调用者 RVA + 线程 + 路线"
-  汇总：调用次数、命中/未命中数、原版值直方图、桥接值直方图、种类直方图、未命中原因。
+- `constexpr bool EnforceLimit` 控制是否真正改返回值；当前生产版本true。0.3.30设false只会停用覆盖，**不会自动恢复测量代码**。
+- 0.3.28–0.3.29曾每秒输出summary/退出total，按caller/thread/route统计；0.3.30已删除这些运行时表及采集，
+  只留一条install和world-exit errors。若为新物品/版本重新测量，应参考历史测量实现，不可将“无日志”当作全路径命中。
 
 ## 5. 推荐的接入流程：先测量，再生效
 
 ### 5.1 测量
+
+以下为历史0.3.28流程（可参考`c98cbe4`的观测实现）；当前精简版须先临时接入测量代码，不能只翻转EnforceLimit。
 
 先以 `EnforceLimit=false` 运行，在游戏里把所有相关操作做一遍（拾取、部分拾取、箱子 shift 双向、
 拖拽、拆分、漏斗、消耗物品、生存/创造），然后看日志：
@@ -256,8 +261,8 @@ int observe(Item const& item,ItemDescriptor const& descriptor,int native,...) {
 - **直接读字段**：如果游戏某处不调用虚函数，而是直接读 `Item::mMaxStackSize`（偏移 `+0xa8`），
   桥接管不到。目前只确认了虚函数本身在读这个字段；测量日志里完全不出现的路径，不能据此断言它不读上限。
 - **上限范围**：基岩版堆叠数是 `uchar` 且原版限制在 1..64；大于 64 的配置按 64 处理。
-- **性能**：每次 `getDescriptor()` 都会经过 hook，我们的物品会加锁写一次 map。本项目里每个世界会话
-  有数十万次 descriptor 生产，开销可接受；若要更省，可把统计日志去掉，或把 map 换成无锁小表。
+- **性能**：getDescriptor仍经过hook、桥仍需要锁/map/TTL时钟；0.3.30已去掉运行时caller统计及日志分配，
+  不再额外为统计加锁；已登记Item后的level tick直接返回。不得为省开销跳过身份/会话校验。
 - **与旧补丁的冲突**：桥接生效后，之前为单条路径写的补丁（例如自定义 `Inventory::canAdd`）可能变成
   多余甚至有害。本项目 0.3.29 实测：自定义 `canAdd` 覆盖了原版"创造模式下放不下也返回 true"的语义，
   导致创造模式背包满时不再吸取掉落物。桥接生效后应逐个移除这类补丁，让原版逻辑自己判断。

@@ -1,8 +1,9 @@
 #include <doctest/doctest.h>
 #include "pack/DescriptorProbe.h"
+#include "DescriptorProbeStatistics.h"
 using namespace tacz::pack::probe;
 namespace {
-DescriptorRecord ammo(uint64_t born=1000) { return {1234,0,60,"tacz:762x39",born,0x25a4822,false}; }
+DescriptorRecord ammo(uint64_t born=1000) { return {1234,0,60,"tacz:762x39",born,false}; }
 }
 TEST_CASE("Descriptor bridge keys allocation identity plus thread, not descriptor wrapper or ItemId") {
     DescriptorBridge bridge;
@@ -29,15 +30,15 @@ TEST_CASE("Probe copies retain original expiry and world cleanup clears all cand
     CHECK(bridge.lookup(10,300,1234,0,1250).record->copied);
     CHECK(bridge.lookup(10,300,1234,0,1251).status==Resolution::Expired);
     CHECK(bridge.lookup(10,200,1234,0,999).status==Resolution::Expired);
-    CHECK(bridge.copied==1);
-    bridge.clear(); CHECK(bridge.size()==0); CHECK(bridge.published==0);
+    CHECK(bridge.lookup(10,300,1234,0,1201).record->ammo=="tacz:762x39");
+    bridge.clear(); CHECK(bridge.size()==0);
     CHECK(bridge.lookup(10,200,1234,0,1001).status==Resolution::Missing);
 }
 TEST_CASE("Measurement bridge is bounded and never interprets cached pointers as native objects") {
     DescriptorBridge bridge;
     bridge.put(1,0,ammo()); CHECK(bridge.size()==0);
     for (uintptr_t i=1;i<=DescriptorBridge::Capacity+1;++i) bridge.put(1,i,ammo());
-    CHECK(bridge.size()==1); CHECK(bridge.capacityCleared==DescriptorBridge::Capacity);
+    CHECK(bridge.size()==1); CHECK(bridge.lookup(1,DescriptorBridge::Capacity+1,1234,0,1001).record.has_value());
     CHECK(bridge.lookup(1,1,1234,0,1001).status==Resolution::Missing);
 }
 TEST_CASE("Probe aggregates actual native values and hypothetical limits by caller and thread") {
@@ -62,4 +63,17 @@ TEST_CASE("Probe caller aggregation cap counts overflow without growing indefini
     CHECK_FALSE(samples.add({999999,1,true,0},64,{})); CHECK(samples.dropped==1);
     CHECK(samples.total.size()==Samples::Capacity);
     CHECK(samples.add({0,1,true,0},64,{})); CHECK(samples.total.at({0,1,true,0}).calls==2);
+}
+TEST_CASE("Lean descriptor enforcement preserves validated-limit and native-fallback semantics") {
+    Lookup hit{Resolution::Candidate,ammo()};
+    CHECK(descriptorLimit(hit,64)==60);
+    hit.record->limit=48; CHECK(descriptorLimit(hit,64)==48);
+    hit.record->limit=0; CHECK(descriptorLimit(hit,64)==64);
+    hit.record->limit=-1; CHECK(descriptorLimit(hit,64)==64);
+    hit.record=ammo();
+    for (auto status:{Resolution::Missing,Resolution::Expired,Resolution::FingerprintMismatch}) {
+        hit.status=status; CHECK(descriptorLimit(hit,64)==64);
+    }
+    hit.status=Resolution::Candidate; hit.record.reset(); CHECK(descriptorLimit(hit,64)==64);
+    CHECK(descriptorLimit({},0)==0);
 }

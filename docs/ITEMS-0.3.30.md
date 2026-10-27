@@ -65,3 +65,24 @@ cursor-source、flying rendered及alpha上传计数用于区分数据/绘制/透
 Part2验证：双端Release、195项测试／917,818条断言、diff检查通过；游戏关闭时已部署，两端文件与RP/BP哈希匹配。
 DLL SHA256：`ce7bc5c9900558569fe68be9d839fb7869d77c957dc5763a243d6f81c01bb1cf`。
 本轮未启动游戏，连续显示/透明/拖拽仍待实机验收，不能据纯测试宣布里程碑已全部通过。
+
+## Part3：桥接enforce保持，移除运行时统计
+
+删除Samples/caller表、直方图、RVA/_ReturnAddress/PE采集、每秒summary/bridge、退出total dump，
+以及无用producer/clone/构造次数统计与每次registered日志。只留stack-probe install与world-exit(errors, enforce, stats=off)各一行。
+历史统计纯模型移到tests/DescriptorProbeStatistics.h，只服务旧测量回归，生产代码不再包含/实例化它。
+
+保留EnforceLimit=true、已验证Item地址过滤、thread+mImpl键、Item/aux/world/250ms/capacity校验，
+ctor失效、clone/assignment传播和native fallback均不变；有效Candidate且limit>0才覆盖native。
+纯helper descriptorLimit覆盖valid/missing/expired/fingerprint mismatch/no record/非正limit的行为。
+一次锁完成内层lookup/验证/返回，不再为统计另加锁；Item已登记后的level tick直接返回，不做周期汇总。
+没有开启新策略，也没有放宽旧候选生命周期。未观测构造/同指纹地址复用/跨线程复制等既有桥接风险仍然存在。
+
+最终验收：生存部分拾取/持久化/无声；创造满包吸入并丢弃；箱子双向shift、53+60、漏斗、拖拽拆分；
+热栏/背包/箱子/漏斗槽图持续显示（含反复开关）、透明背景、cursor持有/飞行图标；主菜单/换世界/RTX回归。
+日志看redraw/cursor-source/flying rendered/alpha计数；桥默认不再有summary/total，退出errors应为0。
+
+Part3验证：双端Release、196项测试／917,826条断言、diff检查通过；游戏关闭时已部署最终0.3.30/client。
+DLL/PDB/manifest与RP/BP全文件哈希一致；最终DLL SHA256：
+`ff9bb962593269afaea597402154dc6c9c49e0b9ee0f9dc3530cfdec004d83fb`。
+本轮没有启动游戏，原生回归及实际像素仍待用户验收；ROADMAP保持里程碑/物品系统🟡，不因编译通过标为全部完成。
