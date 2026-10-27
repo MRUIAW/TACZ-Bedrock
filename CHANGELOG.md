@@ -8,6 +8,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 Versioning rule for this project: the patch number goes up by 1 for each small item or test
 round, the minor number goes up by 1 for each finished feature or phase.
 
+## [0.3.27] - 2026-10-27
+
+### Part 1 — keep vanilla creative pickup
+
+- User-tested0.3.26 `9966c25`: survival partial pickup and persisted ground remainder
+  are correct. Partial pickup has no sound in vanilla Bedrock either: leave it unchanged.
+- Per user decision, remove Actor::isCreative hook, its take scope and suppression
+  helper. Creative intentionally discards overflow like vanilla; do not preserve it
+  artificially. Keep survival's false-with-remainder add contract and native actor
+  transaction, with no A2 splitting or post-take correction.
+- Keep raw/effective post-take counts, removal/pending-removal state and conservation
+  diagnostics. Log actual adds without the canAdd sampling cap. Creative discard
+  is separately reported (conserved may be false as intended; accounted includes
+  intentional discard). No game-mode, sound or installed-gunpack changes.
+
 ## [0.3.26] - 2026-10-27
 
 ### Part 1 — partial pickup data loss
