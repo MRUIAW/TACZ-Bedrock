@@ -2,7 +2,7 @@ add_rules("mode.debug", "mode.release")
 
 -- Single source of the mod version. Keep tooth.json "version" in sync.
 -- Patch +1 per small item / test round; minor +1 per finished feature or phase.
-local tacz_version = "0.3.32"
+local tacz_version = "0.3.33"
 set_version(tacz_version)
 
 add_repositories("levimc-repo https://github.com/LiteLDev/xmake-repo.git")

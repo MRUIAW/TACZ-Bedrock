@@ -462,22 +462,33 @@ LL_TYPE_INSTANCE_HOOK(PackSlotIcon,ll::memory::HookPriority::Normal,InventoryIte
 }
 using FlyingDraw=void (*)(MinecraftUIRenderContext&,IClientInstance&,ui::FlyingItem&,float,float,float,float,int);
 static_assert(std::is_same_v<decltype(&FlyingItemRenderer::_renderGuiIcon),FlyingDraw>);
-LL_TYPE_STATIC_HOOK(PackFlyingIcon,ll::memory::HookPriority::Normal,FlyingItemRenderer,&FlyingItemRenderer::_renderGuiIcon,void,
-    MinecraftUIRenderContext& context,IClientInstance& client,ui::FlyingItem& item,float x,float y,float alpha,float scale,int zOrder) {
-    if (enabled && shooter::worldToken() && shooter::ownsClient(&client) && std::isfinite(scale) && scale>0) try {
+// LL26.51.9 still declares an extra transparency parameter. Keep that SDK
+// assertion above so an upstream correction requires review. The direct caller in
+// 1.26.51.01 (RVA 0x55689c7 -> 0x5568a30) passes x in xmm3, then y/scale/int
+// zOrder at caller rsp+20/+28/+30. The callee reads precisely these 7 arguments
+// and supplies constant transparency=1 to renderGuiItemNew. See ITEMS-0.3.33.md.
+// Cast the SDK symbol's ADDRESS only; neither detour nor trampoline may call the
+// erroneous 8-argument declaration. No RVA-based installation or invented alpha.
+using NativeFlyingDraw=void (*)(MinecraftUIRenderContext&,IClientInstance&,ui::FlyingItem&,float,float,float,int);
+LL_TYPE_STATIC_HOOK(PackFlyingIcon,ll::memory::HookPriority::Normal,FlyingItemRenderer,
+    reinterpret_cast<NativeFlyingDraw>(&FlyingItemRenderer::_renderGuiIcon),void,
+    MinecraftUIRenderContext& context,IClientInstance& client,ui::FlyingItem& item,float x,float y,float scale,int zOrder) {
+    auto size=model::flyingIconSize(x,y,scale);
+    if (enabled && shooter::worldToken() && shooter::ownsClient(&client) && size) try {
         auto identity=nbt::readItemIdentity(item.item.get());
         auto path=identity ? pack::itemIcon(TaczMod::getInstance().gunPacks(),*identity) : std::nullopt;
         if (path) {
             std::lock_guard lock(cacheMutex);
-            if (bindImages(context) && image(context,*path,{x,y},{16*scale,16*scale},White,alpha)) {
+            if (bindImages(context) && image(context,*path,{x,y},{*size,*size},White,1.0f)) {
                 if (iconDiagnostics.insert("flying:"+client.getScreenName()+":"+*path).second)
                     logger().info("[item-icons] flying rendered screen={} identity={} x={} y={} scale={} zOrder={}",client.getScreenName(),identity->id.toString(),x,y,scale,zOrder);
                 return;
             }
         }
     } catch (std::exception const& e) { if (!warned.exchange(true)) logger().warn("[item-icons] flying fallback: {}",e.what()); }
-    origin(context,client,item,x,y,alpha,scale,zOrder);
+    origin(context,client,item,x,y,scale,zOrder);
 }
+static_assert(std::is_same_v<decltype(&PackFlyingIcon::detour),NativeFlyingDraw>);
 using TooltipFontSignature=void (Font::*)(ScreenContext&,std::string_view,float,float,mce::Color const&,bool,bool,bool,mce::MaterialPtr const*,int,bool,float,mce::Color const&,mce::Color const&,float,float,OffscreenCaptureDescription const&,bool);
 static_assert(std::is_same_v<decltype(&Font::$drawCached),TooltipFontSignature>);
 static_assert(std::is_same_v<decltype(&HoverTextRenderer::$render),void (HoverTextRenderer::*)(MinecraftUIRenderContext&,IClientInstance&,UIControl&,int)>);

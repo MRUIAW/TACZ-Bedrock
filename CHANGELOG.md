@@ -8,6 +8,40 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 Versioning rule for this project: the patch number goes up by 1 for each small item or test
 round, the minor number goes up by 1 for each finished feature or phase.
 
+## [0.3.33] - 2026-10-28
+
+### Upgraded — LeviLamina 26.51.9
+
+- Pin the SDK and both tooth LL dependencies to26.51.9; upstream selects
+  bedrockdata v26.51.1-server.12/client.12. All existing hook signature/layout
+  assertions pass unchanged. The upgrade was built/tested and committed separately.
+- Note ClientSkin/ClientSkinSystem/ActorResourceDefinition availability for the
+  later skin stage; do not use new skin APIs yet. Keep the descriptor bridge:
+  ItemDescriptor copy/move constructor thunks and Item::buildDescriptor are still absent.
+
+### Fixed — container quick-move flying icon ABI
+
+- Native caller0x55689c7→callee0x5568a30 in1.26.51.01 passes **7** arguments:
+  context/client/FlyingItem/x/y/scale/int zOrder. Both SDK versions incorrectly
+  declare an extra transparency before scale. The old hook read zOrder23 as a
+  subnormal float (~3.2e-44), drew16*scale≈0, and suppressed origin.
+- Use a proven7-argument detour AND trampoline, taking only the SDK symbol's
+  address through a corrected function-pointer type. Preserve the SDK declaration
+  assertion and separately assert the native detour type. No RVA-installed hooks.
+- Reuse native quintic-eased x/y/scale unchanged;16*scale slot size and constant
+  alpha1 match the native flat-item call. Invalid/nonfinite coordinates or scale
+  outside[0.1,16], missing identity/texture or failed draw fall back to native.
+  No PNG/blend experiments or changes to normal/cursor/tooltip icon routes.
+- Add regression tests for scaled slot size and rejected parameters, including
+  the exact integer23-as-float failure. Player inventory without native flying
+  animation remains expected. New in-game animation/layering checks are pending.
+
+### Confirmed — 0.3.32 user acceptance
+
+- Both scenarios pass: full inventory + ground-ammo reload, and no-ground
+  fire30 then reload with immediate backpack decrement. Keep the accepted gun
+  balanced write, real-time gun-slot packets and native ammo pickup unchanged.
+
 ## [0.3.32] - 2026-10-28
 
 ### 0.3.31 user results / corrected root cause
