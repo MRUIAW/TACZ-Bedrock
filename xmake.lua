@@ -16,7 +16,7 @@ option_end()
 -- add_requires("levilamina x.x.x") for a specific version
 -- add_requires("levilamina develop") to use develop version
 -- please note that you should add bdslibrary yourself if using dev version
-add_requires("levilamina 26.51.7", {configs = {target_type = get_config("target_type")}})
+add_requires("levilamina 26.51.9", {configs = {target_type = get_config("target_type")}})
 
 add_requires("levibuildscript")
 
