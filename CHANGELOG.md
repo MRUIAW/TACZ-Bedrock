@@ -10,6 +10,18 @@ round, the minor number goes up by 1 for each finished feature or phase.
 
 ## [0.3.27] - 2026-10-27
 
+### Part 2 — item icon ancestor slot lookup
+
+- Finish the staged ancestor lookup as a separate0.3.27 commit. Walk the renderer
+  owner's parent chain (bounded/cycle checked) and resolve the nearest valid slot
+  collection through the container controller or local HUD inventory. Preserve
+  base/aux validation, ambiguity rejection, owner/world checks and cleanup; never
+  borrow a sibling/hovered slot or an outer grid after the nearest scope fails.
+- Log ancestor control names, collection/index, selected depth/identity and the
+  existing resolve/source/rendered evidence for a few samples per screen. Mojang
+  templates bind collections on grid/item scopes; the exact live ancestor names
+  and successful icon pixels still need the new runtime logs, not just compilation.
+
 ### Part 1 — keep vanilla creative pickup
 
 - User-tested0.3.26 `9966c25`: survival partial pickup and persisted ground remainder

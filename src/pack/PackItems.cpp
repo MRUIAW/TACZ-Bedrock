@@ -4,6 +4,11 @@
 #include <algorithm>
 #include <stdexcept>
 namespace tacz::pack {
+std::optional<size_t> nearestSlotCollectionLevel(std::vector<std::vector<SlotCollectionIndex>> const& levels) {
+    for (size_t i=0;i<levels.size();++i)
+        for (auto const& slot:levels[i]) if (!slot.collection.empty() && slot.index>=0) return i;
+    return std::nullopt;
+}
 bool SlotIdentitySelection::offer(int renderId,int renderAux,int sourceId,int sourceAux,std::optional<ItemIdentity> const& source) {
     if (ambiguous || !source || renderId!=sourceId || renderAux!=sourceAux) return false;
     if (identity && identity!=source) { identity.reset(); ambiguous=true; return false; }

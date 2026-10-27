@@ -9,6 +9,8 @@ struct SlotIdentitySelection {
     bool ambiguous=false;
     bool offer(int renderId,int renderAux,int sourceId,int sourceAux,std::optional<ItemIdentity> const& source);
 };
+struct SlotCollectionIndex { std::string collection; int index=-1; };
+std::optional<size_t> nearestSlotCollectionLevel(std::vector<std::vector<SlotCollectionIndex>> const& ownerToRoot);
 std::string_view itemType(ItemKind kind);
 std::string_view identityKey(ItemKind kind);
 std::optional<ItemIdentity> itemIdentity(nlohmann::json const& tag);

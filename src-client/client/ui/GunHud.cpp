@@ -270,8 +270,36 @@ LL_TYPE_INSTANCE_HOOK(PackSlotUpdate,ll::memory::HookPriority::Normal,InventoryI
     auto view=scene.mScreenView.get();
     auto controller=view ? view->mController.get() : nullptr;
     auto containers=controller && controller->_isContainerScreen() ? static_cast<ContainerScreenController*>(controller) : nullptr;
+    // The renderer's control can be below the grid item carrying collection
+    // indices. Only walk ancestors, never children/siblings or a hovered slot.
+    bool diagnose=false;
+    if (!visual.isNull()) {
+        std::lock_guard lock(cacheMutex);
+        auto prefix="ancestor-sample:"+client.getScreenName()+":"+(visual.getTypeName().starts_with("tacz:") ? "pack:" : "any:");
+        for (int n=0;n<3;++n) if (iconDiagnostics.insert(prefix+std::to_string(n)).second) { diagnose=true; break; }
+    }
+    std::vector<std::vector<pack::SlotCollectionIndex>> levels;
+    std::vector<UIControl const*> seen;
+    std::shared_ptr<UIControl> ancestor;
+    auto current=&owner;
+    for (int depth=0;current && depth<32;++depth) {
+        if (std::find(seen.begin(),seen.end(),current)!=seen.end()) break;
+        seen.push_back(current);
+        std::vector<pack::SlotCollectionIndex> indices;
+        auto collect=[&](std::string const& collection,int index) { indices.push_back({collection,index}); };
+        current->findAllCollectionIndices(collect);
+        levels.push_back(std::move(indices));
+        if (diagnose) {
+            logger().info("[item-icons] ancestor screen={} depth={} control={} collectionCount={}",client.getScreenName(),depth,current->mName.get(),levels.back().size());
+            for (auto const& slot:levels.back()) logger().info("[item-icons] ancestor-index screen={} depth={} control={} collection={}[{}]",client.getScreenName(),depth,current->mName.get(),slot.collection,slot.index);
+        }
+        if (!diagnose && pack::nearestSlotCollectionLevel(levels)) break;
+        ancestor=current->mParent.lock();
+        current=ancestor.get();
+    }
+    auto sourceDepth=pack::nearestSlotCollectionLevel(levels);
     auto visit=[&](std::string const& collection,int index) {
-        if (index<0) return;
+        if (collection.empty() || index<0) return;
         ItemStackBase const* full=nullptr;
         if (containers) full=&containers->_getVisualItemStack(collection,index);
         else if (client.getScreenName().starts_with("hud_screen") && collection=="hotbar_items" && index<9) {
@@ -284,15 +312,18 @@ LL_TYPE_INSTANCE_HOOK(PackSlotUpdate,ll::memory::HookPriority::Normal,InventoryI
             std::lock_guard lock(cacheMutex);
             auto key="resolve:"+client.getScreenName()+":"+collection+":"+std::to_string(index)+":"+std::to_string(full->getId());
             if (iconDiagnostics.insert(key).second) logger().info(
-                "[item-icons] resolve screen={} collection={}[{}] renderType={} copyId={} copyAux={} copyNBT={} sourceType={} sourceId={} sourceAux={} sourceNBT={} identity={} matched={}",
-                client.getScreenName(),collection,index,visual.getTypeName(),visual.getId(),visual.getAuxValue(),bool(visual.mUserData),
+                "[item-icons] resolve screen={} depth={} collection={}[{}] renderType={} copyId={} copyAux={} copyNBT={} sourceType={} sourceId={} sourceAux={} sourceNBT={} identity={} matched={}",
+                client.getScreenName(),sourceDepth.value_or(0),collection,index,visual.getTypeName(),visual.getId(),visual.getAuxValue(),bool(visual.mUserData),
                 full->getTypeName(),full->getId(),full->getAuxValue(),bool(full->mUserData),fullIdentity ? fullIdentity->id.toString() : "none",matched);
         }
         if (!matched) return;
         sourceCollection=collection; sourceIndex=index; sourceType=full->getTypeName(); sourceId=full->getId();
     };
     // This is the fully defined SDK function_ref, NOT an opaque placeholder.
-    owner.findAllCollectionIndices(visit);
+    // Nearest collection scope wins, even if unresolved: do not silently fall
+    // through to an unrelated outer grid when this slot is empty/ambiguous.
+    if (sourceDepth) for (auto const& slot:levels[*sourceDepth]) visit(slot.collection,slot.index);
+    if (diagnose) logger().info("[item-icons] ancestor-result screen={} sourceDepth={} identity={} ambiguous={}",client.getScreenName(),sourceDepth ? int(*sourceDepth) : -1,selection.identity ? selection.identity->id.toString() : "none",selection.ambiguous);
     auto identity=selection.identity; // ambiguity fails closed; never use a neighbour's gun
     auto previous=slotIdentity(this,&owner);
     {

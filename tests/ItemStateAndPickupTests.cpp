@@ -39,6 +39,17 @@ TEST_CASE("Slot identity is selected from matching full collection stacks, not r
     pack::SlotIdentitySelection other;
     CHECK(other.offer(852,0,852,0,hk)); CHECK(other.identity==hk); // same runtime base, different actual slot identity
 }
+TEST_CASE("Slot collection lookup walks owner-to-root and never substitutes an outer grid for the nearest slot") {
+    using Level=std::vector<pack::SlotCollectionIndex>;
+    CHECK_FALSE(pack::nearestSlotCollectionLevel({}));
+    CHECK_FALSE(pack::nearestSlotCollectionLevel({Level{},Level{{"",0},{"hotbar_items",-1}}}));
+    auto depth=pack::nearestSlotCollectionLevel({Level{},Level{},Level{{"hotbar_items",4}},Level{{"inventory_items",12}}});
+    REQUIRE(depth); CHECK(*depth==2);
+    depth=pack::nearestSlotCollectionLevel({Level{{"hotbar_items",0}},Level{{"inventory_items",9}}});
+    REQUIRE(depth); CHECK(*depth==0); // zero is valid, not a sentinel
+    depth=pack::nearestSlotCollectionLevel({Level{},Level{{"container_items",7},{"other",3}},Level{{"hotbar_items",1}}});
+    REQUIRE(depth); CHECK(*depth==1); // resolve/ambiguity check remains within the nearest scope
+}
 TEST_CASE("Tooltip current and maximum follow Java's effective current chamber for all bolt types") {
     pack::GunPackRegistry packs;
     std::vector<std::unique_ptr<pack::PackSource>> sources;
