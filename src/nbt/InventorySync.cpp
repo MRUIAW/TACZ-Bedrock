@@ -13,6 +13,10 @@
 #include "mc/network/packet/InventorySlotPacket.h"
 #include "mc/network/packet/InventoryContentPacket.h"
 #include "mc/world/inventory/transaction/InventoryAction.h"
+#include "mc/world/inventory/transaction/InventoryTransactionItemGroup.h"
+#include "mc/world/inventory/transaction/InventoryTransaction.h"
+#include "mc/deps/nbt/CompoundTag.h"
+#include "nbt/GunNbt.h"
 #include "mod/TaczMod.h"
 #include "nbt/AmmoItem.h"
 #include "nbt/GunItem.h"
@@ -46,6 +50,19 @@ int baselineCount(InventoryMenu& menu,int slot) {
     return slot>=0 && size_t(slot)<slots.size() ? int(slots[slot].mCount) : -1;
 }
 bool relevant(ItemStack const& item) { return readAmmoId(item).has_value() || readGun(item).has_value(); }
+struct PendingGroups {
+    int nonzero=0,gun=0,ammo=0;
+};
+PendingGroups pendingGroups(InventoryTransactionManager const& manager) {
+    PendingGroups result;
+    if (auto const& pending=manager.mCurrentTransaction.get()) for (auto const& group:pending->mContents.get()) {
+        if (!group.mCount && !group.mOverflow) continue;
+        ++result.nonzero;
+        if (group.mTag && group.mTag->contains(GunId,Tag::String)) ++result.gun;
+        if (group.mTag && group.mTag->contains(AmmoId,Tag::String)) ++result.ammo;
+    }
+    return result;
+}
 using SendPacket=void (ServerPlayer::*)(Packet&) const;
 static_assert(std::is_same_v<decltype(&ServerPlayer::$sendNetworkPacket),SendPacket>);
 LL_TYPE_INSTANCE_HOOK(AmmoSyncSend,ll::memory::HookPriority::Normal,ServerPlayer,&ServerPlayer::$sendNetworkPacket,void,Packet& packet) {
@@ -71,14 +88,23 @@ LL_TYPE_INSTANCE_HOOK(AmmoSyncAction,ll::memory::HookPriority::Normal,InventoryT
     InventoryAction const& action,bool forceBalanced) {
     if (!debug::ammoSync || !ll::service::getLevel()) return origin(action,forceBalanced);
     Player& player=mPlayer;
-    bool trace=!player.isClientSide() && (relevant(action.mFromItem.get()) || relevant(action.mToItem.get()) || std::string_view(syncReason)=="vanilla-ranged")
-        && debug::ammoServerSamples.take();
+    // In an integrated game an isClientSide-only label proved ambiguous in the
+    // 0.3.31 log. Resolve the actual ServerPlayer component, not the hosted level.
+    bool server=inventoryMenu(player)!=nullptr;
+    bool gun=readGun(action.mFromItem.get()).has_value() || readGun(action.mToItem.get()).has_value();
+    bool trace=(relevant(action.mFromItem.get()) || relevant(action.mToItem.get()) || std::string_view(syncReason)=="vanilla-ranged")
+        && (gun ? debug::ammoGunSamples.take() : server ? debug::ammoServerSamples.take() : debug::ammoClientSamples.take());
     int before=trace ? int(action.mFromItem->mCount) : 0,after=trace ? int(action.mToItem->mCount) : 0;
     auto slot=action.mSlot;
     bool pendingBefore=trace && bool(mCurrentTransaction);
+    auto groupsBefore=trace ? pendingGroups(*this) : PendingGroups{};
     origin(action,forceBalanced);
-    if (trace) logger().info("[ammo-sync] server path=InventoryTransactionManager::addAction reason={} slot={} before={} after={} forceBalanced={} pendingBefore={} pendingAfter={}",
-        syncReason,slot,before,after,forceBalanced,pendingBefore,bool(mCurrentTransaction));
+    if (trace) {
+        auto groupsAfter=pendingGroups(*this);
+        logger().info("[ammo-sync] {} path=InventoryTransactionManager::addAction reason={} gun={} slot={} before={} after={} forceBalanced={} pendingBefore={} pendingAfter={} unbalancedBefore={} unbalancedAfter={} gunGroupsBefore={} gunGroupsAfter={} ammoGroupsAfter={}",
+            server ? "server" : "client",syncReason,gun,slot,before,after,forceBalanced,pendingBefore,bool(mCurrentTransaction),
+            groupsBefore.nonzero,groupsAfter.nonzero,groupsBefore.gun,groupsAfter.gun,groupsAfter.ammo);
+    }
 }
 using SlotChanged=void (ServerPlayer::*)(IContainerManager&,Container&,int,ItemStack const&,ItemStack const&,bool);
 static_assert(std::is_same_v<decltype(&ServerPlayer::$slotChanged),SlotChanged>);
@@ -217,7 +243,8 @@ void recordSentInventorySlot(Player& player,int slot,int before,char const* reas
     }
     auto const& current=player.getInventory().getItem(slot);
     model::commitSentInventorySlot(slots,slot,current);
-    if (debug::ammoSync && debug::ammoServerSamples.take())
+    auto& samples=std::string_view(reason)=="gun-nbt" ? debug::ammoGunSamples : debug::ammoServerSamples;
+    if (debug::ammoSync && samples.take())
         logger().info("[ammo-sync] server path=explicit-InventorySlotPacket+baseline reason={} slot={} before={} after={} baselineBefore={} baselineAfter={}",
             reason,slot,before,int(current.mCount),last,baselineCount(*menu,slot));
 }

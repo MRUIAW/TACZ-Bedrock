@@ -14,11 +14,12 @@ public:
     }
 };
 inline std::atomic<bool> ammoSync{false};
-inline AmmoSyncBudget ammoServerSamples,ammoClientSamples,ammoPickupSamples,ammoPacketSamples;
+inline AmmoSyncBudget ammoServerSamples,ammoClientSamples,ammoPickupSamples,ammoPacketSamples,ammoGunSamples;
 inline void setAmmoSync(bool enabled) {
     ammoSync=false;
     ammoServerSamples.arm(enabled); ammoClientSamples.arm(enabled); ammoPickupSamples.arm(enabled);
     ammoPacketSamples.arm(enabled);
+    ammoGunSamples.arm(enabled);
     ammoSync=enabled;
 }
 }

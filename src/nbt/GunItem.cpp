@@ -10,10 +10,12 @@
 #include "mc/network/packet/InventorySlotPacket.h"
 #include "mc/world/ContainerID.h"
 #include "mc/world/actor/player/Player.h"
+#include "mc/world/actor/player/Inventory.h"
 #include "mc/world/item/ItemStack.h"
 
 #include "nbt/GunNbt.h"
 #include "nbt/InventorySync.h"
+#include "model/InventorySlotSync.h"
 #include "gun/ShootRules.h"
 
 namespace tacz::nbt {
@@ -62,7 +64,11 @@ bool writeSelectedGun(Player& player, GunItemState const& state) {
     (*tag)[GunCurrentAmmoCount] = IntTag{state.ammo};
     (*tag)[HasBulletInBarrel]   = ByteTag{state.barrel ? 1 : 0};
     item.setUserData(std::move(tag));
-    player.setSelectedItem(item);
+    // NBT is part of the native transaction balance key. A plain
+    // setSelectedItem -> Inventory::setItem leaves old-gun -1 / new-gun +1
+    // pending even though both counts are 1, blocking the next pickup's otherwise
+    // balanced actions. Finish this server-side rewrite through the native API.
+    model::writeServerInventorySlot(player.getInventory(),player.getSelectedItemSlot(),item);
     // Keep the user-verified immediate NBT-only single-slot update. Commit only
     // its corresponding native baseline, never other slots' intermediate counts.
     InventorySlotPacket packet{InventorySlotPacketPayload{ContainerID::Inventory,player.getSelectedItemSlot(),player.getSelectedItem()}};
