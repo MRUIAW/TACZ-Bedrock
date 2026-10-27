@@ -8,6 +8,34 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 Versioning rule for this project: the patch number goes up by 1 for each small item or test
 round, the minor number goes up by 1 for each finished feature or phase.
 
+## [0.3.29] - 2026-10-27
+
+### Changed — A1 descriptor bridge enforces the AmmoId stack limit
+
+- 0.3.28 measurement (log `2026-10-27.6.log`): every `Item::getMaxStackSize(descriptor)` /
+  `ComponentItem` read for `tacz:ammo` resolved through the bridge — 20 caller/thread groups
+  incl. `ItemStackBase::set`, `isStackable`, `isFullStack`, `FillingContainer` slot search and
+  hopper/container/UI/network sites, 0 unresolved, 0 errors; native always 64, AmmoId limit 60.
+- The inner getters now return the bridge's AmmoId limit when a validated candidate (same Item,
+  aux and thread, within 250 ms) exists; any unresolved read keeps the native value. One switch
+  (`EnforceLimit` in `src/nbt/StackLimitProbe.cpp`). Logs print `enforce=true`.
+- Expected to fix with the same cause: chest shift-click loss (60+49 / 4 left behind), shift-click
+  back to the inventory, hopper jamming once a target stack reaches the pack limit, client/server
+  desync when reloading while standing on ground ammo with a full inventory.
+- Not changed yet: the older per-path ammo hooks (`Inventory::add/canAdd`, `hasSameUserData`,
+  `ItemStackBase::getMaxStackSize`, observe-only `Player::take`) stay until the user test confirms
+  the bridge; the probe logging/overhead remains for that test. Icon drawing (empty after
+  opening screens, black transparency, drag preview placeholder) is unchanged.
+
+### 0.3.28 user results
+
+- Icons: identity resolution works (`findCollectionIndex` gives `hotbar_items[0..8]`, rendered
+  logs on hud/inventory/chest/hopper), but icons vanish after opening a screen, sometimes in the
+  hotbar too; transparent pixels show black; the drag preview still shows the placeholder;
+  held/dropped ammo still uses the placeholder (3D ammo models are later work).
+- Pickup/chest bugs unchanged (expected: observe only). New: hopper stops filling a new slot
+  once the target stack is at 60.
+
 ## [0.3.28] - 2026-10-27
 
 ### Part 2 — descriptor stack-limit probe (observe only)

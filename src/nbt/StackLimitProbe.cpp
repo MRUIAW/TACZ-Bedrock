@@ -30,6 +30,9 @@
 namespace tacz::nbt {
 namespace {
 namespace probe=pack::probe;
+// 0.3.28 measured every tacz:ammo inner max-stack read resolved (0 unresolved),
+// so the bridge now reports the AmmoId limit; unresolved reads stay native.
+constexpr bool EnforceLimit=true;
 std::mutex mutex;
 probe::DescriptorBridge bridge;
 probe::Samples samples;
@@ -77,9 +80,9 @@ template<class Map> std::string histogram(Map const& map) {
 }
 void print(std::map<probe::Caller,probe::Counts> const& rows,char const* phase,uint64_t token) {
     for (auto const& [site,c]:rows) logger().info(
-        "[stack-probe] {} world={} caller=0x{:x} nativeImage={} thread={} route={} calls={} resolvedCandidate={} unresolved={} different={} copyHits={} native=[{}] would=[{}] ammo=[{}] resolution=[{}] observeOnly=true",
+        "[stack-probe] {} world={} caller=0x{:x} nativeImage={} thread={} route={} calls={} resolvedCandidate={} unresolved={} different={} copyHits={} native=[{}] would=[{}] ammo=[{}] resolution=[{}] enforce={}",
         phase,token,site.address,site.nativeImage,site.thread,site.route==0 ? "Item" : "ComponentItem",c.calls,c.resolved,c.calls-c.resolved,c.different,c.copyHits,
-        histogram(c.native),histogram(c.would),histogram(c.ammo),histogram(c.status));
+        histogram(c.native),histogram(c.would),histogram(c.ammo),histogram(c.status),EnforceLimit);
 }
 void close() {
     active=0;
@@ -96,7 +99,7 @@ void close() {
         bridge.clear(); samples.clear(); produced=ctorCalls=cloneCalls=assignCalls=0; lastProduced=lastPublished=0;
     }
     print(rows,"total",token);
-    logger().info("[stack-probe] world-exit world={} producers={} ctor={} clone={} assignment={} invalidated={} capacityCleared={} cached={} droppedCallers={} errors={} observeOnly=true",token,p,c,cl,a,inv,cap,size,drop,err);
+    logger().info("[stack-probe] world-exit world={} producers={} ctor={} clone={} assignment={} invalidated={} capacityCleared={} cached={} droppedCallers={} errors={} enforce={}",token,p,c,cl,a,inv,cap,size,drop,err,EnforceLimit);
 }
 void registerAmmoItem(uint64_t token);
 void heartbeat() {
@@ -130,7 +133,7 @@ void heartbeat() {
         }
     }
     if (registerItem) registerAmmoItem(token);
-    if (activity) logger().info("[stack-probe] bridge world={} producers={} published={} copies={} invalidated={} capacityCleared={} cached={} errors={} observeOnly=true",token,p,pub,copies,inv,cap,size,errors.load());
+    if (activity) logger().info("[stack-probe] bridge world={} producers={} published={} copies={} invalidated={} capacityCleared={} cached={} errors={} enforce={}",token,p,pub,copies,inv,cap,size,errors.load(),EnforceLimit);
     if (!rows.empty()) print(rows,"summary",token);
 }
 bool ourAmmo(Item const& item) { return item.mFullName->getString()=="tacz:ammo"; }
@@ -149,7 +152,7 @@ void registerAmmoItem(uint64_t token) {
         if (token!=generation || token!=session()) return;
         rememberItem(reinterpret_cast<uintptr_t>(item));
     }
-    logger().info("[stack-probe] registered world={} ammoItem=0x{:x} source=temporary-stack observeOnly=true",token,reinterpret_cast<uintptr_t>(item));
+    logger().info("[stack-probe] registered world={} ammoItem=0x{:x} source=temporary-stack enforce={}",token,reinterpret_cast<uintptr_t>(item),EnforceLimit);
 }
 void publish(ItemStackBase const& stack,ItemDescriptor const& descriptor,uint64_t token,uintptr_t producer) {
     Inspect guard;
@@ -172,7 +175,7 @@ void publish(ItemStackBase const& stack,ItemDescriptor const& descriptor,uint64_
         ++produced; bridge.erase(GetCurrentThreadId(),impl);
         if (record) bridge.put(GetCurrentThreadId(),impl,std::move(*record));
     }
-    if (registered) logger().info("[stack-probe] registered world={} ammoItem=0x{:x} source=full-stack observeOnly=true",token,actual);
+    if (registered) logger().info("[stack-probe] registered world={} ammoItem=0x{:x} source=full-stack enforce={}",token,actual,EnforceLimit);
 }
 probe::Lookup lookup(uintptr_t impl,uintptr_t item,int aux,uint64_t token) {
     std::lock_guard lock(mutex);
@@ -191,16 +194,21 @@ void transfer(uintptr_t impl,probe::Lookup hit,uint64_t token,bool assignment) {
     bridge.erase(GetCurrentThreadId(),impl);
     if (hit.record) { hit.record->copied=true; bridge.put(GetCurrentThreadId(),impl,std::move(*hit.record)); }
 }
-void observe(Item const& item,ItemDescriptor const& descriptor,int native,uintptr_t caller,int route,uint64_t token) {
+// Returns the AmmoId stack limit to report instead of the descriptor-only native
+// value, or 0 to keep native. Only a validated bridge candidate (same Item, aux,
+// thread, within the lifetime window) is enforced; anything else stays native.
+int observe(Item const& item,ItemDescriptor const& descriptor,int native,uintptr_t caller,int route,uint64_t token) {
     // Do not inspect Item fields or descriptor references of other/folded callers.
-    if (!knownItem(reinterpret_cast<uintptr_t>(&item))) return;
+    if (!knownItem(reinterpret_cast<uintptr_t>(&item))) return 0;
     Inspect guard;
     auto actual=descriptor.getItem();
     auto hit=lookup(reinterpret_cast<uintptr_t>(descriptor.mImpl.get()),reinterpret_cast<uintptr_t>(actual),descriptor.getAuxValue(),token);
     if (actual!=&item) hit={probe::Resolution::FingerprintMismatch,{}};
+    int limit=hit.status==probe::Resolution::Candidate && hit.record && hit.record->limit>0 ? hit.record->limit : 0;
     std::lock_guard lock(mutex);
-    if (token!=generation || token!=session()) return;
+    if (token!=generation || token!=session()) return 0;
     samples.add({callerAddress(caller),GetCurrentThreadId(),inImage(caller),route},native,hit);
+    return EnforceLimit ? limit : 0;
 }
 static_assert(sizeof(ItemDescriptor)==16 && sizeof(InternalItemDescriptor)==24);
 static_assert(std::is_same_v<decltype(&ItemStackBase::getDescriptor),ItemDescriptor (ItemStackBase::*)() const>);
@@ -217,14 +225,16 @@ static_assert(std::is_same_v<decltype(&ComponentItem::$getMaxStackSize),Componen
 LL_TYPE_INSTANCE_HOOK(ProbeItemLimit,ll::memory::HookPriority::Normal,Item,&Item::$getMaxStackSize,uchar,ItemDescriptor const& descriptor) {
     auto token=session(); auto caller=reinterpret_cast<uintptr_t>(_ReturnAddress());
     auto native=origin(descriptor);
-    if (token && token==session() && !inspecting) try { observe(*this,descriptor,native,caller,0,token); } catch (...) { ++errors; }
-    return native; // OBSERVE ONLY: never return the bridge's would-limit
+    int limit=0;
+    if (token && token==session() && !inspecting) try { limit=observe(*this,descriptor,native,caller,0,token); } catch (...) { ++errors; }
+    return limit>0 ? static_cast<uchar>(limit) : native;
 }
 LL_TYPE_INSTANCE_HOOK(ProbeComponentLimit,ll::memory::HookPriority::Normal,ComponentItem,&ComponentItem::$getMaxStackSize,uchar,ItemDescriptor const& descriptor) {
     auto token=session(); auto caller=reinterpret_cast<uintptr_t>(_ReturnAddress());
     auto native=origin(descriptor);
-    if (token && token==session() && !inspecting) try { observe(*this,descriptor,native,caller,1,token); } catch (...) { ++errors; }
-    return native;
+    int limit=0;
+    if (token && token==session() && !inspecting) try { limit=observe(*this,descriptor,native,caller,1,token); } catch (...) { ++errors; }
+    return limit>0 ? static_cast<uchar>(limit) : native;
 }
 using ItemCtor=void* (ItemDescriptor::*)(Item const&,int);
 using NameCtor=void* (ItemDescriptor::*)(std::string_view,int);
@@ -273,7 +283,7 @@ void enableStackLimitProbe() {
     if (!folded) componentHook=ProbeComponentLimit::hook()==0;
     ctorHook=ProbeItemDescriptorCtor::hook()==0; nameCtorHook=ProbeNameDescriptorCtor::hook()==0;
     cloneHook=ProbeInternalClone::hook()==0; assignHook=ProbeDescriptorAssign::hook()==0;
-    logger().info("[stack-probe] install getDescriptor={} Item={} ComponentItem={} folded={} itemCtor={} nameCtor={} clone={} assignment={} mode=observe candidateOnly=true ttlMs=250 capacity=4096 imageBase=0x{:x}",getHook,itemHook,componentHook,folded,ctorHook,nameCtorHook,cloneHook,assignHook,imageBase);
+    logger().info("[stack-probe] install getDescriptor={} Item={} ComponentItem={} folded={} itemCtor={} nameCtor={} clone={} assignment={} mode={} candidateOnly=true ttlMs=250 capacity=4096 imageBase=0x{:x}",getHook,itemHook,componentHook,folded,ctorHook,nameCtorHook,cloneHook,assignHook,EnforceLimit ? "enforce" : "observe",imageBase);
     auto& bus=ll::event::EventBus::getInstance();
     listeners.push_back(bus.emplaceListener<ll::event::ServerLevelTickEvent>([](auto&){try { heartbeat(); } catch (...) { ++errors; }}));
 #ifdef TACZ_CLIENT
