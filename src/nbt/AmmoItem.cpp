@@ -3,7 +3,6 @@
 #include <algorithm>
 #include <memory>
 #include <string>
-#include <atomic>
 #include <type_traits>
 #include "ll/api/memory/Hook.h"
 #include "ll/api/service/Bedrock.h"
@@ -15,8 +14,6 @@
 #include "mc/world/actor/player/Inventory.h"
 #include "mc/world/actor/player/Player.h"
 #include "mc/world/item/ItemStack.h"
-#include "mc/world/actor/item/ItemActor.h"
-#include "mc/world/level/Level.h"
 
 #include "nbt/GunNbt.h"
 #include "pack/PackItems.h"
@@ -58,8 +55,8 @@ int limitFor(ItemStackBase const& item) {
 bool compatible(ItemStack const& a,ItemStack const& b) {
     return a.getTypeName()==b.getTypeName() && a.getAuxValue()==b.getAuxValue() && a.hasSameUserData(b);
 }
-// Both prediction and mutation use exactly the same capacity/merge rule. canAdd
-// never edits inventory or the caller's NBT; partial pickup is allowed like vanilla.
+// Command-only /tacz give plan. Native inventory, prediction and pickup are not
+// redirected here; those use the descriptor bridge and vanilla transactions.
 pack::AmmoInsertion insertionPlan(Inventory const& inventory,ItemStack const& source,int limit) {
     auto incoming=canonicalAmmo(source);
     std::vector<pack::AmmoSlot> slots;
@@ -90,82 +87,25 @@ int insertAmmo(Inventory& inventory,ItemStack& source,int limit) {
     source.set(plan.remaining); // leave uninserted rounds in the ground/caller stack
     return inserted;
 }
-std::atomic<int> inventorySamples=0;
 static_assert(std::is_same_v<decltype(&ItemStackBase::hasSameUserData),bool (ItemStackBase::*)(ItemStackBase const&) const>);
 LL_TYPE_INSTANCE_HOOK(AmmoSameData,ll::memory::HookPriority::Normal,ItemStackBase,&ItemStackBase::hasSameUserData,bool,ItemStackBase const& other) {
+    auto marked=[](ItemStackBase const& stack) { return stack.mUserData && stack.mUserData->contains("TaczAutoName",Tag::String); };
+    if (!marked(*this) && !marked(other)) return origin(other);
     if (!limitFor(*this) || !limitFor(other)) return origin(other);
-    // Native drag/container paths can compare NBT without going through Inventory::add.
-    // Do not override item/aux checks or any native read-only stackability predicate.
+    // Narrow migration compatibility ONLY. Removing this would prevent marked
+    // old ammo and otherwise identical new ammo from merging. Native item/aux
+    // checks and all meaningful NBT (AmmoId/custom names/lore) remain authoritative.
     auto a=canonicalTag(*this),b=canonicalTag(other); return a->equals(*b);
 }
-static_assert(std::is_same_v<decltype(&Inventory::$add),bool (Inventory::*)(ItemStack&)>);
-static_assert(std::is_same_v<decltype(&Inventory::$canAdd),bool (Inventory::*)(ItemStack const&) const>);
-LL_TYPE_INSTANCE_HOOK(AmmoCanAdd,ll::memory::HookPriority::Normal,Inventory,&Inventory::$canAdd,bool,ItemStack const& item) {
-    int limit=limitFor(item); if (!limit) return origin(item);
-    int accepted=int(item.mCount)-insertionPlan(*this,item,limit).remaining;
-    auto native=origin(item); // read-only diagnostic comparison, not mutation
-    if (inventorySamples.fetch_add(1)<40) TaczMod::getInstance().getSelf().getLogger().info(
-        "[ammo-stack] canAdd id={} count={} limit={} accepted={} native={} adapter={}",readAmmoId(item)->toString(),item.mCount,limit,accepted,native,accepted>0);
-    return accepted>0;
-}
-LL_TYPE_INSTANCE_HOOK(AmmoAdd,ll::memory::HookPriority::Normal,Inventory,&Inventory::$add,bool,ItemStack& item) {
-    int limit=limitFor(item); if (!limit) return origin(item);
-    auto id=readAmmoId(item)->toString(); int requested=item.mCount;
-    // FillingContainer::add may insert partially, but returns FALSE when it
-    // stops with a remainder. Player::take uses that false branch to commit
-    // the inventory transaction and reduce the original ground actor. Returning
-    // inserted>0 here (0.3.24) incorrectly selected the full-success branch.
-    int inserted=insertAmmo(*this,item,limit);
-    bool complete=pack::nativeAmmoAddComplete(item.mCount);
-    // Unlike tick-by-tick canAdd diagnostics, actual mutations must never be
-    // hidden by the shared sampling budget. No take context/override is needed.
-    TaczMod::getInstance().getSelf().getLogger().info(
-        "[ammo-stack] add id={} requested={} inserted={} remaining={} limit={} complete={}",id,requested,inserted,item.mCount,limit,complete);
-    return complete;
-}
-static_assert(std::is_same_v<decltype(&Player::take),bool (Player::*)(Actor&,int,int)>);
-static_assert(std::is_same_v<decltype(&Player::$drop),bool (Player::*)(ItemStack const&,bool)>);
-LL_TYPE_INSTANCE_HOOK(AmmoPickup,ll::memory::HookPriority::Normal,Player,&Player::take,bool,Actor& actor,int count,int favoredSlot) {
-    if (isClientSide() || actor.isClientSide()) return origin(actor,count,favoredSlot);
-    auto item=ItemActor::tryGetFromEntity(actor.getEntityContext(),false);
-    int limit=item ? limitFor(item->mItem.get()) : 0;
-    if (!limit) return origin(actor,count,favoredSlot);
-    int before=item->mItem->mCount;
-    auto ammoId=*readAmmoId(item->mItem.get());
-    auto actorId=item->getOrCreateUniqueID();
-    int inventoryBefore=countAmmo(*this,ammoId);
-    bool creative=isCreative(); // diagnostic only; never override the predicate
-    // Observe native survival remainder handling and creative overflow discard.
-    // No scope, A2 actors, packets, forced refresh or corrective mutation.
-    bool result=origin(actor,count,favoredSlot);
-    int inserted=countAmmo(*this,ammoId)-inventoryBefore;
-    // Native may have removed the actor. Reacquire by ID rather than using the
-    // original actor/stack reference after take has completed.
-    auto liveActor=getLevel().fetchEntity(actorId,false);
-    auto liveItem=liveActor ? ItemActor::tryGetFromEntity(liveActor->getEntityContext(),false) : nullptr;
-    bool removed=!liveItem || liveItem->mRemoved;
-    int rawAfter=removed || liveItem->mItem->isNull() ? 0 : int(liveItem->mItem->mCount);
-    int after=pack::ammoPickupGroundAfter(rawAfter,removed,result);
-    int discarded=creative && result ? std::max(0,before-inserted-after) : 0;
-    TaczMod::getInstance().getSelf().getLogger().info(
-        "[ammo-pickup] id={} groundBefore={} requested={} groundAfter={} rawAfterTake={} removed={} removalPending={} native={} inserted={} conserved={} creative={} creativeDiscarded={} accounted={} mode=observe",
-        ammoId.toString(),before,count,after,rawAfter,removed,result && !removed,result,inserted,before==inserted+after,
-        creative,discarded,before==inserted+after+discarded);
-    return result;
-}
-bool addHook=false,canAddHook=false,sameDataHook=false,pickupHook=false;
+bool sameDataHook=false;
 }
 void enableAmmoInventory() {
-    addHook=AmmoAdd::hook()==0; canAddHook=AmmoCanAdd::hook()==0;
     sameDataHook=AmmoSameData::hook()==0;
-    pickupHook=AmmoPickup::hook()==0;
-    TaczMod::getInstance().getSelf().getLogger().info("[ammo-stack] addHook={} canAddHook={} sameDataHook={} pickupHook={} creativePolicy=vanilla",addHook,canAddHook,sameDataHook,pickupHook);
+    TaczMod::getInstance().getSelf().getLogger().info("[ammo-stack] nativeInventory=true nativePickup=true legacyAutoNameHook={}",sameDataHook);
 }
 void disableAmmoInventory() {
-    if (addHook) AmmoAdd::unhook(); if (canAddHook) AmmoCanAdd::unhook();
     if (sameDataHook) AmmoSameData::unhook();
-    if (pickupHook) AmmoPickup::unhook();
-    addHook=canAddHook=sameDataHook=pickupHook=false; inventorySamples=0;
+    sameDataHook=false;
 }
 
 std::optional<pack::ResourceId> readAmmoId(ItemStackBase const& item) {

@@ -63,21 +63,9 @@ bool giveGun(Player& player,pack::ResourceId const& id) {
     return added || stack.isNull() || player.drop(stack,false); // one gun: no partial insertion
 }
 namespace {
-static_assert(std::is_same_v<decltype(&ItemStackBase::getMaxStackSize),uchar (ItemStackBase::*)() const>);
 #ifdef TACZ_CLIENT
 static_assert(std::is_same_v<decltype(&ItemStackBase::getHoverName),std::string (ItemStackBase::*)() const>);
 #endif
-LL_TYPE_INSTANCE_HOOK(PackStackLimit,ll::memory::HookPriority::Normal,ItemStackBase,&ItemStackBase::getMaxStackSize,uchar) {
-#ifdef TACZ_CLIENT
-    if (!client::shooter::worldToken() && !ll::service::getLevel()) return origin();
-#else
-    if (!ll::service::getLevel()) return origin();
-#endif
-    auto identity=readItemIdentity(*this);
-    if (identity && identity->kind==pack::ItemKind::Ammo) if (auto ammo=TaczMod::getInstance().gunPacks().ammo(identity->id))
-        return static_cast<uchar>(pack::ammoStackLimit(ammo->index.stackSize));
-    return origin();
-}
 #ifdef TACZ_CLIENT
 std::string currentLanguage() {
     return getI18n().getCurrentLanguage()->getFullLanguageCode(); // SDK returns not_null
@@ -165,11 +153,10 @@ LL_TYPE_INSTANCE_HOOK(PackTooltip,ll::memory::HookPriority::Normal,ItemStackBase
     }
 }
 #endif
-bool stackHook=false,nameHook=false,plainNameHook=false,redactedHoverHook=false,redactedNameHook=false,tooltipHook=false;
+bool nameHook=false,plainNameHook=false,redactedHoverHook=false,redactedNameHook=false,tooltipHook=false;
 }
 void enablePackItems() {
     enableAmmoInventory();
-    stackHook=PackStackLimit::hook()==0;
 #ifdef TACZ_CLIENT
     nameHook=PackHoverName::hook()==0;
     plainNameHook=PackName::hook()==0;
@@ -178,13 +165,12 @@ void enablePackItems() {
     tooltipHook=PackTooltip::hook()==0;
 #endif
     auto& mod=TaczMod::getInstance();
-    mod.getSelf().getLogger().info("[pack-items] stackLimit={} hoverName={} name={} redactedHover={} redactedName={} tooltip={}",stackHook,nameHook,plainNameHook,redactedHoverHook,redactedNameHook,tooltipHook);
+    mod.getSelf().getLogger().info("[pack-items] stackLimit=descriptor-bridge hoverName={} name={} redactedHover={} redactedName={} tooltip={}",nameHook,plainNameHook,redactedHoverHook,redactedNameHook,tooltipHook);
     for (auto const& [id,ammo]:mod.gunPacks().ammos()) if (ammo.index.stackSize>64)
         mod.getSelf().getLogger().warn("[pack-items] {} stack_size={} exceeds Bedrock1..64; using64",id.toString(),ammo.index.stackSize);
 }
 void disablePackItems() {
     disableAmmoInventory();
-    if (stackHook) PackStackLimit::unhook();
 #ifdef TACZ_CLIENT
     if (nameHook) PackHoverName::unhook();
     if (plainNameHook) PackName::unhook();
@@ -192,6 +178,6 @@ void disablePackItems() {
     if (redactedNameHook) PackRedactedName::unhook();
     if (tooltipHook) PackTooltip::unhook();
 #endif
-    stackHook=nameHook=plainNameHook=redactedHoverHook=redactedNameHook=tooltipHook=false;
+    nameHook=plainNameHook=redactedHoverHook=redactedNameHook=tooltipHook=false;
 }
 }

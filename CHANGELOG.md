@@ -8,6 +8,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 Versioning rule for this project: the patch number goes up by 1 for each small item or test
 round, the minor number goes up by 1 for each finished feature or phase.
 
+## [0.3.30] - 2026-10-27
+
+### Part 1 — vanilla inventory and pickup, bridge limits
+
+- User-tested0.3.29: chest shift-click both ways (including53+60), hoppers, and
+  pickup during shooting/reload accepted. Creative full-inventory pickup was
+  blocked by the obsolete canAdd adapter (native=true, adapter=false).
+- Remove Inventory add/canAdd adapters and the Player::take observation hook;
+  vanilla owns capacity prediction, mutation, remainder/sync, creative discard
+  and sound. No A2 or replacement per-path patch. Keep /tacz give splitting and
+  overflow drops; its command-only insertion helper no longer intercepts native operations.
+- Remove redundant outer ItemStackBase max hook: native0x247df40 calls
+  getDescriptor (0x247df6f), then the bridge-covered Item virtual getter (+0x320).
+- Retain only marked legacy TaczAutoName userdata compatibility; unmarked ammo
+  delegates native, real custom names/lore/other NBT remain significant. Otherwise
+  old generated-name stacks would not merge with new stacks. Registered tacz:ammo
+  limits now come only from the descriptor bridge; legacy vanilla-base identity
+  reads remain supported but are outside that bridge's item filter.
+- Native-only pickup/creative regression still needs new in-game acceptance.
+
 ## [0.3.29] - 2026-10-27
 
 ### Changed — A1 descriptor bridge enforces the AmmoId stack limit

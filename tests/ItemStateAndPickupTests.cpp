@@ -122,6 +122,18 @@ TEST_CASE("Give overflow belongs on ground, including subsequent split stacks af
     CHECK(pack::nativeAmmoAddComplete(pack::planAmmoInsertion({{0,false}},60,60).remaining));
     CHECK_FALSE(pack::nativeAmmoAddComplete(pack::planAmmoInsertion({{60,true}},60,60).remaining));
 }
+TEST_CASE("Legacy ammo auto-name compatibility ignores only the marked generated name") {
+    nlohmann::json fresh={{"AmmoId","tacz:762x39"}};
+    auto old=fresh; old["TaczAutoName"]="old translated name"; old["display"]={{"Name","old translated name"}};
+    CHECK(pack::canonicalAmmoTag(old)==fresh);
+    auto custom=old; custom["display"]["Name"]="player rename";
+    CHECK(pack::canonicalAmmoTag(custom)!=fresh);
+    auto lore=old; lore["display"]["Lore"]={"player lore"};
+    CHECK(pack::canonicalAmmoTag(lore)!=fresh);
+    auto extra=old; extra["extra"]=7; CHECK(pack::canonicalAmmoTag(extra)!=fresh);
+    auto different=old; different["AmmoId"]="tacz:9mm"; CHECK(pack::canonicalAmmoTag(different)!=fresh);
+    auto unmarked=old; unmarked.erase("TaczAutoName"); CHECK(pack::canonicalAmmoTag(unmarked)!=fresh);
+}
 TEST_CASE("Pickup logging retains survival remainder and accepts vanilla creative overflow discard") {
     for (int count:{1,7,15,30,59,60}) for (int space=0;space<=60;++space) for (bool creative:{false,true}) {
         auto plan=pack::planPickup(count,space);
