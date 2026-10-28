@@ -8,6 +8,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 Versioning rule for this project: the patch number goes up by 1 for each small item or test
 round, the minor number goes up by 1 for each finished feature or phase.
 
+## [0.4.2] - 2026-10-29
+
+### Confirmed — 0.4.1 user acceptance
+
+- With View Bobbing ON, walking no longer sways the gun in hipfire or ADS
+  when not turning the view. World bob and vanilla items still bob.
+- Put-away/switch, third person, menu and world re-entry remain unchanged.
+
+### Fixed
+
+- Holding the shoot key with a main-hand gun stops sprinting through the existing
+  client ADS/reload input, state and packet gates, matching Java TACZ. Native
+  sprint state continues to drive Lua run/end/walk/idle poses; no animation override.
+- Track server-authoritative sprint recovery using real elapsed seconds and the
+  held gun's `sprint_time`. Sync changes to the owning client like reload state;
+  both sides refuse shots while the timer is positive, without client timer prediction.
+  Rejected attempts remain retryable while held, including semi-auto.
+- Awaiting in-game acceptance for sprint firing and animation transitions.
+
 ## [0.4.1] - 2026-10-29
 
 ### Fixed — gun sway with View Bobbing ON

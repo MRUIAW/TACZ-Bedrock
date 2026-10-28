@@ -36,6 +36,7 @@
 #include "gun/Reload.h"
 #include "gun/DrawRules.h"
 #include "gun/ShootRules.h"
+#include "gun/Sprint.h"
 #include "model/Aiming.h"
 #include "lua/GunLogic.h"
 #include "mod/TaczMod.h"
@@ -61,6 +62,9 @@ struct ShooterState {
     bool isAiming = false;
     float aimingProgress = 0;
     int64_t aimingTimestamp = -1;
+    float sprintTimeS = 0;
+    std::optional<Clock::time_point> sprintTimestamp;
+    std::optional<float> syncedSprintTime;
     gun::HandSelection selection;
     gun::DrawCooldown draw;
     std::optional<int64_t> clockOffset; // server ms - client ms, set on the first trigger pull
@@ -165,6 +169,9 @@ void observeSelection(Player& player, ShooterState& s) {
     s.isAiming = false;
     s.aimingProgress = 0;
     s.aimingTimestamp = serverNowMs();
+    // ShooterDataHolder.initialData also resets sprint recovery on selection.
+    s.sprintTimeS = 0;
+    s.sprintTimestamp.reset();
     auto entry = item ? gunEntry(item->gunId) : nullptr;
     s.draw.select(serverNowMs(), entry ? gun::animationMillis(entry->data.putAwayTime) : 0);
     s.selection = next;
@@ -222,6 +229,7 @@ char const* handleShoot(Player& player, int64_t timestamp) {
         return "NETWORK_FAIL";
     }
     if (gun::isReloading(s.reloadState)) return "IS_RELOADING";
+    if (gun::sprintBlocksShot(s.sprintTimeS)) return "IS_SPRINTING";
 
     gun::GunAmmo ammo{item->ammo, item->barrel};
     switch (gun::prepareShot(*data.bolt, ammo)) {
@@ -424,6 +432,20 @@ void tickAim(Player& player, ShooterState& s) {
     s.aimingTimestamp = now;
 }
 
+void tickSprint(Player& player, ShooterState& s) {
+    auto item = nbt::readGun(player.getSelectedItem());
+    auto entry = item ? gunEntry(item->gunId) : nullptr;
+    auto now = Clock::now();
+    float elapsed = s.sprintTimestamp ? std::chrono::duration<float>(now - *s.sprintTimestamp).count() : 0;
+    s.sprintTimestamp = now;
+    s.sprintTimeS = gun::advanceSprintTime(s.sprintTimeS, elapsed,
+        entry ? std::optional{entry->data.sprintTime} : std::nullopt, player.isSprinting(), player.isSneaking());
+    if (!s.syncedSprintTime || *s.syncedSprintTime != s.sprintTimeS) {
+        net::SprintTimePacket{s.sprintTimeS}.sendTo(player);
+        s.syncedSprintTime = s.sprintTimeS;
+    }
+}
+
 void tick(Level& level) {
     std::lock_guard lock(mutex);
     // Establish timing even for players who have not shot/reloaded yet.
@@ -440,6 +462,7 @@ void tick(Level& level) {
         }
         auto& player = *static_cast<Player*>(actor);
         tickAim(player, s);
+        tickSprint(player, s); // after ADS/reload have corrected native sprint state
         while (s.remaining > 0 && now >= s.nextRound) {
             if (!fireRound(player, s)) {
                 s.remaining = 0;

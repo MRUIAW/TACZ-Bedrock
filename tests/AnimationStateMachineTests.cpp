@@ -90,6 +90,40 @@ TEST_CASE("Animation VM: tick movement classification follows TickAnimationEvent
     CHECK(lua::movementInput(ctx) == "idle"); // opposed keys are not movement
 }
 
+TEST_CASE("Animation VM: stopping native sprint leaves run before the recovered shot") {
+    // Built-in Java state machine, synthetic clips/context only; no external pack.
+    pack::GunPackRegistry packs;
+    packs.load({}, [](auto const&) {}, [](auto const&) {});
+    nlohmann::json animations = nlohmann::json::object();
+    for (auto name : {"static_idle", "idle", "run_start", "run", "run_end", "walk_forward", "shoot"}) {
+        animations[name] = {{"animation_length", .1}, {"bones", {{"root", {{"position", {0, 0, 0}}}}}}};
+    }
+    auto clips = animation::parseAnimationFile({{"animations", animations}});
+    lua::AnimationContext ctx;
+    ctx.ammo = ctx.maxAmmo = 30;
+    ctx.barrel = ctx.onGround = ctx.inputAvailable = ctx.inputUp = ctx.sprinting = true;
+    ctx.moveMagnitude = 1;
+    lua::AnimationStateMachine m(packs, clips, {"tacz", "default_state_machine"}, ctx);
+    REQUIRE(m.initialize(0));
+    auto& controller = m.controller();
+    auto movement = controller.getTrack(2, 0);
+    REQUIRE(m.trigger(std::string(lua::movementInput(ctx))));
+    m.update(.2); m.update(.3);
+    CHECK(controller.info(movement).name == "run");
+    // SprintTime is intentionally NOT an animation input: native sprint stops
+    // immediately, while authoritative recovery may still be positive.
+    ctx.sprinting = false;
+    m.setTime(.31);
+    REQUIRE(m.trigger(std::string(lua::movementInput(ctx))));
+    CHECK(controller.info(movement).name == "run_end");
+    m.update(.5); m.update(.6);
+    CHECK(controller.info(movement).name == "walk_forward");
+    REQUIRE(m.trigger("shoot"));
+    CHECK(controller.info(controller.getTrack(1, 0)).name == "shoot");
+    CHECK(controller.info(movement).name != "run");
+    CHECK(m.healthy());
+}
+
 TEST_CASE("Animation VM: LuaJ compatibility, sandbox and neutral context API") {
     auto packs = registryWith(R"(
         return { initialize=function(self,c)

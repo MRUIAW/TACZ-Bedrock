@@ -214,7 +214,7 @@ bool mouse(bool down, bool gameplay, bool gunHeld) {
     return true;
 }
 void frame(IClientInstance& client, LocalPlayer& player, std::optional<pack::ResourceId> gun,
-    pack::GunData const* data, pack::GunDisplay const* display, bool selectionChanged, bool allowed) {
+    pack::GunData const* data, pack::GunDisplay const* display, bool selectionChanged, bool allowed, bool stopSprint) {
     auto now = Clock::now();
     double elapsed = lastFrame ? std::chrono::duration<double>(now - *lastFrame).count() : 0;
     lastFrame = now;
@@ -244,10 +244,12 @@ void frame(IClientInstance& client, LocalPlayer& player, std::optional<pack::Res
     }
     // Suppress both the extracted request AND attempts to re-enter sprint between frames.
     auto reload = shooter::reloadState();
-    bool blockSprint = usable && (target || (gun::isReloading(reload) && !gun::isReloadFinishing(reload)));
+    // ShootKey.stopSprint applies even during draw, with no display, or on a
+    // refused/dry/semi-auto held trigger. Reuse all existing input/state/wire gates.
+    bool blockSprint = stopSprint || (usable && (target || (gun::isReloading(reload) && !gun::isReloadFinishing(reload))));
     sprintPlayer = blockSprint ? reinterpret_cast<uintptr_t>(&player) : 0;
     auto input = player.getEntityContext().tryGetComponent<MoveInputComponent>();
-    sprintInput = usable && input ? reinterpret_cast<uintptr_t>(&*input) : 0;
+    sprintInput = (usable || stopSprint) && input ? reinterpret_cast<uintptr_t>(&*input) : 0;
     sprintBlocked=blockSprint;
     sprintSender=blockSprint ? reinterpret_cast<uintptr_t>(&client.getPacketSender()) : 0;
     sprintSubId=client.getClientSubId();

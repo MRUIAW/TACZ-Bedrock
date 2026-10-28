@@ -99,4 +99,21 @@ public:
     }
 };
 
+// Server -> owning client: TACZ's SPRINT_TIME_KEY. Sent initially and whenever
+// the authoritative value changes, including its final zero. Never predicted.
+class SprintTimePacket final : public ll::network::PacketBase<SprintTimePacket> {
+public:
+    float seconds = 0;
+
+    SprintTimePacket() = default;
+    explicit SprintTimePacket(float value) : seconds(value) {}
+    void write(BinaryStream& stream) const override { stream.writeFloat(seconds, nullptr, nullptr); }
+    Bedrock::Result<void> read(ReadOnlyBinaryStream& stream) override {
+        auto value = stream.getFloat();
+        if (!value) return nonstd::make_unexpected(value.error());
+        seconds = *value;
+        return {};
+    }
+};
+
 } // namespace tacz::net

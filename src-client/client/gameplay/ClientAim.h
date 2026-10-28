@@ -21,8 +21,10 @@ void disable();
 void clear();
 // Input thread writes atomics only. Return true when vanilla use/place must be swallowed.
 bool mouse(bool down, bool gameplay, bool gunHeld);
+// stopSprint is ShootKey's scoped main-hand-gun/non-spectator/gameplay intent,
+// independent of ADS/display readiness and whether a shot succeeds.
 void frame(IClientInstance& client, LocalPlayer& player, std::optional<pack::ResourceId> gun,
-    pack::GunData const* data, pack::GunDisplay const* display, bool selectionChanged, bool allowed);
+    pack::GunData const* data, pack::GunDisplay const* display, bool selectionChanged, bool allowed, bool stopSprint);
 void tick(); // real client tick; no render-frame-dependent progression
 Snapshot snapshot(); // mutex-protected, rejected automatically outside the matching world
 } // namespace tacz::client::aim

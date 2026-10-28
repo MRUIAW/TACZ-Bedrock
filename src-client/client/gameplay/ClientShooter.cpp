@@ -40,6 +40,7 @@
 #include "client/render/GunRenderer.h"
 #include "client/ui/GunHud.h"
 #include "gun/ShootRules.h"
+#include "gun/Sprint.h"
 #include "gun/ClientWorldSession.h"
 #include "mod/TaczMod.h"
 #include "nbt/AmmoItem.h"
@@ -74,13 +75,20 @@ using LeaveSignature = void (ClientInstance::*)(bool, bool);
 static_assert(std::is_same_v<decltype(&MinecraftGame::$update), FrameSignature>);
 static_assert(std::is_same_v<decltype(&ClientInstance::_requestLeaveGameImpl), LeaveSignature>);
 
-// Server-reported reload state (TACZ's synced RELOAD_STATE_KEY). Written by the packet handler.
+// Server-reported state (TACZ's synced RELOAD_STATE_KEY / SPRINT_TIME_KEY).
+// Packet handlers write mailboxes; frame() applies only this world generation.
 std::mutex                          serverStateMutex;
 struct ReloadReply {
     gun::ReloadState state;
     uint64_t world;
 };
 std::optional<ReloadReply> serverReloadState;
+struct SprintReply {
+    float seconds;
+    uint64_t world;
+};
+std::optional<SprintReply> serverSprintTime;
+float syncedSprintTime = 0; // getSynSprintTime(); frame-owned, no local decay
 
 // LocalPlayerDataHolder, reduced to what is implemented. Main thread only (frame()).
 std::optional<int64_t> lastShot;                 // clientShootTimestamp
@@ -150,6 +158,15 @@ bool inGameplay() {
     return client && &*client == joinedClient.load() && client->getLocalPlayer() && client->getScreenName().starts_with("hud_screen");
 }
 
+// ShootKey tests IGun, not whether its data/display is known or ready to fire.
+bool hasMainHandGun() {
+    if (!worldSession.current()) return false;
+    auto client = ll::service::getClientInstance();
+    if (!client || &*client != joinedClient.load()) return false;
+    auto* player = client->getLocalPlayer();
+    return player && nbt::readGun(player->getSelectedItem()).has_value();
+}
+
 std::optional<pack::ResourceId> displaySound(HeldGun const& gun, std::string const& key) {
     auto const& packs = TaczMod::getInstance().gunPacks();
     if (!gun.entry->index.display) return std::nullopt;
@@ -203,6 +220,8 @@ bool shoot(HeldGun const& gun, int64_t now, bool chained) {
         return false;
     }
     if (*data.bolt == pack::Bolt::ManualAction && !ammo.barrel) return false; // bolting comes later
+    // Java checks the server-synced value after preCheck, before shot effects.
+    if (gun::sprintBlocksShot(syncedSprintTime)) return false;
 
     int64_t interval = gun::triggerIntervalMs(data, mode);
     // A stall longer than an interval (loading, alt-tab) restarts the rhythm instead of
@@ -263,13 +282,26 @@ void applyServerReloadState() {
     reloadTypePublished = static_cast<int>(reloadType);
 }
 
+void applyServerSprintTime() {
+    std::optional<SprintReply> reply;
+    { std::lock_guard lock(serverStateMutex); reply.swap(serverSprintTime); }
+    if (reply && worldSession.accepts(reply->world)) syncedSprintTime = reply->seconds;
+}
+
 // ShootKey.autoShoot and the reload / fire-select keys. Runs every rendered frame on the main thread.
 void frame() {
     if (resetPending.exchange(false)) {
         triggerDown = false;
         reloadKeyPressed = fireSelectPressed = inspectPressed = false;
         for (auto& down : actionKeyDown) down = false;
-        { std::lock_guard lock(serverStateMutex); serverReloadState.reset(); }
+        {
+            std::lock_guard lock(serverStateMutex);
+            serverReloadState.reset();
+            // A fresh session's initial sync may arrive before its first frame.
+            // Keep it; discard only replies from a retired world generation.
+            if (serverSprintTime && !worldSession.accepts(serverSprintTime->world)) serverSprintTime.reset();
+        }
+        syncedSprintTime = 0;
         lastShot.reset();
         shotTimestamp.reset();
         previousShotTimestamp.reset();
@@ -312,8 +344,11 @@ void frame() {
     auto const* display = gun && gun->entry->index.display
         ? TaczMod::getInstance().gunPacks().gunDisplay(*gun->entry->index.display) : nullptr;
     aim::frame(*client, *player, gun ? std::optional{gun->state.gunId} : std::nullopt,
-        gun ? &gun->entry->data : nullptr, display, selectionChanged, anim::aimAllowed());
+        gun ? &gun->entry->data : nullptr, display, selectionChanged, anim::aimAllowed(),
+        gun::shootStopsSprint(inGameplay(), gun.has_value() || hasMainHandGun(),
+            player->isSpectator(), triggerDown.load()));
     applyServerReloadState();
+    applyServerSprintTime();
     // tickStateLock: a request the server never answered stops blocking after 250 ms.
     if (reloadLockedAt && Clock::now() - *reloadLockedAt > std::chrono::milliseconds(250) && !gun::isReloading(reloadType)) {
         reloadLockedAt.reset();
@@ -337,7 +372,7 @@ void frame() {
     bool wantsReload     = reloadKeyPressed.exchange(false);
     bool wantsFireSelect = fireSelectPressed.exchange(false);
     bool wantsInspect = inspectPressed.exchange(false);
-    if (!inGameplay()) return;
+    if (!inGameplay() || player->isSpectator()) return;
     if (!gun) {
         lastShotSucceeded = false;
         return;
@@ -389,6 +424,16 @@ public:
         if (!type) return;
         std::lock_guard lock(serverStateMutex);
         if (worldSession.accepts(world)) serverReloadState = ReloadReply{{*type, packet.countDown}, world};
+    }
+};
+
+class SprintTimeHandler final : public ll::network::PacketHandlerBase<SprintTimeHandler, net::SprintTimePacket> {
+public:
+    void handlePacket(NetworkIdentifier const&, NetEventCallback&, net::SprintTimePacket const& packet) const {
+        auto world = worldSession.current();
+        if (!world) return;
+        std::lock_guard lock(serverStateMutex);
+        if (worldSession.accepts(world)) serverSprintTime = SprintReply{packet.seconds, world};
     }
 };
 
@@ -485,7 +530,7 @@ void enable() {
         if (event.actionButtonId() != MouseAction::ActionLeft) return;
         bool down = event.buttonData() == MouseAction::DataDown;
         if (!down) triggerDown = false; // always release, even if the gun was put away meanwhile
-        if (!inGameplay() || !heldGun()) return;
+        if (!inGameplay() || !hasMainHandGun()) return;
         // Both edges are swallowed while a gun is held (verified in 0.1.x: no mining, no attack).
         event.cancel();
         if (down) triggerDown = true;
