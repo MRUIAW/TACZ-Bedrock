@@ -8,6 +8,52 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 Versioning rule for this project: the patch number goes up by 1 for each small item or test
 round, the minor number goes up by 1 for each finished feature or phase.
 
+## [0.3.34] - 2026-10-28
+
+### Confirmed — 0.3.33 user acceptance
+
+- Container shift quick-move now shows the native flying icon for both guns and
+  ammo. Rejoining the world keeps per-gun ammo counts (17+1 and empty0, two guns).
+  Gun NBT immediate update and gun drop pass regression after the 0.3.32 balanced write.
+
+### Changed — gun-pack same-path override order (Java alignment)
+
+- Keep the native directory enumeration order of installed packs; only the
+  pack-list sort was removed (in-pack file lists stay sorted). The user's Java
+  instance confirms the same order C→D→T→R→M. Server and client share one loader.
+- Add `ResourceLookup` {Direct, Listed, ListedStack, ResourceStack} and route each
+  consumer by its Java category: sounds, gun/ammo display, data index and Lua use
+  the last pack (Listed); geo models, Bedrock animations, PNG textures and
+  gunpack_info use the first pack (Direct). A selected file that fails to open or
+  parse never silently falls back to another pack. No pack/path/namespace special cases.
+- Language files merge per key within each namespace through the Forge
+  ResourceStack order. Cross-namespace duplicate keys follow a documented port
+  policy (Java leaves this to HashMap iteration): the namespace named by the key
+  prefix owns the key; otherwise the lexicographically last namespace wins.
+  Reproduces the user's four Java names, e.g. `§e5.45x39mm 步枪弹`, `§b8mm 毛瑟 步枪弹`.
+- Ammo tooltip titles keep the translation's own § colour (5.7x28 is orange,
+  matching Java); gun titles and custom names are unchanged. The pack footer still
+  resolves from the AmmoId namespace.
+- Intentional behaviour changes from the newly selected files: 5.7x28 stack
+  limit60→50 and 7.92x57 36→30 (5.45x39 stays60); existing over-limit stacks are
+  not truncated, migrated or rewritten, only new merges/splits/give use the new limit.
+  `tacz:xmag_reload_logic` now resolves to TWX's script (18 default-pack guns,
+  102 registered guns in total). Audible source changes: ak47_shoot, hk416d_shoot,
+  hk416d_reload_end and two scar_h inspect sounds now come from ClassicRCCRP;
+  the 5.7x28 slot icon follows ClassicRCCRP's display to the classicr PNG.
+
+### Added — pack resolution audit tool
+
+- `xmake run tacz-pack-resolve <gunpacks> <out.json> [--reload-script id]` loads
+  the production registry and reports every duplicate path with all four lookups,
+  the consumer's choice, source pack, byte size and FNV-1a-64, plus derived ammo
+  limits/icons/tooltips and language sources. Installed packs: 429 duplicate paths,
+  100 with different content; all 7 Java evidence items pass
+  (`docs/PACK-OVERRIDE-0.3.34.md` §14, CSV alongside). A Lua VM probe ran the TWX
+  script for 102 guns × 6 reload/cancel scenarios with no warnings (not in-game acceptance).
+- Rule tests use synthetic fixture packs only. In-game listening/icon/reload
+  regression for the new DLL is pending.
+
 ## [0.3.33] - 2026-10-28
 
 ### Upgraded — LeviLamina 26.51.9

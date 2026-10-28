@@ -605,7 +605,7 @@ CSV保留全部429项、四种查询、消费者选择、字节数及FNV-1a-64�
 | 4 | **PASS** | 已加载57x28 index：stack50、name=`classicr.ammo.57x28.name`、display=`classicr:57x28_display`；792x57 stack30、545x39 stack60。 |
 | 5 | **PASS** | `data/tacz/scripts/xmag_reload_logic.lua`由Listed选TWX，15280 B。 |
 | 6 | **PASS** | 已加载zh_cn为默认包的`§e5.45x39mm 步枪弹`、`§b8mm 毛瑟 步枪弹`；en_us为默认包的`§e5.45x39mm Bullet`、`§b8mm Mauser Bullet`。d2efba6的“键前缀namespace拥有者优先、否则namespace字典序后者优先”政策确实得出这些值；本步未修改政策，也不把它宣称为Java HashMap的保证。 |
-| 7 | **MISMATCH：仅PNG尺寸标注** | ItemTooltip实际三行为`§r§f§65.7x28mm 穿甲弹§r`、`§9TAC \| 弹药§r`、`§9§oTAC Zero 默认枪械包§r`，颜色/文字/包名均PASS。registry的slot路径为`assets/classicr/textures/ammo/slot/57x28.png`，HUD按Direct读取该classicr路径，不是tacz路径。但该文件实盘为**3210 B**，tacz默认PNG为**636 B**，与用户消息给出的636/3210恰好相反。 |
+| 7 | **PASS** | ItemTooltip实际三行为`§r§f§65.7x28mm 穿甲弹§r`、`§9TAC \| 弹药§r`、`§9§oTAC Zero 默认枪械包§r`，颜色/文字/包名均PASS。registry的slot路径为`assets/classicr/textures/ammo/slot/57x28.png`，HUD按Direct读取该classicr路径，不是tacz路径。该文件实盘为**3210 B**，tacz默认PNG为**636 B**。（初次核对时标为MISMATCH，原因是主agent的核对请求把636/3210两个尺寸写反了，见下文更正。） |
 
 第7项额外逐文件读取确认（两文件均32×32，不修改任何文件）：
 
@@ -614,9 +614,10 @@ CSV保留全部429项、四种查询、消费者选择、字节数及FNV-1a-64�
 | ClassicRCCRP：`assets/classicr/textures/ammo/slot/57x28.png` | **3210** | `dcb73be4d5df24b2` |
 | tacz_default_gun：`assets/tacz/textures/ammo/slot/57x28.png` | **636** | `4123cb0d0f473728` |
 
-原因分析：R的display原文明确写`"slot": "classicr:ammo/slot/57x28"`，工具派生slot与其一致；
-当前安装目录仅R提供此classicr PNG，因此HUD的Direct查询将读R的3210 B文件。
-这不是同路径优先级误选，而是提供的文件尺寸与当前安装文件不符；可能是尺寸标注对调，或Java与本端实际文件内容不同。
-仅凭现有证据无法区分这两种原因，若需确认，请在Java安装目录核对这两个路径的字节数/SHA256。
-不为迎合636 B预期改用tacz图标，不修改包内容或应用代码。工具本步无需修复。
+R的display原文明确写`"slot": "classicr:ammo/slot/57x28"`，工具派生slot与其一致；
+当前安装目录仅R提供此classicr PNG，因此HUD的Direct查询读R的3210 B文件。
+
+**更正（0.3.34收尾）**：主agent发给核对子任务的请求中把两个文件的字节数写反了（写成classicr 636 B、tacz 3210 B）。
+实盘为classicr 3210 B、tacz 636 B，HUD加载的正是display指定的classicr文件，第7项判为PASS；游戏内图标与Java截图的对比留待实机验收。
+不修改包内容或应用代码，工具无需修复。
 以上是离线生产解析/tooltip构建结果，不代表新DLL已部署或完成游戏内显示、听感验收。
