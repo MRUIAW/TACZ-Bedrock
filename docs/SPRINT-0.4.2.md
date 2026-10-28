@@ -110,3 +110,63 @@ if (gun::sprintBlocksShot(s.sprintTimeS)) return "IS_SPRINTING";
   `tests/ItemTooltipTests.cpp`.
 - Release/docs: `xmake.lua`, `tooth.json`, both `packs/*/tacz_*/manifest.json`,
   `CHANGELOG.md`, `docs/ROADMAP.md`, this report.
+
+## 0.4.3 addendum — held-fire stop transport
+
+The table's "vanilla sprint state carries the client's stop to the server" claim
+is superseded. Java has vanilla STOP_SPRINTING transport; Bedrock local
+`setSprinting(false)` plus request suppression does not guarantee it. Auth input
+has separate SprintDown=4, Sprinting=20, StartSprinting=25 and StopSprinting=26.
+`AimSprintPacket` clears down/state/start and **preserves, but never creates**
+StopSprinting; legacy starts are dropped separately. Native server movement/action
+handling owns server sprint independently; recovery reads server `isSprinting()`.
+See also `CAMERA-RENDER-0.3.16.md`, "Why the two sprint versions".
+
+ADS works because `AimHandler` explicitly installs `sprintPolicy`, stops server
+sprint, and `ServerAimSprint` rejects native re-entry. Held fire had no equivalent
+server path, so positive recovery could stay capped and prevent any ShootPacket.
+`2026-10-29.2.log`, 05:15:53.986–05:16:02.005 and 05:16:41.062–05:16:42.062,
+shows local blocking without ADS, positive rawRequests, zero auth/legacy filters,
+and no IS_SPRINTING refusal. The user's external-stop workaround supports this
+missing server boundary. Existing counters do not count StopSprinting: whether
+the native stop was absent or later undone is **not** distinguished; no complete
+native auth-input decompilation or new live packet trace is claimed.
+
+0.4.3 sends change-only `ShootSprintPacket(bool held)` from the existing scoped
+`gun::shootStopsSprint` result, including refused/dry/drawing/semi-auto attempts.
+This is a **transport difference only**, not a Java gameplay divergence. Server
+resolves the authenticated sender/subclient and validates alive, not dead or
+spectator, and an actual main-hand gun. It accepts no client gun id, timer or shot
+permission; the bool only stops the sender's own sprint. Shared `blocksSprint`
+ORs intent, ADS and non-finishing reload into the **same** policy/setter/hook;
+ADS release cannot clear held-fire blocking. Recovery/sync/shot checks,
+success-only semi-auto retry and native-driven poses remain unchanged.
+
+Pure `ShootSprintIntent` scopes intent to actor/dimension/eligibility. Selection
+releases old intent before publishing the new held selection (even without known
+pack data). Client discards stale trigger state across death/respawn/dimension/
+actor changes. Server observes scope before ticks/actions and queues death/respawn
+invalidation without recursive shooter locking. Disconnect/world stop/disable and
+client world-generation teardown clear state, without sending into a retired
+world. No new/changed native hooks, RVAs, renderer work or pack special cases.
+
+Server/client x64 Release and tests: **build ok**; **223 cases / 921,124 assertions,
+Status: SUCCESS** (6 new cases / 396 assertions). Client configuration left active;
+UTF-8 without BOM verified. No game launch, deployment or push. Synthetic native
+boundary models are explicitly labelled; live acceptance remains pending.
+
+Temporary `[sprint-server]` logs only `(intent, native sprint, timer > 0)` edges,
+not each decrement. Expect `native sprint-state hook=true` in `[ads-sprint-server]`,
+then these formats (T is a positive timer; zero-duration recovery may skip it):
+
+```text
+[sprint-server] <name> stopIntent=true sprinting=false sprintTime=T
+[sprint-server] <name> stopIntent=true sprinting=false sprintTime=0.000000
+[sprint-server] <name> stopIntent=false sprinting=false sprintTime=0.000000
+```
+
+Release may instead show native sprint resuming. While held, sprint must remain
+false and recovery reach zero within remaining `sprint_time` plus tick/network
+delivery; semi-auto fires exactly once. Check ADS/reload overlap, sneak/selection,
+death/respawn, dimension change and rejoin for flicker/stale blocking. Remove the
+diagnostic after acceptance; IS_SPRINTING refusals must not repeat indefinitely.

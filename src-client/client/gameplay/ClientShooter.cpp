@@ -41,6 +41,7 @@
 #include "client/ui/GunHud.h"
 #include "gun/ShootRules.h"
 #include "gun/Sprint.h"
+#include "gun/DrawRules.h"
 #include "gun/ClientWorldSession.h"
 #include "mod/TaczMod.h"
 #include "nbt/AmmoItem.h"
@@ -89,6 +90,8 @@ struct SprintReply {
 };
 std::optional<SprintReply> serverSprintTime;
 float syncedSprintTime = 0; // getSynSprintTime(); frame-owned, no local decay
+std::optional<gun::SprintIntentScope> sprintLife;
+std::optional<gun::HandSelection> sprintSelection;
 
 // LocalPlayerDataHolder, reduced to what is implemented. Main thread only (frame()).
 std::optional<int64_t> lastShot;                 // clientShootTimestamp
@@ -302,6 +305,8 @@ void frame() {
             if (serverSprintTime && !worldSession.accepts(serverSprintTime->world)) serverSprintTime.reset();
         }
         syncedSprintTime = 0;
+        sprintLife.reset();
+        sprintSelection.reset();
         lastShot.reset();
         shotTimestamp.reset();
         previousShotTimestamp.reset();
@@ -325,6 +330,14 @@ void frame() {
     if (!client || &*client != joinedClient.load()) return;
     auto* player = client->getLocalPlayer();
     if (!player) return;
+    gun::SprintIntentScope life{reinterpret_cast<uintptr_t>(player), static_cast<int>(player->getDimensionId()),
+        player->isAlive() && !player->isDead() && !player->isSpectator()};
+    if (sprintLife && *sprintLife != life) triggerDown = false; // no stale press across death/respawn or dimension/player replacement
+    sprintLife = life;
+    auto mainHand = nbt::readGun(player->getSelectedItem());
+    gun::HandSelection selection{mainHand ? std::optional{mainHand->gunId} : std::nullopt, player->getSelectedItemSlot()};
+    bool sprintSelectionChanged = !sprintSelection || *sprintSelection != selection;
+    sprintSelection = selection; // actual gun identity even if pack data/display is unavailable
     auto gun = heldGun(true);
     bool selectionChanged = anim::held(gun ? std::optional{gun->state.gunId} : std::nullopt, player->getSelectedItemSlot());
     if (selectionChanged) {
@@ -344,8 +357,8 @@ void frame() {
     auto const* display = gun && gun->entry->index.display
         ? TaczMod::getInstance().gunPacks().gunDisplay(*gun->entry->index.display) : nullptr;
     aim::frame(*client, *player, gun ? std::optional{gun->state.gunId} : std::nullopt,
-        gun ? &gun->entry->data : nullptr, display, selectionChanged, anim::aimAllowed(),
-        gun::shootStopsSprint(inGameplay(), gun.has_value() || hasMainHandGun(),
+        gun ? &gun->entry->data : nullptr, display, selectionChanged || sprintSelectionChanged, anim::aimAllowed(),
+        gun::shootStopsSprint(inGameplay(), mainHand.has_value(),
             player->isSpectator(), triggerDown.load()));
     applyServerReloadState();
     applyServerSprintTime();

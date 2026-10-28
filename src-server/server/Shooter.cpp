@@ -6,6 +6,7 @@
 #include <memory>
 #include <mutex>
 #include <optional>
+#include <tuple>
 #include <unordered_map>
 #include <unordered_set>
 #include <type_traits>
@@ -14,6 +15,8 @@
 #include "ll/api/event/EventBus.h"
 #include "ll/api/event/ListenerBase.h"
 #include "ll/api/event/player/PlayerDisconnectEvent.h"
+#include "ll/api/event/player/PlayerDieEvent.h"
+#include "ll/api/event/player/PlayerRespawnEvent.h"
 #include "ll/api/event/server/ServerStoppingEvent.h"
 #include "ll/api/event/world/ServerLevelTickEvent.h"
 #include "ll/api/io/Logger.h"
@@ -65,6 +68,9 @@ struct ShooterState {
     float sprintTimeS = 0;
     std::optional<Clock::time_point> sprintTimestamp;
     std::optional<float> syncedSprintTime;
+    gun::ShootSprintIntent shootSprintIntent;
+    Mob const* sprintOwner = nullptr; // comparison only, including actor replacement/removal
+    std::optional<std::tuple<bool, bool, bool>> sprintDiagnostic;
     gun::HandSelection selection;
     gun::DrawCooldown draw;
     std::optional<int64_t> clockOffset; // server ms - client ms, set on the first trigger pull
@@ -93,6 +99,7 @@ std::unique_ptr<lua::GunLogic>             logic;
 // run from inside shooter code already holding mutex. Never dereference an owner.
 std::mutex sprintMutex;
 std::unordered_set<Mob const*> sprintBlockedOwners;
+std::unordered_set<int64_t> sprintLifeResets;
 bool sprintHooked=false;
 void sprintPolicy(Player& player,bool blocked) {
     std::lock_guard lock(sprintMutex);
@@ -107,7 +114,7 @@ LL_TYPE_INSTANCE_HOOK(ServerAimSprint,ll::memory::HookPriority::Normal,Mob,&Mob:
     origin(value); // reject native server re-entry, not just the later tick correction
 }
 
-std::array<ll::event::ListenerPtr, 3> listeners;
+std::array<ll::event::ListenerPtr, 5> listeners;
 
 int64_t       keyOf(Player const& player) { return player.getOrCreateUniqueID().rawID; }
 ShooterState& stateOf(Player const& player) { return states[keyOf(player)]; }
@@ -156,11 +163,37 @@ void sendReloadState(Player& player, gun::ReloadState state) {
 
 void stopReload(Player& player, ShooterState& s, char const* why);
 
+void applySprintPolicy(Player& player, ShooterState& s) {
+    bool valid = player.isAlive() && !player.isDead() && !player.isSpectator()
+        && nbt::readGun(player.getSelectedItem()).has_value();
+    if (!valid) s.shootSprintIntent.update(false);
+    bool blocked = valid && gun::blocksSprint(s.shootSprintIntent.held, s.isAiming, s.reloadState);
+    sprintPolicy(player, blocked);
+    if (blocked) player.setSprinting(false);
+}
+
+void queueShootSprintReset(Player& player) {
+    // Death can occur inside a shot while mutex is held. Consume at the next
+    // tick/action observation, without re-entering shooter state from an event.
+    std::lock_guard lock(sprintMutex);
+    sprintLifeResets.insert(keyOf(player));
+}
+
 // Called from tick and every action, before using a previous gun's state. Slot is part of
 // identity so switching between two stacks of the same GunId still starts a fresh draw.
 void observeSelection(Player& player, ShooterState& s) {
     auto item = nbt::readGun(player.getSelectedItem());
     gun::HandSelection next{item ? std::optional{item->gunId} : std::nullopt, player.getSelectedItemSlot()};
+    {
+        std::lock_guard lock(sprintMutex);
+        if (sprintLifeResets.erase(keyOf(player))) s.shootSprintIntent = {};
+        if (s.sprintOwner != static_cast<Mob*>(&player)) {
+            sprintBlockedOwners.erase(s.sprintOwner);
+            s.sprintOwner = static_cast<Mob*>(&player);
+        }
+    }
+    s.shootSprintIntent.observe({reinterpret_cast<uintptr_t>(&player), static_cast<int>(player.getDimensionId()),
+        player.isAlive() && !player.isDead() && !player.isSpectator() && item.has_value()}, next != s.selection);
     if (next == s.selection) return;
     stopReload(player, s, "weapon switched");
     s.remaining = 0;
@@ -175,6 +208,7 @@ void observeSelection(Player& player, ShooterState& s) {
     auto entry = item ? gunEntry(item->gunId) : nullptr;
     s.draw.select(serverNowMs(), entry ? gun::animationMillis(entry->data.putAwayTime) : 0);
     s.selection = next;
+    applySprintPolicy(player, s);
 }
 
 bool drawing(ShooterState const& s, pack::GunEntry const& entry) {
@@ -416,7 +450,6 @@ void tickAim(Player& player, ShooterState& s) {
     auto entry = item ? gunEntry(item->gunId) : nullptr;
     auto now = serverNowMs();
     if (!entry || !player.isAlive() || player.isSpectator()) {
-        sprintPolicy(player,false);
         s.isAiming = false;
         s.aimingProgress = 0;
         applyMovement(player, {});
@@ -424,11 +457,9 @@ void tickAim(Player& player, ShooterState& s) {
         s.aimingProgress = model::advanceAimProgress(s.aimingProgress, s.isAiming,
             s.aimingTimestamp < 0 ? 50 : std::max<int64_t>(0, now - s.aimingTimestamp),
             model::effectiveAdsTime(entry->data.aimTime)); // ads cache base until attachments are implemented
-        bool blocked=s.isAiming || (gun::isReloading(s.reloadState) && !gun::isReloadFinishing(s.reloadState));
-        sprintPolicy(player,blocked);
-        if (blocked) player.setSprinting(false);
         applyMovement(player, model::movementModifier(entry->data.movementSpeed, s.isAiming, gun::isReloading(s.reloadState)));
     }
+    applySprintPolicy(player, s); // includes valid held-trigger intent even without known gun data
     s.aimingTimestamp = now;
 }
 
@@ -444,6 +475,13 @@ void tickSprint(Player& player, ShooterState& s) {
         net::SprintTimePacket{s.sprintTimeS}.sendTo(player);
         s.syncedSprintTime = s.sprintTimeS;
     }
+    // Temporary acceptance diagnostic: no per-tick float spam, only boolean edges.
+    auto diagnostic = std::tuple{s.shootSprintIntent.held, player.isSprinting(), gun::sprintBlocksShot(s.sprintTimeS)};
+    if (s.sprintDiagnostic != diagnostic) {
+        logger().info("[sprint-server] {} stopIntent={} sprinting={} sprintTime={:.6f}",
+            player.getRealName(), s.shootSprintIntent.held, player.isSprinting(), s.sprintTimeS);
+        s.sprintDiagnostic = diagnostic;
+    }
 }
 
 void tick(Level& level) {
@@ -458,11 +496,14 @@ void tick(Level& level) {
         Actor* actor = level.fetchEntity(ActorUniqueID{id}, false);
         if (!actor || !actor->isPlayer()) {
             s.remaining = 0;
+            s.shootSprintIntent = {};
+            { std::lock_guard sprintLock(sprintMutex); sprintBlockedOwners.erase(s.sprintOwner); }
+            s.sprintOwner = nullptr;
             continue;
         }
         auto& player = *static_cast<Player*>(actor);
         tickAim(player, s);
-        tickSprint(player, s); // after ADS/reload have corrected native sprint state
+        tickSprint(player, s); // after ADS/reload/held-trigger have corrected native sprint state
         while (s.remaining > 0 && now >= s.nextRound) {
             if (!fireRound(player, s)) {
                 s.remaining = 0;
@@ -485,9 +526,22 @@ public:
         observeSelection(*player, s);
         auto item = nbt::readGun(player->getSelectedItem());
         s.isAiming = packet.aiming && player->isAlive() && !player->isSpectator() && item && gunEntry(item->gunId);
-        sprintPolicy(*player,s.isAiming || (gun::isReloading(s.reloadState) && !gun::isReloadFinishing(s.reloadState)));
-        if (s.isAiming) player->setSprinting(false);
+        applySprintPolicy(*player, s); // an ADS release must not remove held-fire suppression
         logger().info("[ads-server] {} aiming={} progress={:.3f}", player->getRealName(), s.isAiming, s.aimingProgress);
+    }
+};
+
+class ShootSprintHandler final : public ll::network::PacketHandlerBase<ShootSprintHandler, net::ShootSprintPacket> {
+public:
+    void handlePacket(NetworkIdentifier const& netId, NetEventCallback&, net::ShootSprintPacket const& packet) const {
+        auto* player = senderOf(netId, packet.mSenderSubId);
+        if (!player) return;
+        std::lock_guard lock(mutex);
+        auto& s = stateOf(*player);
+        observeSelection(*player, s); // authoritative actor/life/dimension/selected gun eligibility
+        s.shootSprintIntent.update(packet.held);
+        // Only stops the authenticated sender's sprint. No timer or shot state comes from the client.
+        applySprintPolicy(*player, s);
     }
 };
 
@@ -565,21 +619,32 @@ void enable() {
         std::lock_guard lock(mutex);
         auto            key = keyOf(event.self());
         sprintPolicy(event.self(),false);
+        {
+            std::lock_guard sprintLock(sprintMutex);
+            sprintLifeResets.erase(key);
+            if (auto found = states.find(key); found != states.end()) sprintBlockedOwners.erase(found->second.sprintOwner);
+        }
         states.erase(key);
         if (logic) logic->clearScriptData(key);
     });
     listeners[2] = bus.emplaceListener<ll::event::ServerStoppingEvent>([](ll::event::ServerStoppingEvent&) {
         std::lock_guard lock(mutex);
         states.clear();
-        { std::lock_guard sprintLock(sprintMutex); sprintBlockedOwners.clear(); }
+        { std::lock_guard sprintLock(sprintMutex); sprintBlockedOwners.clear(); sprintLifeResets.clear(); }
         logic.reset(); // a fresh Lua state per world, as TACZ reloads scripts with the data packs
+    });
+    listeners[3] = bus.emplaceListener<ll::event::PlayerDieEvent>([](ll::event::PlayerDieEvent& event) {
+        queueShootSprintReset(event.self());
+    });
+    listeners[4] = bus.emplaceListener<ll::event::PlayerRespawnEvent>([](ll::event::PlayerRespawnEvent& event) {
+        queueShootSprintReset(event.self());
     });
 }
 
 void disable() {
     if (sprintHooked) ServerAimSprint::unhook();
     sprintHooked=false;
-    { std::lock_guard sprintLock(sprintMutex); sprintBlockedOwners.clear(); }
+    { std::lock_guard sprintLock(sprintMutex); sprintBlockedOwners.clear(); sprintLifeResets.clear(); }
     auto& bus = ll::event::EventBus::getInstance();
     for (auto& listener : listeners) {
         if (listener) bus.removeListener(listener);

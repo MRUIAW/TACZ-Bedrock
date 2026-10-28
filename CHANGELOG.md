@@ -8,6 +8,30 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 Versioning rule for this project: the patch number goes up by 1 for each small item or test
 round, the minor number goes up by 1 for each finished feature or phase.
 
+## [0.4.3] - 2026-10-29
+
+### User-tested 0.4.2
+
+- Sprinting then holding fire still flickers/retries sprint and never fires until
+  something else interrupts sprint. The arm correctly leaves the run pose.
+- Normal firing, ADS, reload, sneak+sprint and switching guns while sprinting pass.
+  Held semi-auto retry could not be tested because sprint firing was blocked.
+
+### Fixed
+
+- Send change-only held-trigger stop-sprint intent to the authenticated player's
+  existing server ADS/reload sprint policy; validate alive/non-spectator/main-hand
+  gun, stop sprint immediately and reject native re-entry through the same hook.
+  Clear intent on release, selection, death/respawn, dimension/player replacement,
+  world exit and disconnect. ADS release cannot clear held-fire suppression.
+- Correct 0.4.2's transport assumption: Bedrock client sprint suppression is not
+  Java's vanilla STOP_SPRINTING command. This extra intent packet is a transport
+  difference only; server native sprint still drives recovery, authoritative sync,
+  shot rejection and animation. No client timer prediction or shooting override.
+- Add temporary change-only `[sprint-server]` diagnostics (intent, native sprint,
+  timer-positive edges), to be removed after acceptance. In-game firing/flicker
+  and held semi-auto acceptance remain pending.
+
 ## [0.4.2] - 2026-10-29
 
 ### Confirmed — 0.4.1 user acceptance

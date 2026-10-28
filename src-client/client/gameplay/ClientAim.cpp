@@ -26,6 +26,7 @@
 #include "client/gameplay/ClientRecoil.h"
 #include "model/Aiming.h"
 #include "model/SprintInput.h"
+#include "gun/Sprint.h"
 #include "mod/TaczMod.h"
 #include "net/GunPackets.h"
 
@@ -53,6 +54,7 @@ std::atomic<uint64_t> nativeResumeOffered{0};
 bool sprintHooked = false, inputHooked = false, rawHooked=false, packetHooked=false;
 bool toggled = false, target = false, tickValid = false;
 bool loggedFull = false;
+gun::ShootSprintIntent shootSprintIntent;
 float previous = 0, current = 0, adsSeconds = .2f;
 std::optional<Clock::time_point> lastTick, lastFrame;
 model::AimDynamics view;
@@ -218,8 +220,16 @@ void frame(IClientInstance& client, LocalPlayer& player, std::optional<pack::Res
     auto now = Clock::now();
     double elapsed = lastFrame ? std::chrono::duration<double>(now - *lastFrame).count() : 0;
     lastFrame = now;
-    bool gameplay = client.getScreenName().starts_with("hud_screen") && player.isAlive() && !player.isSpectator();
+    bool gameplay = client.getScreenName().starts_with("hud_screen") && player.isAlive() && !player.isDead() && !player.isSpectator();
     bool reset = focusReset.exchange(false);
+    auto publishStop = [](std::optional<bool> changed) {
+        if (changed && shooter::worldToken()) net::ShootSprintPacket{*changed}.sendToServer();
+    };
+    publishStop(shootSprintIntent.observe({reinterpret_cast<uintptr_t>(&player), static_cast<int>(player.getDimensionId()), gameplay && !reset}, selectionChanged));
+    stopSprint = stopSprint && gameplay && !reset;
+    // LocalPlayer::setSprinting(false) plus filtered auth requests does not guarantee
+    // Java's vanilla STOP_SPRINTING transport. Publish intent to the SAME server gate as ADS.
+    publishStop(shootSprintIntent.update(stopSprint));
     if (selectionChanged || reset) {
         setTarget(false);
         previous = current = 0;
@@ -246,7 +256,7 @@ void frame(IClientInstance& client, LocalPlayer& player, std::optional<pack::Res
     auto reload = shooter::reloadState();
     // ShootKey.stopSprint applies even during draw, with no display, or on a
     // refused/dry/semi-auto held trigger. Reuse all existing input/state/wire gates.
-    bool blockSprint = stopSprint || (usable && (target || (gun::isReloading(reload) && !gun::isReloadFinishing(reload))));
+    bool blockSprint = gun::blocksSprint(stopSprint, usable && target, usable ? reload : gun::ReloadStateType::NotReloading);
     sprintPlayer = blockSprint ? reinterpret_cast<uintptr_t>(&player) : 0;
     auto input = player.getEntityContext().tryGetComponent<MoveInputComponent>();
     sprintInput = (usable || stopSprint) && input ? reinterpret_cast<uintptr_t>(&*input) : 0;
@@ -295,6 +305,9 @@ Snapshot snapshot() {
     return published.world == world ? published : Snapshot{};
 }
 void clear() {
+    // clear() may run after teardown: never send into a retired world; server cleanup
+    // covers disconnect/world stop. Active-session selection/life changes publish releases above.
+    shootSprintIntent = {};
     sprintInput = sprintPlayer = 0;
     sprintBlocked=false;
     sprintSender=0;

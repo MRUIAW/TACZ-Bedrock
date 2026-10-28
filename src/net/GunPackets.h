@@ -25,6 +25,22 @@ public:
     }
 };
 
+// Bedrock transport counterpart of Java's vanilla STOP_SPRINTING command.
+// Only held ShootKey.stopSprint intent, never sprint time, shot permission or gun data.
+class ShootSprintPacket final : public ll::network::PacketBase<ShootSprintPacket> {
+public:
+    bool held = false;
+    ShootSprintPacket() = default;
+    explicit ShootSprintPacket(bool value) : held(value) {}
+    void write(BinaryStream& stream) const override { stream.writeBool(held, nullptr, nullptr); }
+    Bedrock::Result<void> read(ReadOnlyBinaryStream& stream) override {
+        auto value = stream.getBool();
+        if (!value) return nonstd::make_unexpected(value.error());
+        held = *value;
+        return {};
+    }
+};
+
 // Selection notification only. The server reads its own selected ItemStack and never trusts
 // a client-supplied gun id, duration or clock. Tick/action observations are the fallback.
 class DrawPacket final : public ll::network::PacketBase<DrawPacket> {
