@@ -8,6 +8,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 Versioning rule for this project: the patch number goes up by 1 for each small item or test
 round, the minor number goes up by 1 for each finished feature or phase.
 
+## [0.4.1] - 2026-10-29
+
+### Fixed — gun sway with View Bobbing ON
+
+- Suppress native hand-pass `LevelRendererPlayer::bobView` while the published
+  displayed item is a gun in the active world, including put-away animation,
+  matching Java TACZ. This call bobs the world matrix our gun is drawn on;
+  level/world bob remains native. No camera-mode or successful-draw gate.
+- Remove the temporary log-only bob research hooks and draw diagnostics.
+  Hurt bob (`bobHurt`), camera setup, Camera Shake/camera-bone gating and
+  GunHurtBobTweak remain untouched.
+- Awaiting in-game acceptance for the sway fix and native bob regression checks.
+
 ## [0.4.0] - 2026-10-28
 
 Phases 1–3 complete. No code changes; version metadata and roadmap only.

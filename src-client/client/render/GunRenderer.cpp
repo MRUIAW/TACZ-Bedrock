@@ -29,6 +29,7 @@
 #include "mc/client/renderer/Tessellator.h"
 #include "mc/client/renderer/TextureGroup.h"
 #include "mc/client/renderer/game/ItemInHandRenderer.h"
+#include "mc/client/renderer/game/LevelRendererPlayer.h"
 #include "mc/deps/core/container/Blob.h"
 #include "mc/deps/core/file/PathView.h"
 #include "mc/deps/core/image/Image.h"
@@ -104,6 +105,7 @@ using TextureVariant = std::variant<std::monostate, mce::TexturePtr, mce::Client
 
 using FirstPersonSignature = void (ItemInHandRenderer::*)(BaseActorRenderContext&, Matrix const&, ItemContextFlags);
 static_assert(std::is_same_v<decltype(&ItemInHandRenderer::renderFirstPerson), FirstPersonSignature>);
+static_assert(std::is_same_v<decltype(&LevelRendererPlayer::bobView), void (LevelRendererPlayer::*)(Matrix&, float)>);
 using MeshRenderSignature=void (mce::Mesh::*)(mce::MeshContext&,mce::MaterialPtr const&,TextureVariant const&,
     uint,uint,OffscreenCaptureDescription const&,mce::IndexBufferContainer const*) const;
 static_assert(std::is_same_v<decltype(static_cast<MeshRenderSignature>(&mce::Mesh::renderMesh)),MeshRenderSignature>);
@@ -895,7 +897,26 @@ LL_TYPE_INSTANCE_HOOK(
     origin(context, previousProjection, flags);
 }
 
+// Native hand-pass bobView bobs the world matrix our gun draws on; Java TACZ cancels only this hand-pass bob.
+LL_TYPE_INSTANCE_HOOK(
+    HandViewBobHook,
+    ll::memory::HookPriority::Normal,
+    LevelRendererPlayer,
+    &LevelRendererPlayer::bobView,
+    void,
+    Matrix& mv,
+    float   alpha
+) {
+    auto session = shooter::worldToken();
+    if (session) {
+        auto hud = anim::hudState();
+        if (model::canUseGunRenderResources(session, hud.world, hud.gun.has_value())) return;
+    }
+    origin(mv, alpha);
+}
+
 bool hooked = false;
+bool bobHooked = false;
 
 } // namespace
 
@@ -904,6 +925,8 @@ void enable() {
     enableSkinTextureSource(); // idempotent, including mod re-enable
     hooked = FirstPersonGunHook::hook() == 0;
     if (!hooked) logger().warn("Cannot hook first-person rendering; guns will look like their vanilla item");
+    bobHooked = HandViewBobHook::hook() == 0;
+    if (!bobHooked) logger().warn("Cannot hook hand view bobbing; guns will inherit vanilla view bobbing");
 }
 
 void disable() {
@@ -911,6 +934,8 @@ void disable() {
     disableSkinTextureSource();
     if (hooked) FirstPersonGunHook::unhook();
     hooked = false;
+    if (bobHooked) HandViewBobHook::unhook();
+    bobHooked = false;
     std::lock_guard lock(cacheMutex);
     releaseResources("mod disable");
 }
