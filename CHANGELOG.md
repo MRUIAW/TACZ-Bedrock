@@ -8,6 +8,32 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 Versioning rule for this project: the patch number goes up by 1 for each small item or test
 round, the minor number goes up by 1 for each finished feature or phase.
 
+## [0.4.0] - 2026-10-28
+
+Phases 1–3 complete. No code changes; version metadata and roadmap only.
+
+### Confirmed — 0.3.34 user acceptance
+
+- All 7 in-game items pass: pack override sounds, 5.7x28 icon, coloured ammo
+  titles, TWX reload script and the new stack limits match Java.
+- Item names follow the game language after switching (several guns checked).
+- B93R second magazine during reload: the user sees no difference from Java;
+  the known issue is closed.
+- The 7.62x39 "copper shell" name seen in Java belongs to a different ammo,
+  `tacz:762x39copper` (ClassicRCCRP, used by classicr mk47, white title). The
+  default `tacz:762x39` is `§e7.62x39mm 步枪弹` (yellow) in its own lang file; both
+  resolve correctly.
+
+### Changed — roadmap phase ownership
+
+- Phase 1 (AK47 single-player) done. Other players hearing gunfire (`shoot_3p`
+  broadcast) moves to phase 8 (server).
+- Phase 2 (multi-pack) done. Guns that depend on unimplemented mechanics are
+  handed to phase 4.
+- Phase 3 (items) done. Held/dropped item appearance merges into phase 7
+  third-person rendering (same world-space renderer).
+- Fire volume stays 0.8 (Java local 0.64); the user hears no practical difference.
+
 ## [0.3.34] - 2026-10-28
 
 ### Confirmed — 0.3.33 user acceptance
