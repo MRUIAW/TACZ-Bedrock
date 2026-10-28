@@ -27,6 +27,9 @@ public:
     // Paths relative to the pack root using '/', under the given prefix (e.g. "data/").
     [[nodiscard]] virtual std::vector<std::string> list(std::string_view prefix) const = 0;
     [[nodiscard]] virtual std::optional<std::string> read(std::string_view path) const = 0;
+    // Separate discovery from opening: a selected but unreadable file must not
+    // silently fall back to a lower-priority source.
+    [[nodiscard]] virtual bool contains(std::string_view path) const { return read(path).has_value(); }
 };
 
 std::unique_ptr<PackSource> openFolderPack(std::filesystem::path const& root);
@@ -47,6 +50,15 @@ struct AmmoEntry {
 struct LoadedPack {
     std::string name;
     PackMeta    meta;
+};
+
+// Retrieval operation, not file extension: Java's direct and listing APIs can
+// deliberately select different contents for the very same path.
+enum class ResourceLookup { Direct, Listed, ListedStack, ResourceStack };
+struct ResolvedResource {
+    std::string pack;
+    std::optional<std::string> bytes; // selected supplier may fail to open
+    bool builtin=false;
 };
 
 class GunPackRegistry {
@@ -75,6 +87,8 @@ public:
     // Reads a file by pack-relative path (e.g. "assets/tacz/textures/gun/uv/ak47.png");
     // the last pack containing it wins, as with resource pack stacking.
     [[nodiscard]] std::optional<std::string> readFile(std::string_view path) const;
+    [[nodiscard]] std::optional<std::string> readFile(std::string_view path,ResourceLookup mode) const;
+    [[nodiscard]] std::vector<ResolvedResource> resolve(std::string_view path,ResourceLookup mode) const;
     [[nodiscard]] bool hasFile(std::string const& path) const;
     // Per-gun startup audit, aggregated once (including clip-keyed sounds).
     [[nodiscard]] std::map<ResourceId,std::vector<std::string>> const& assetIssues() const { return mAssetIssues; }

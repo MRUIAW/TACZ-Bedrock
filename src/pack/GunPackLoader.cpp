@@ -45,6 +45,10 @@ public:
         buffer << file.rdbuf();
         return std::move(buffer).str();
     }
+    [[nodiscard]] bool contains(std::string_view path) const override {
+        std::error_code ec;
+        return fs::is_regular_file(mRoot / fs::path(std::u8string(path.begin(),path.end())),ec);
+    }
 
 private:
     fs::path    mRoot;
@@ -169,7 +173,8 @@ void GunPackRegistry::loadFolder(fs::path const& folder, LogFn const& info, LogF
     info("Start scanning for gun packs in " + toUtf8(folder));
     std::vector<fs::path> entries;
     for (fs::directory_iterator it(folder, ec), end; !ec && it != end; it.increment(ec)) entries.push_back(it->path());
-    std::ranges::sort(entries);
+    // Match Files.newDirectoryStream: preserve the filesystem enumeration order.
+    // Sorting files inside one pack is separate and does not set pack priority.
     for (auto const& entry : entries) {
         if (fs::is_directory(entry, ec)) {
             if (fs::is_regular_file(entry / "gunpack.meta.json", ec)) packs.push_back(openFolderPack(entry));
@@ -352,11 +357,40 @@ GunDisplay const* GunPackRegistry::gunDisplay(ResourceId const& id) const {
 }
 
 std::optional<std::string> GunPackRegistry::readFile(std::string_view path) const {
-    for (auto it = mSources.rbegin(); it != mSources.rend(); ++it) {
-        if (auto content = (*it)->read(path)) return content;
+    // Compatibility entry point until consumers select their operation explicitly.
+    return readFile(path,ResourceLookup::Listed);
+}
+
+std::optional<std::string> GunPackRegistry::readFile(std::string_view path,ResourceLookup mode) const {
+    if (mode!=ResourceLookup::Direct && mode!=ResourceLookup::Listed) return std::nullopt;
+    auto selected=resolve(path,mode);
+    return selected.empty() ? std::nullopt : std::move(selected.front().bytes);
+}
+
+std::vector<ResolvedResource> GunPackRegistry::resolve(std::string_view path,ResourceLookup mode) const {
+    std::vector<ResolvedResource> out;
+    auto append=[&](auto const& source) {
+        if (!source->contains(path)) return false;
+        out.push_back({source->name(),source->read(path)});
+        return true;
+    };
+    if (mode==ResourceLookup::Direct) {
+        for (auto const& source:mSources) if (append(source)) return out;
+    } else if (mode==ResourceLookup::Listed) {
+        for (auto it=mSources.rbegin();it!=mSources.rend();++it) if (append(*it)) return out;
+    } else if (mode==ResourceLookup::ListedStack) {
+        for (auto const& source:mSources) append(source);
+    } else {
+        // Forge getResourceStack expands children, then reverses the collected
+        // list. Within this single delegating pack its children are reversed.
+        for (auto it=mSources.rbegin();it!=mSources.rend();++it) append(*it);
     }
-    if (auto text = builtinAsset(path)) return std::string(*text);
-    return std::nullopt;
+    if (auto text=builtinAsset(path)) {
+        ResolvedResource fallback{"<builtin>",std::string(*text),true};
+        if (mode==ResourceLookup::ListedStack || mode==ResourceLookup::ResourceStack) out.insert(out.begin(),std::move(fallback));
+        else out.push_back(std::move(fallback));
+    }
+    return out;
 }
 
 bool GunPackRegistry::hasFile(std::string const& path) const {
