@@ -150,3 +150,19 @@ target("tacz-pack-audit")
     add_packages("nlohmann_json", "glm")
     add_includedirs("src")
     add_files("src/pack/**.cpp", "src/model/**.cpp", "scripts/pack-audit.cpp")
+
+-- Read-only production resolution/VM report for arbitrary external gun packs.
+-- No installed pack or expected winner is a unit-test dependency.
+target("tacz-pack-resolve")
+    add_rules("tacz.builtin_assets")
+    set_default(false)
+    set_kind("binary")
+    set_languages("c++20")
+    if is_plat("windows") then
+        add_defines("NOMINMAX", "UNICODE")
+        add_cxflags("/EHsc", "/utf-8")
+        set_toolchains("clang-cl")
+    end
+    add_packages("nlohmann_json", "glm", "lua", "sol2")
+    add_includedirs("src")
+    add_files("src/pack/**.cpp", "src/model/**.cpp", "src/lua/**.cpp", "scripts/pack-resolve.cpp")

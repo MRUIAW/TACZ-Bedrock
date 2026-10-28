@@ -430,9 +430,9 @@ GunVisual* visualFor(IClientInstance& client, pack::ResourceId const& gunId) {
     ++counters.cacheMisses;
 
     try {
-        auto modelText = packs.readFile(pack::assetPath(*display->model, "geo_models", ".json"));
+        auto modelText = packs.readFile(pack::assetPath(*display->model, "geo_models", ".json"),pack::ResourceLookup::Direct);
         if (!modelText) throw std::runtime_error("model file " + display->model->toString() + " not found");
-        auto png = packs.readFile(pack::assetPath(*display->texture, "textures", ".png"));
+        auto png = packs.readFile(pack::assetPath(*display->texture, "textures", ".png"),pack::ResourceLookup::Direct);
         if (!png) throw std::runtime_error("texture file " + display->texture->toString() + " not found");
 
         visual.model     = model::parseGeoModel(pack::parseJsonText(*modelText));

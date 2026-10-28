@@ -37,7 +37,11 @@ ItemTooltip buildItemTooltip(GunPackRegistry const& packs,ItemIdentity const& id
     auto tr=[&](std::string const& key) { return packs.localize(key,locale); };
     auto line=[&](std::string s) { out.lines.push_back(std::move(s)+"§r"); };
     auto title=customName.empty() ? itemName(packs,identity,locale) : stripFormatting(customName);
-    line("§r§f"+title); // common rarity; pack-embedded colour cannot leak into title
+    // Java AmmoItem.getName returns the translated component, including the
+    // pack's formatting. Keep custom names/gun titles on the existing path.
+    if (customName.empty() && identity.kind==ItemKind::Ammo)
+        if (auto ammo=packs.ammo(identity.id)) title=tr(ammo->index.name);
+    line("§r§f"+title);
     auto packName=packs.packDisplayName(identity.id,locale);
     if (identity.kind==ItemKind::Ammo) {
         if (auto ammo=packs.ammo(identity.id); ammo && !ammo->index.tooltip.empty()) line("§7"+tr(ammo->index.tooltip));

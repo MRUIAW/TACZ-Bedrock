@@ -166,7 +166,7 @@ Texture* texture(MinecraftUIRenderContext& context,std::string const& path) {
     auto [it,inserted]=images.try_emplace(path); auto& result=it->second;
     if (!inserted) return result.failed ? nullptr : &result;
     result.failed=true;
-    auto bytes=TaczMod::getInstance().gunPacks().readFile(path);
+    auto bytes=TaczMod::getInstance().gunPacks().readFile(path,pack::ResourceLookup::Direct);
     if (!bytes) { logger().warn("[hud] missing image {}; skipped",path); return nullptr; }
     if (bytes->size()>static_cast<size_t>(std::numeric_limits<int>::max())) return nullptr;
     int w=0,h=0,n=0;

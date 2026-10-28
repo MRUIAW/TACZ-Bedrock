@@ -60,6 +60,9 @@ struct ResolvedResource {
     std::optional<std::string> bytes; // selected supplier may fail to open
     bool builtin=false;
 };
+struct LanguageOrigin {
+    std::string nameSpace,pack,path;
+};
 
 class GunPackRegistry {
 public:
@@ -69,7 +72,8 @@ public:
     // Problems are reported through `warn` and the offending entry is skipped, like TACZ does.
     void loadFolder(std::filesystem::path const& folder, LogFn const& info, LogFn const& warn);
 
-    // Loads already-opened packs; later packs override earlier ones on id clashes.
+    // Loads already-opened packs in the supplied delegate order. Precedence is
+    // determined by the consumer's retrieval operation, not the pack's name.
     // The registry keeps the packs open so assets can be read on demand.
     void load(std::vector<std::unique_ptr<PackSource>> packs, LogFn const& info, LogFn const& warn);
 
@@ -83,12 +87,16 @@ public:
     }
     [[nodiscard]] std::string localize(std::string const& key,std::string const& locale) const { return lookupTranslation(mLanguages,key,locale); }
     [[nodiscard]] std::string packDisplayName(ResourceId const& id,std::string const& locale) const;
+    [[nodiscard]] std::optional<LanguageOrigin> languageOrigin(std::string const& key,std::string const& locale) const;
+    [[nodiscard]] LanguageTable const& languages() const { return mLanguages; }
 
     // Reads a file by pack-relative path (e.g. "assets/tacz/textures/gun/uv/ak47.png");
-    // the last pack containing it wins, as with resource pack stacking.
+    // Java getResource semantics: the first containing delegate wins. Listing
+    // consumers (e.g. sounds) must explicitly request Listed instead.
     [[nodiscard]] std::optional<std::string> readFile(std::string_view path) const;
     [[nodiscard]] std::optional<std::string> readFile(std::string_view path,ResourceLookup mode) const;
     [[nodiscard]] std::vector<ResolvedResource> resolve(std::string_view path,ResourceLookup mode) const;
+    [[nodiscard]] std::set<std::string> listFiles(std::string_view prefix) const;
     [[nodiscard]] bool hasFile(std::string const& path) const;
     // Per-gun startup audit, aggregated once (including clip-keyed sounds).
     [[nodiscard]] std::map<ResourceId,std::vector<std::string>> const& assetIssues() const { return mAssetIssues; }
@@ -109,6 +117,7 @@ private:
     std::map<ResourceId, GunDisplay>         mGunDisplays;
     std::map<ResourceId,ResourceId>          mAmmoSlots;
     LanguageTable                          mLanguages;
+    std::map<std::string,std::map<std::string,LanguageOrigin>> mLanguageOrigins;
     std::map<std::string,std::string>       mPackDisplayNames; // namespace -> gunpack_info.name translation key
     std::map<ResourceId, std::string>        mDataScripts;
     std::map<ResourceId, std::string>        mAssetScripts;

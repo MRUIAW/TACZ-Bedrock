@@ -49,14 +49,14 @@ TEST_CASE("Release manifests agree on 0.3.33 and category identity stays languag
     auto tag=pack::itemUserData(ak,&registry().gun(ak.id)->data);
     CHECK_FALSE(tag.contains("display")); CHECK_FALSE(tag.contains("TaczAutoName"));
 }
-TEST_CASE("Common titles are white and Chinese language uses full language code") {
+TEST_CASE("Gun titles are white, ammo retains translated formatting, and language uses full code") {
     CHECK(pack::stripFormatting("§e7.62x39 §l测试§r")=="7.62x39 测试");
     CHECK(pack::stripFormatting("中文§")=="中文§");
     CHECK(pack::stripFormatting("§中文§z§E测试")=="§中文§z测试");
     CHECK(pack::itemName(registry(),ak,"zh_CN")=="AKM 突击步枪");
     pack::ItemIdentity ammo{pack::ItemKind::Ammo,{"tacz","762x39"}};
     auto tooltip=pack::buildItemTooltip(registry(),ammo,"zh-CN");
-    CHECK(tooltip.lines==std::vector<std::string>{"§r§f7.62x39mm 步枪弹§r","§9TAC | 弹药§r","§9§oTAC Zero 默认枪械包§r"});
+    CHECK(tooltip.lines==std::vector<std::string>{"§r§f§e7.62x39mm 步枪弹§r","§9TAC | 弹药§r","§9§oTAC Zero 默认枪械包§r"});
     CHECK(pack::itemName(registry(),ammo,"en_US")=="7.62x39mm Bullet");
     auto custom=pack::buildItemTooltip(registry(),ak,"zh_CN",{},"My AK");
     CHECK(custom.lines.front()=="§r§fMy AK§r");

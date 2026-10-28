@@ -12,7 +12,7 @@ animation::AnimationFile loadGunAnimations(
     auto load = [&](ResourceId const& id) {
         animation::AnimationFile result;
         try {
-            auto text = registry.readFile(assetPath(id, "animations", ".animation.json"));
+            auto text = registry.readFile(assetPath(id, "animations", ".animation.json"),ResourceLookup::Direct);
             if (!text) throw ParseError("file not found");
             result = animation::parseAnimationFile(parseJsonText(*text), warn);
         } catch (std::exception const& e) {

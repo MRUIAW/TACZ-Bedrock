@@ -36,7 +36,7 @@ auto& logged = *new std::set<pack::ResourceId>;
 std::shared_ptr<std::string const> load(pack::ResourceId const& id) {
     std::lock_guard lock(mutex);
     if (auto it = cache.find(id); it != cache.end()) return it->second;
-    auto bytes = TaczMod::getInstance().gunPacks().readFile(pack::assetPath(id, "tacz_sounds", ".ogg"));
+    auto bytes = TaczMod::getInstance().gunPacks().readFile(pack::assetPath(id, "tacz_sounds", ".ogg"),pack::ResourceLookup::Listed);
     // Packs routinely name sounds they do not ship (the AK47 display's "reload_tactical", animation
     // keyframes like "ar_akilo_drop"); TACZ plays nothing for those, so this is informational.
     if (!bytes) logger().info("Sound {} is not in any gun pack; skipped", id.toString());

@@ -99,7 +99,7 @@ int main(int argc,char** argv) {
     for (auto const& p:packs.packs()) report["packs"].push_back({{"name",p.name},{"namespace",p.meta.ns}});
     auto read=[&](pack::ResourceId const& id,char const* dir,char const* ext) {
         auto path=std::string_view(dir).starts_with("data/") ? "data/"+id.ns+"/"+dir+"/"+id.path+ext : pack::assetPath(id,dir,ext);
-        auto text=packs.readFile(path);
+        auto text=packs.readFile(path,std::string_view(dir).starts_with("data/") ? pack::ResourceLookup::Listed : pack::ResourceLookup::Direct);
         if (!text) throw std::runtime_error("missing "+id.toString());
         return pack::parseJsonText(*text);
     };
@@ -107,7 +107,6 @@ int main(int argc,char** argv) {
     std::vector<fs::path> folders;
     for (auto const& folder:fs::directory_iterator(fs::path(argv[1])))
         if (folder.is_directory() && fs::exists(folder.path()/"gunpack.meta.json")) folders.push_back(folder.path());
-    std::sort(folders.begin(),folders.end());
     for (auto const& folder:folders) {
         auto source=pack::openFolderPack(folder);
         for (auto const& path:source->list("data/")) {

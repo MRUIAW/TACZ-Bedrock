@@ -79,31 +79,31 @@ struct RawFile {
 
 // Collects <root><ns>/<dir>/**.<ext> across packs; later packs win on clashes.
 std::map<ResourceId, RawFile> collect(
-    std::vector<std::unique_ptr<PackSource>> const& packs,
-    std::string_view                                root,
-    std::string_view                                dir,
-    std::string_view                                ext,
-    GunPackRegistry::LogFn const&                   warn
+    GunPackRegistry const&       registry,
+    std::string_view             root,
+    std::string_view             dir,
+    std::string_view             ext,
+    GunPackRegistry::LogFn const& warn
 ) {
     std::map<ResourceId, RawFile> out;
-    for (auto const& pack : packs) {
-        for (auto const& file : pack->list(root)) {
-            if (!file.ends_with(ext)) continue;
-            auto id = fileToId(file, root, dir, ext);
-            if (!id) {
-                // Only complain about files that are inside the directory but have an invalid name.
-                if (file.find(std::string("/") + std::string(dir) + "/") != std::string::npos) {
-                    warn("Skipping " + pack->name() + "/" + file + ": invalid resource name");
-                }
-                continue;
+    for (auto const& file : registry.listFiles(root)) {
+        if (!file.ends_with(ext)) continue;
+        auto id = fileToId(file, root, dir, ext);
+        if (!id) {
+            // Only complain about files that are inside the directory but have an invalid name.
+            if (file.find(std::string("/") + std::string(dir) + "/") != std::string::npos) {
+                warn("Skipping " + file + ": invalid resource name");
             }
-            auto text = pack->read(file);
-            if (!text) {
-                warn("Cannot read " + pack->name() + "/" + file);
-                continue;
-            }
-            out[*id] = RawFile{*id, pack->name(), std::move(*text)};
+            continue;
         }
+        auto selected=registry.resolve(file,ResourceLookup::Listed);
+        if (selected.empty()) continue;
+        auto& source=selected.front();
+        if (!source.bytes) {
+            warn("Cannot read " + source.pack + "/" + file);
+            continue;
+        }
+        out[*id] = RawFile{*id, std::move(source.pack), std::move(*source.bytes)};
     }
     return out;
 }
@@ -151,7 +151,7 @@ void GunPackRegistry::clear() {
     mGuns.clear();
     mAmmo.clear();
     mGunDisplays.clear();
-    mAmmoSlots.clear(); mLanguages.clear(); mPackDisplayNames.clear();
+    mAmmoSlots.clear(); mLanguages.clear(); mLanguageOrigins.clear(); mPackDisplayNames.clear();
     mDataScripts.clear();
     mAssetScripts.clear();
     mAssetPaths.clear();
@@ -215,7 +215,7 @@ void GunPackRegistry::load(std::vector<std::unique_ptr<PackSource>> packs, LogFn
     auto parseAll = [&](std::string_view root, std::string_view dir, auto&& parse) {
         using Value = decltype(parse(std::declval<nlohmann::json const&>()));
         std::map<ResourceId, std::pair<Value, std::string>> out;
-        for (auto& [id, file] : collect(valid, root, dir, ".json", warn)) {
+        for (auto& [id, file] : collect(*this, root, dir, ".json", warn)) {
             try {
                 out.emplace(id, std::pair{parse(parseJsonText(file.text)), file.pack});
             } catch (ParseError const& e) {
@@ -227,9 +227,9 @@ void GunPackRegistry::load(std::vector<std::unique_ptr<PackSource>> packs, LogFn
         return out;
     };
 
-    for (auto& [id, file] : collect(valid, "data/", "scripts", ".lua", warn)) mDataScripts[id] = std::move(file.text);
+    for (auto& [id, file] : collect(*this, "data/", "scripts", ".lua", warn)) mDataScripts[id] = std::move(file.text);
     mAssetScripts[ResourceId{"tacz", "default_state_machine"}] = *builtinAsset("assets/tacz/scripts/default_state_machine.lua");
-    for (auto& [id, file] : collect(valid, "assets/", "scripts", ".lua", warn)) mAssetScripts[id] = std::move(file.text);
+    for (auto& [id, file] : collect(*this, "assets/", "scripts", ".lua", warn)) mAssetScripts[id] = std::move(file.text);
 
     auto gunData  = parseAll("data/", "data/guns", parseGunData);
     auto gunIndex = parseAll("data/", "index/guns", parseGunIndex);
@@ -242,34 +242,47 @@ void GunPackRegistry::load(std::vector<std::unique_ptr<PackSource>> packs, LogFn
             for (auto const& [key,value]:lang.items()) if (value.is_string()) mLanguages[code][key]=value.get<std::string>();
         }
     }
-    for (auto const& source:valid) for (auto const& file:source->list("assets/")) {
-        if (file.ends_with("/gunpack_info.json")) {
-            auto ns=file.substr(7,file.size()-7-18);
-            if (ns.empty() || ns.find('/')!=std::string::npos) continue;
+    struct Translation { std::string text; LanguageOrigin origin; };
+    std::map<std::string,std::map<std::string,std::map<std::string,Translation>>> translations;
+    for (auto const& file:listFiles("assets/")) {
+        auto slash=file.find('/',7); if (slash==std::string::npos) continue;
+        auto ns=file.substr(7,slash-7),relative=file.substr(slash+1);
+        if (relative=="gunpack_info.json") {
             try {
-                auto text=source->read(file); if (!text) continue;
+                auto text=readFile(file,ResourceLookup::Direct); if (!text) continue;
                 auto info=parseJsonText(*text);
                 if (auto name=info.find("name");name!=info.end() && name->is_string()) mPackDisplayNames[ns]=name->get<std::string>();
             } catch (std::exception const& e) { warn("Invalid pack info "+file+": "+e.what()); }
             continue;
         }
-        auto mid=file.find("/lang/");
-        if (mid==std::string::npos || !file.ends_with(".json")) continue;
-        auto code=file.substr(mid+6,file.size()-mid-11);
+        if (!relative.starts_with("lang/") || !relative.ends_with(".json")) continue;
+        auto code=relative.substr(5,relative.size()-10);
         if (code.empty() || code.find('/')!=std::string::npos) continue;
-        try {
-            auto text=source->read(file); if (!text) continue;
-            auto lang=parseJsonText(*text);
+        for (auto const& source:resolve(file,ResourceLookup::ResourceStack)) try {
+            if (!source.bytes) { warn("Cannot read language "+source.pack+"/"+file); continue; }
+            auto lang=parseJsonText(*source.bytes);
             if (lang.is_object()) for (auto it=lang.begin();it!=lang.end();++it) if (it->is_string())
-                mLanguages[normalizeLanguage(code)][it.key()]=it->get<std::string>();
-        } catch (std::exception const& e) { warn("Invalid language "+file+": "+e.what()); }
+                translations[ns][normalizeLanguage(code)][it.key()]={it->get<std::string>(),{ns,source.pack,file}};
+        } catch (std::exception const& e) { warn("Invalid language "+source.pack+"/"+file+": "+e.what()); }
+    }
+    // Java iterates a namespace HashMap: cross-namespace key collisions have no
+    // priority contract. Deterministic port policy: the key's leading namespace
+    // owns it; otherwise the lexicographically last namespace wins. This is NOT
+    // an emulation of Java HashMap layout or a rule about particular namespaces.
+    auto owns=[](std::string const& ns,std::string const& key) { return key.starts_with(ns+".") || key.starts_with(ns+":"); };
+    for (auto& [ns,locales]:translations) for (auto& [locale,values]:locales) for (auto& [key,value]:values) {
+        auto& origins=mLanguageOrigins[locale];
+        auto previous=origins.find(key);
+        if (previous!=origins.end() && owns(previous->second.nameSpace,key) && !owns(ns,key)) continue;
+        mLanguages[locale][key]=std::move(value.text);
+        origins[key]=std::move(value.origin);
     }
     // Client-side display definitions. Small, so both sides load them; only the client uses them.
     for (auto& [id, entry] : parseAll("assets/", "display/guns", parseGunDisplay)) mGunDisplays.emplace(id, std::move(entry.first));
 
     for (auto& [id, entry] : ammo) {
         if (entry.first.display) try {
-            auto text=readFile(assetPath(*entry.first.display,"display/ammo",".json"));
+            auto text=readFile(assetPath(*entry.first.display,"display/ammo",".json"),ResourceLookup::Listed);
             if (text) { auto display=parseJsonText(*text); auto s=display.find("slot");
                 if (s!=display.end() && s->is_string()) if (auto slot=ResourceId::parse(s->get<std::string>())) mAmmoSlots[id]=*slot;
             }
@@ -357,8 +370,24 @@ GunDisplay const* GunPackRegistry::gunDisplay(ResourceId const& id) const {
 }
 
 std::optional<std::string> GunPackRegistry::readFile(std::string_view path) const {
-    // Compatibility entry point until consumers select their operation explicitly.
-    return readFile(path,ResourceLookup::Listed);
+    return readFile(path,ResourceLookup::Direct);
+}
+
+std::set<std::string> GunPackRegistry::listFiles(std::string_view prefix) const {
+    std::set<std::string> out;
+    for (auto const& source:mSources) for (auto const& file:source->list(prefix)) out.insert(file);
+    return out;
+}
+
+std::optional<LanguageOrigin> GunPackRegistry::languageOrigin(std::string const& key,std::string const& locale) const {
+    for (auto const& code:{normalizeLanguage(locale),std::string("en_us")}) {
+        auto values=mLanguages.find(code);
+        if (values==mLanguages.end() || !values->second.contains(key)) continue;
+        if (auto l=mLanguageOrigins.find(code);l!=mLanguageOrigins.end())
+            if (auto it=l->second.find(key);it!=l->second.end()) return it->second;
+        return std::nullopt; // this locale's builtin won; do not report an English source
+    }
+    return std::nullopt;
 }
 
 std::optional<std::string> GunPackRegistry::readFile(std::string_view path,ResourceLookup mode) const {

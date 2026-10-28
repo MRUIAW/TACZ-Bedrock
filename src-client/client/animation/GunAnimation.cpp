@@ -245,7 +245,7 @@ void reveal() {
     );
     // Listener recovery depends on the actual constraint pivot, not a universal zero.
     try {
-        if (display->model) if (auto text = packs.readFile(pack::assetPath(*display->model,"geo_models",".json"))) {
+        if (display->model) if (auto text = packs.readFile(pack::assetPath(*display->model,"geo_models",".json"),pack::ResourceLookup::Direct)) {
             auto geometry = model::parseGeoModel(pack::parseJsonText(*text));
             session->machine->controller().setInitialPose(model::functionalInitialPose(geometry));
         }
