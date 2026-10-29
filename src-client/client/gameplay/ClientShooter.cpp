@@ -451,6 +451,8 @@ void frame() {
         gun::shootStopsSprint(inGameplay(), mainHand.has_value(),
             player->isSpectator(), triggerDown.load()));
     applyServerData(*player);
+    // Observe every frame before shooting can consume a newly synced chambered round.
+    boltLatch.observeItem(mainHand.has_value(), mainHand && mainHand->barrel);
     // Completed-tick marker is published AFTER tickStateLock. No engine/item/
     // sound/network work runs in that listener. Java LocalPlayerBolt reads only
     // its post-evaluation lock, local latch and main-hand item, not synced values.

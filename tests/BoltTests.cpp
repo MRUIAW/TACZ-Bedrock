@@ -164,6 +164,38 @@ TEST_CASE("Completed tick auto bolt gate skips repeated frames without consuming
     gate.reset(); CHECK(gate.tryAcquire(1));
 }
 
+TEST_CASE("Frame observes a chambered bolt latch before a same-frame shot and the next tick bolts again") {
+    gun::ClientBoltLatch latch; latch.isBolting = true;
+    gun::ClientTickGate gate;
+    gun::GunAmmo ammo{3, false};
+    int attempts = 0, started = 0;
+    auto frame = [&](uint64_t completedTick, bool fire) {
+        // Same ordering as frame(): observation is outside the completed-tick gate.
+        latch.observeItem(true, ammo.barrel);
+        if (completedTick && gate.tryAcquire(completedTick)) {
+            ++attempts;
+            gun::BoltCheck check; check.ammo = ammo; check.localBolting = latch.isBolting;
+            if (!gun::clientBoltRefusal(check)) { latch.isBolting = true; ++started; }
+            latch.observeItem(true, ammo.barrel);
+        }
+        if (fire) {
+            CHECK_FALSE(latch.isBolting); // observed before this shot consumes the chamber
+            REQUIRE(gun::prepareShot(pack::Bolt::ManualAction, ammo) == gun::ShotCheck::Ok);
+            REQUIRE(gun::reduceAmmoOnce(pack::Bolt::ManualAction, ammo));
+        }
+    };
+    frame(1, false); // previous bolt still latched; this tick's auto-bolt gate is spent
+    CHECK(latch.isBolting); CHECK(attempts == 1); CHECK(started == 0);
+    ammo.barrel = true; // chambered item sync between completed ticks
+    frame(1, true); // no new tick, but observation must precede the shot
+    CHECK_FALSE(latch.isBolting); CHECK_FALSE(ammo.barrel);
+    CHECK(ammo.magazine == 3); CHECK(attempts == 1); CHECK(started == 0);
+    frame(2, false); // the next tick can bolt the now-empty chamber again
+    CHECK(latch.isBolting); CHECK(attempts == 2); CHECK(started == 1);
+    frame(2, false);
+    CHECK(latch.isBolting); CHECK(attempts == 2); CHECK(started == 1);
+}
+
 TEST_CASE("Script staging query uses executed module tables and inheritance not hook text matching") {
     auto source = std::make_unique<ScriptSource>();
     source->files["data/fixture/scripts/base.lua"] = "return {start_bolt=function() error('must not execute') end}";

@@ -119,6 +119,8 @@ non-gun. This Java limitation is explicitly accepted. World/observed respawn res
 also clears it. Early chamber sync can clear the latch while authoritative
 is_bolting still keeps the operation lock and shoot precheck blocked.
 
+Live-test fix (2026-10-30): frame() also observes the main-hand item every frame before any shot, so a newly synced chamber clears the latch before being consumed; bolt attempts remain once per completed tick and latch-clear conditions are unchanged.
+
 ## Temporary script staging rule and query VMs
 
 For 0.4.8 only, a script declaring start_bolt **or** tick_bolt is not bolted. Both

@@ -36,6 +36,8 @@ round, the minor number goes up by 1 for each finished feature or phase.
   attachment/shoot dispatch remains later. Generic installed-pack bolt report and
   synthetic timing/precondition/latch/staging tests; see `docs/BOLT-0.4.8.md`.
 
+- Live-test fix: observe the bolt latch every frame before shooting, preventing a just-chambered round from being fired unseen by the latch; bolt attempts remain tick-gated and latch-clear conditions are unchanged.
+
 ### Removed
 
 - Accepted 0.4.7's temporary `[lock]` diagnostic/counters; the Java lock remains.
