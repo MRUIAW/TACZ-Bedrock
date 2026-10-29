@@ -4,17 +4,17 @@
     "name": "TACZ Bedrock",
     "description": "Items and entities for TACZ Bedrock. Loaded automatically by the LeviLamina mod.",
     "uuid": "5b984bb6-ecdd-4135-a04b-151c0a230eb3",
-    "version": [0, 4, 7],
+    "version": [0, 4, 8],
     "min_engine_version": [1, 21, 80]
   },
   "dependencies": [
-    {"uuid": "6f31b787-038a-4dc3-9d62-137d84c25b3a", "version": [0, 4, 7]}
+    {"uuid": "6f31b787-038a-4dc3-9d62-137d84c25b3a", "version": [0, 4, 8]}
   ],
   "modules": [
     {
       "type": "data",
       "uuid": "04f383ff-3f36-41ae-a444-98d86cd5645d",
-      "version": [0, 4, 7]
+      "version": [0, 4, 8]
     }
   ]
 }

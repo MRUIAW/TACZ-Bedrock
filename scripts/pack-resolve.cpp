@@ -6,6 +6,8 @@
 #include "pack/GunPackLoader.h"
 #include "pack/ItemTooltip.h"
 #include "lua/GunLogic.h"
+#include "model/Animation.h"
+#include "pack/GunPackParser.h"
 
 // Runs the production loader/resolver/VM, never a second precedence model.
 // Diagnostic hashes are FNV-1a-64 over the actual returned bytes (not a filename
@@ -88,6 +90,23 @@ int main(int argc,char** argv) try {
     auto log=[&](auto const& s){report["messages"].push_back(s);};
     packs.loadFolder(root,log,log);
     for (auto const& p:packs.packs()) report["packs"].push_back(p.name);
+    // Runtime-equivalent bolt staging inventory; never a gun-name/text heuristic.
+    report["manual_bolt"] = json::array();
+    lua::GunLogic boltQuery(packs, log);
+    for (auto const& [id, entry] : packs.guns()) {
+        if (entry.data.bolt != pack::Bolt::ManualAction) continue;
+        bool staged = boltQuery.hasBoltHooks(entry.data);
+        bool clip = false;
+        auto display = entry.index.display ? packs.gunDisplay(*entry.index.display) : nullptr;
+        if (display && display->animation) if (auto text = packs.readFile(pack::assetPath(*display->animation, "animations", ".animation.json"))) {
+            auto clips = animation::parseAnimationFile(pack::parseJsonText(*text));
+            clip = clips.contains("bolt");
+        }
+        report["manual_bolt"].push_back({{"gun", id.toString()}, {"pack", entry.packName},
+            {"script", entry.data.script ? json(entry.data.script->toString()) : json(nullptr)},
+            {"staged", staged}, {"bolt_clip", clip}, {"inventory_fed", entry.data.reload.type == pack::FeedType::Inventory},
+            {"action_seconds", entry.data.boltActionTime}, {"feed_seconds", entry.data.boltFeedTime}});
+    }
     for (auto const& path:packs.listFiles("")) {
         auto providers=packs.resolve(path,pack::ResourceLookup::ListedStack);
         size_t external=0; std::set<std::string> contents;

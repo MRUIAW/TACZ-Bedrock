@@ -360,6 +360,8 @@ void update() {
 }
 
 void shoot() { trigger("shoot"); }
+void bolt() { trigger("blot"); } // Java GunAnimationConstant.INPUT_BOLT (intentional spelling)
+bool hasStateMachine() { return session && session->machine; }
 void reload() { trigger("reload"); }
 void cancelReload() { trigger("cancel_reload"); }
 void inspect() { trigger("inspect"); }

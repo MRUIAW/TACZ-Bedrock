@@ -41,6 +41,10 @@ public:
     // Loads a script module; false (and a warning) if it does not compile or return a table.
     bool loadScript(pack::ResourceId const& id);
 
+    // Runtime module-table lookup (including require/metatable inheritance), never
+    // source-text matching. TEMP 0.4.8: either declared bolt hook defers this gun.
+    bool hasBoltHooks(pack::GunData const& data);
+
     struct Impl;
 
 private:

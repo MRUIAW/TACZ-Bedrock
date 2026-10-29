@@ -7,6 +7,7 @@
 #include <cstdint>
 #include <limits>
 #include <map>
+#include <memory>
 #include <mutex>
 #include <optional>
 #include <random>
@@ -49,6 +50,7 @@
 #include "gun/ClientWorldSession.h"
 #include "gun/ClientStateLock.h"
 #include "gun/ClientTickGate.h"
+#include "lua/GunLogic.h"
 #include "mod/TaczMod.h"
 #include "nbt/AmmoItem.h"
 #include "nbt/StackLimitProbe.h"
@@ -99,6 +101,9 @@ std::optional<gun::HandSelection> sprintSelection;
 std::optional<bool> previousAlive;
 std::atomic<uint64_t> clientTickCount{0}; // tick listener may run on another thread
 gun::ClientTickGate reloadCancelTickGate; // frame-owned; never gates shooting itself
+gun::ClientTickGate autoBoltTickGate;
+gun::ClientBoltLatch boltLatch;
+std::unique_ptr<lua::GunLogic> boltQueryLogic; // own client frame VM, never the integrated-server VM
 
 // ClientLevelTickEvent is synchronous in ClientLevel::$_subTick, whereas frame()
 // is after MinecraftGame::update. Do not assume an unproven native call/thread
@@ -108,29 +113,12 @@ std::mutex stateLockMutex;
 gun::ClientStateLock stateLock;
 gun::sync::Snapshot lockSyncedState;
 uint64_t lockWorld = 0;
-// TEMP 0.4.7 acceptance counters. maxHeldMs measures a continuous locked span,
-// including repeated Shoot acquisitions and an action still active at world end.
-struct LockDiagnostics {
-    uint64_t acquired = 0, byShoot = 0, byDraw = 0, byReload = 0, timeouts = 0;
-    int64_t maxHeldMs = 0;
-    std::optional<int64_t> heldSince;
-};
-LockDiagnostics lockDiagnostics; // all protected by stateLockMutex
-void observeLockHeld(int64_t now) {
-    if (lockDiagnostics.heldSince) lockDiagnostics.maxHeldMs = std::max(lockDiagnostics.maxHeldMs, now - *lockDiagnostics.heldSince);
-    if (!stateLock.clientStateLock) lockDiagnostics.heldSince.reset();
-}
 void acquireStateLock(gun::LockCondition condition) {
     auto world = worldSession.current();
     auto now = systemNowMs(); // LocalPlayerDataHolder uses System.currentTimeMillis
     std::lock_guard lock(stateLockMutex);
     if (!world || lockWorld != world) return;
-    if (!stateLock.clientStateLock) lockDiagnostics.heldSince = now;
     stateLock.lockState(condition, now);
-    ++lockDiagnostics.acquired;
-    if (condition == gun::LockCondition::Shoot) ++lockDiagnostics.byShoot;
-    if (condition == gun::LockCondition::Draw) ++lockDiagnostics.byDraw;
-    if (condition == gun::LockCondition::Reload) ++lockDiagnostics.byReload;
 }
 bool stateLocked() {
     std::lock_guard lock(stateLockMutex);
@@ -142,12 +130,10 @@ bool pendingNonShootLock() {
 }
 void resetStateLock(bool newSession = false) {
     auto world = worldSession.current();
-    auto now = systemNowMs();
+    boltLatch.reset(); // existing world/respawn reset path; no extra death cancellation
     std::lock_guard lock(stateLockMutex);
-    observeLockHeld(now);
     stateLock.reset();
-    lockDiagnostics.heldSince.reset();
-    if (newSession) { lockDiagnostics = {}; lockSyncedState = {}; }
+    if (newSession) lockSyncedState = {};
     lockWorld = world;
 }
 void tickStateLock() {
@@ -156,8 +142,7 @@ void tickStateLock() {
     auto now = systemNowMs();
     std::lock_guard lock(stateLockMutex);
     if (lockWorld != world) return;
-    if (stateLock.tickStateLock(now, lockSyncedState)) ++lockDiagnostics.timeouts;
-    observeLockHeld(now);
+    stateLock.tickStateLock(now, lockSyncedState);
 }
 
 // LocalPlayerDataHolder, reduced to what is implemented. Main thread only (frame()).
@@ -243,6 +228,42 @@ std::optional<pack::ResourceId> displaySound(HeldGun const& gun, std::string con
     return it == display->sounds.end() ? std::nullopt : std::optional{it->second};
 }
 
+void bolt() {
+    if (stateLocked() || boltLatch.isBolting) return;
+    auto gun = heldGun();
+    if (!gun) return;
+    auto client = ll::service::getClientInstance();
+    auto player = client ? client->getLocalPlayer() : nullptr;
+    if (!player) return;
+    auto const& data = gun->entry->data;
+    gun::BoltCheck check;
+    check.hasDisplay = gun->entry->index.display && TaczMod::getInstance().gunPacks().gunDisplay(*gun->entry->index.display);
+    check.type = data.bolt;
+    check.ammo = {gun->state.ammo, gun->state.barrel};
+    check.inventoryFed = data.reload.type == pack::FeedType::Inventory;
+    check.needCheckAmmo = !player->isCreative();
+    check.inventoryHasAmmo = data.ammoId && nbt::countAmmo(*player, *data.ammoId) > 0;
+    if (gun::clientBoltRefusal(check)) return;
+    if (!boltQueryLogic) boltQueryLogic = std::make_unique<lua::GunLogic>(TaczMod::getInstance().gunPacks(),
+        [](auto const& message) { logger().warn("{}", message); });
+    // TEMP 0.4.8 staging: no lock/latch/request/presentation for script bolt hooks.
+    check.scriptedHooks = boltQueryLogic->hasBoltHooks(data);
+    if (gun::clientBoltRefusal(check)) return;
+    acquireStateLock(gun::LockCondition::Bolt);
+    boltLatch.isBolting = true;
+    net::BoltPacket{}.sendToServer();
+    if (anim::hasStateMachine()) {
+        if (auto id = displaySound(*gun, "bolt")) sound::play(*id, 1.f, 1.f, true);
+        anim::bolt();
+    }
+}
+
+void tickAutoBolt(std::optional<nbt::GunItemState> const& mainHand) {
+    if (!mainHand) { boltLatch.observeItem(false, false); return; }
+    bolt(); // independent of trigger hold, before chamber-based latch clearing (Java)
+    boltLatch.observeItem(true, mainHand->barrel);
+}
+
 // LocalPlayerReload.reload.
 void reload(HeldGun const& gun) {
     auto const& data = gun.entry->data;
@@ -273,7 +294,7 @@ bool shoot(HeldGun const& gun, int64_t now, bool chained) {
     auto        mode = gun.state.fireMode;
     if (gun::clientCooldownMs(data, mode, now, lastShot) > 0) return false;
     // LocalPlayerShoot.java:136,189-204: no general state-lock check, and never
-    // use authoritative shoot cooldown as the cadence clock. Bolt precheck: 0.4.8.
+    // use authoritative shoot cooldown as the cadence clock.
     if (pendingNonShootLock() || !gun::syncedShootPrecheck(localSyncedState())) return false;
 
     gun::GunAmmo ammo{gun.state.ammo, gun.state.barrel};
@@ -285,7 +306,7 @@ bool shoot(HeldGun const& gun, int64_t now, bool chained) {
         }
         return false;
     }
-    if (*data.bolt == pack::Bolt::ManualAction && !ammo.barrel) return false; // bolting comes later
+    if (*data.bolt == pack::Bolt::ManualAction && !ammo.barrel) { bolt(); return false; }
     // Java checks the server-synced value after preCheck, before shot effects.
     if (gun::sprintBlocksShot(localSyncedState().sprintTime())) return false;
 
@@ -371,6 +392,8 @@ void frame() {
         previousAlive.reset();
         clientTickCount.store(0, std::memory_order_relaxed);
         reloadCancelTickGate.reset();
+        autoBoltTickGate.reset();
+        boltQueryLogic.reset();
         lastShot.reset();
         shotTimestamp.reset();
         previousShotTimestamp.reset();
@@ -411,6 +434,7 @@ void frame() {
     bool selectionChanged = anim::held(gun ? std::optional{gun->state.gunId} : std::nullopt, player->getSelectedItemSlot());
     if (selectionChanged) {
         recoil::clear();
+        boltLatch.reset(); // LocalPlayerDraw.java:115-116
         acquireStateLock(gun::LockCondition::Draw); // LocalPlayerDraw.java:104-116
         net::DrawPacket{}.sendToServer();
         pendingShots.clear(); // do not kick the newly selected gun with an old burst
@@ -427,6 +451,11 @@ void frame() {
         gun::shootStopsSprint(inGameplay(), mainHand.has_value(),
             player->isSpectator(), triggerDown.load()));
     applyServerData(*player);
+    // Completed-tick marker is published AFTER tickStateLock. No engine/item/
+    // sound/network work runs in that listener. Java LocalPlayerBolt reads only
+    // its post-evaluation lock, local latch and main-hand item, not synced values.
+    auto completedTick = clientTickCount.load(std::memory_order_acquire);
+    if (completedTick && autoBoltTickGate.tryAcquire(completedTick)) tickAutoBolt(mainHand);
     if (inGameplay()) measureFrameRate();
     anim::movementTick();
 
@@ -520,7 +549,7 @@ LL_TYPE_INSTANCE_HOOK(ShooterFrameHook, ll::memory::HookPriority::Normal, Minecr
     }
 }
 
-void clearSyncedData(bool summarize) {
+void clearSyncedData() {
     {
         std::lock_guard lock(serverStateMutex);
         serverDataInbox.clear();
@@ -529,22 +558,18 @@ void clearSyncedData(bool summarize) {
     localRuntimeId = 0;
     clientTickCount.store(0, std::memory_order_relaxed);
     reloadCancelTickGate.reset();
+    autoBoltTickGate.reset();
+    boltLatch.reset();
+    boltQueryLogic.reset();
     reloadTypePublished = 0;
     aimingProgressPublished = 0;
     isAimingPublished = false;
-    LockDiagnostics diagnostic;
     {
-        auto now = systemNowMs();
         std::lock_guard lock(stateLockMutex);
-        observeLockHeld(now);
-        diagnostic = lockDiagnostics;
         stateLock.reset();
         lockSyncedState = {};
         lockWorld = 0;
-        lockDiagnostics = {};
     }
-    if (summarize) logger().info("[lock] session acquired={} byShoot={} byDraw={} byReload={} timeouts={} maxHeldMs={}",
-        diagnostic.acquired, diagnostic.byShoot, diagnostic.byDraw, diagnostic.byReload, diagnostic.timeouts, diagnostic.maxHeldMs);
 }
 
 void endWorld(IClientInstance const* client) {
@@ -553,7 +578,7 @@ void endWorld(IClientInstance const* client) {
     // global service when exit callbacks arrive. Request-leave runs before that teardown.
     sound::stopAnimation();
     worldSession.close();
-    clearSyncedData(true);
+    clearSyncedData();
     turn::clear();
     nbt::releaseStackLimitProbe();
     hud::releaseWorld(client);
@@ -641,9 +666,9 @@ void enable() {
         endWorld(&event.self());
     });
     listeners[3] = bus.emplaceListener<ll::event::ClientLevelTickEvent>([](ll::event::ClientLevelTickEvent&) {
-        if (worldSession.current()) clientTickCount.fetch_add(1, std::memory_order_relaxed);
         aim::tick();
         tickStateLock(); // LocalPlayerMixin.java:109-113; real client tick, never frame cadence
+        if (worldSession.current()) clientTickCount.fetch_add(1, std::memory_order_release);
         turn::tick(); // one fixed bob step per real client tick, even without a gun
         anim::captureMovementTick();
     });
@@ -688,9 +713,8 @@ void disable() {
     }
     triggerDown  = false;
     sound::stopAnimation();
-    bool hadWorld = worldSession.current() != 0;
     worldSession.close();
-    clearSyncedData(hadWorld);
+    clearSyncedData();
     turn::clear();
     joinedClient = nullptr;
     resetPending = true;

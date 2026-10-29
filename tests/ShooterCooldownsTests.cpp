@@ -77,22 +77,22 @@ TEST_CASE("Synced melee cooldown getter with timestamp unset is zero only for kn
     CHECK(gun::syncedMeleeCooldownMs(true, &data) == 0);
 }
 
-TEST_CASE("Seven produced shooter keys fit revision one lifecycle snapshots and idle emits nothing after publication") {
+TEST_CASE("Eight produced shooter keys fit revision one lifecycle snapshots and idle emits nothing after publication") {
     namespace sync = gun::sync;
     sync::Snapshot state;
     state.set({sync::Key::ShootCoolDown, gun::syncedShootCooldownMs(false, nullptr, {}, 1000, {}, {})});
     state.set({sync::Key::DrawCoolDown, gun::syncedDrawCooldownMs(false, nullptr, {}, 1000)});
     state.set({sync::Key::MeleeCoolDown, gun::syncedMeleeCooldownMs(false, nullptr)});
     auto full = sync::full(0x100000001ull, state);
-    REQUIRE(full.entries.size() == 7);
-    for (auto const& entry : full.entries) CHECK(entry.key != sync::Key::IsBolting);
+    REQUIRE(full.entries.size() == 8);
+    CHECK(full.entries.back().key == sync::Key::IsBolting);
     auto decoded = sync::decode(sync::encode(full)); REQUIRE(decoded);
     CHECK(sync::ProtocolRevision == 1);
-    CHECK(decoded.message.entries.size() == 7);
+    CHECK(decoded.message.entries.size() == 8);
     sync::Baseline baseline;
     CHECK(baseline.changed(1, state).entries.size() == 3); // missing (-1) -> initialized idle (0)
     baseline.commit(state);
     for (int tick = 0; tick < 100; ++tick) CHECK(baseline.changed(1, state).entries.empty());
-    CHECK(sync::full(1, state).entries.size() == 7);
+    CHECK(sync::full(1, state).entries.size() == 8);
     CHECK(baseline.changed(1, state).entries.empty());
 }

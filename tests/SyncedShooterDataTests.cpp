@@ -40,8 +40,8 @@ TEST_CASE("Shooter sync schema follows Java declaration order types defaults and
     CHECK(state.reload().countDown == -1);
     CHECK(state.sprintTime() == 0);
     CHECK(sync::ProducedKeys == std::array{sync::Key::ShootCoolDown, sync::Key::MeleeCoolDown,
-        sync::Key::ReloadState, sync::Key::AimingProgress, sync::Key::DrawCoolDown, sync::Key::IsAiming, sync::Key::SprintTime});
-    CHECK(sync::full(actorId, state).entries.size() == 7);
+        sync::Key::ReloadState, sync::Key::AimingProgress, sync::Key::DrawCoolDown, sync::Key::IsAiming, sync::Key::SprintTime, sync::Key::IsBolting});
+    CHECK(sync::full(actorId, state).entries.size() == 8);
 }
 
 TEST_CASE("Shooter sync codec round trips empty partial and all typed values") {

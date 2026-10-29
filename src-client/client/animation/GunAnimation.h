@@ -14,6 +14,8 @@ namespace tacz::client::anim {
 bool held(std::optional<pack::ResourceId> const& gun, int slot = -1); // true on selection change
 void update(); // called only from MinecraftGame::update, never a 50 ms client tick
 void shoot();
+void bolt();
+bool hasStateMachine(); // frame-only presentation availability, never bolt permission
 void reload();
 void cancelReload();
 void inspect();

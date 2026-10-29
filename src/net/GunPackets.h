@@ -77,6 +77,13 @@ public:
     Bedrock::Result<void> read(ReadOnlyBinaryStream&) override { return {}; }
 };
 
+// Client -> server: bolt intent only (ClientMessagePlayerBoltGun).
+class BoltPacket final : public ll::network::PacketBase<BoltPacket> {
+public:
+    void write(BinaryStream&) const override {}
+    Bedrock::Result<void> read(ReadOnlyBinaryStream&) override { return {}; }
+};
+
 // Client -> server: start reloading (ClientMessagePlayerReloadGun).
 class ReloadPacket final : public ll::network::PacketBase<ReloadPacket> {
 public:

@@ -8,6 +8,40 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 Versioning rule for this project: the patch number goes up by 1 for each small item or test
 round, the minor number goes up by 1 for each finished feature or phase.
 
+## [0.4.8] - 2026-10-29
+
+### Accepted 0.4.7 — user-tested
+
+- Auto cadence, held semi, burst, reload→fire, draw→fire, refused reload recovery,
+  ADS sensitivity/sprint and death/respawn passed; this also accepts 0.4.6's
+  previously untested respawn full sync. Immediate fire→R does not reload, slightly
+  later works, matching Java. AK47 magazine reload is not interrupted by firing.
+- M870 could not be tested: after one shot the full magazine/empty chamber needs
+  scripted bolting, deferred to 0.4.9. Recorded lock sessions had acquisitions
+  283/211/22, timeouts 3/4/4, maxHeldMs 5592/4524/2053; no recovery override added.
+
+### Added
+
+- Java default manual bolt: separate feed/action times, one-round chamber transfer,
+  exact -1 feed fallback, zero-action support and inventory-fed/creative feed rules.
+  Server validates an empty BoltPacket, commits through the existing NBT path and
+  blocks shoot/reload while bolting. All eight shooter keys now publish using the
+  unchanged revision-1 transport to self and trackers.
+- Client bolt lock/latch, automatic cycling once per completed real client tick
+  from frame(), and NEED_BOLT fallback. Bolt sound uses "bolt" and state-machine
+  input uses Java's "blot"; no invented clip or animation-duration permission.
+- Runtime GunLogic hook-presence query on each side's own VM; temporary 0.4.8
+  staging skips guns declaring start_bolt or tick_bolt before any client lock,
+  latch, request or presentation. Lua bolt/getBoltTime exposure arrives in 0.4.9;
+  attachment/shoot dispatch remains later. Generic installed-pack bolt report and
+  synthetic timing/precondition/latch/staging tests; see `docs/BOLT-0.4.8.md`.
+
+### Removed
+
+- Accepted 0.4.7's temporary `[lock]` diagnostic/counters; the Java lock remains.
+  No refusal acknowledgement, correlation token, server fire-select bolt guard or
+  extra death cancellation. Existing transport/tick-phase differences remain.
+
 ## [0.4.7] - 2026-10-29
 
 ### Accepted 0.4.6 — user-tested

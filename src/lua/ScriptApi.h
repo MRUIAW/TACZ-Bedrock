@@ -7,12 +7,13 @@
 
 #include "gun/Reload.h"
 #include "gun/ShootRules.h"
+#include "gun/BoltRules.h"
 #include "pack/GunData.h"
 #include "pack/ResourceId.h"
 
 // The object gun logic scripts receive as `api`, after TACZ's ModernKineticGunScriptAPI.
 // It works on a copy of the gun's state; the caller writes `ammo` back to the item afterwards.
-// Only the reload-related part is implemented so far (shooting, bolt and heat come later).
+// Reload and default bolt are implemented; Lua bolt hooks/shooting/heat follow later.
 namespace tacz::lua {
 
 class GunLogic;
@@ -32,6 +33,8 @@ struct ScriptApi {
     int64_t              reloadTimeMs = 0; // since the reload started
     int64_t              nowMs        = 0;
     float                aimingProgress = 0;
+    bool                 isBolting = false;
+    int64_t              boltTimeMs = 0;
 
     // Removes up to n rounds of the gun's ammo from the shooter's inventory; returns how many.
     std::function<int(int)> extractAmmo;
@@ -88,7 +91,22 @@ struct ScriptApi {
 
     // TACZ FireMode ordinals: AUTO 0, SEMI 1, BURST 2, UNKNOWN 3.
     [[nodiscard]] int getFireMode() const { return fireMode ? static_cast<int>(*fireMode) : 3; }
+    // ModernKineticGunScriptAPI.java:312-317. Not registered for Lua until 0.4.9.
+    [[nodiscard]] int64_t getBoltTime() const { return isBolting ? boltTimeMs : 0; }
 };
+
+// ModernKineticGunItem.java:340-359. Feed can precede OR follow the action time.
+inline bool defaultTickBolt(ScriptApi& api) {
+    auto action = gun::boltMillis(api.data->boltActionTime);
+    auto feed = api.data->boltFeedTime == -1.f ? action : gun::boltMillis(api.data->boltFeedTime);
+    if (api.getBoltTime() < feed) return true;
+    if (!api.hasAmmoInBarrel()) {
+        if (api.useInventoryAmmo()) {
+            if (api.consumeAmmoFromPlayer(1) == 1) api.setAmmoInBarrel(true);
+        } else if (api.removeAmmoFromMagazine(1) != 0) api.setAmmoInBarrel(true);
+    }
+    return api.getBoltTime() < action;
+}
 
 // ModernKineticGunItem.defaultTickReload + defaultReloadFinishing, for guns without a
 // tick_reload script function.

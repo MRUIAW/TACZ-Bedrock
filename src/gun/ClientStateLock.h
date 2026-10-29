@@ -50,10 +50,9 @@ struct ClientStateLock {
     void reset() { *this = {}; }
 };
 
-// LocalPlayerShoot.java:189-204. Bolting's shoot precheck is staged for 0.4.8;
-// lock release already understands it, without producing or acquiring it here.
+// LocalPlayerShoot.java:189-204, including an early-fed but still-active bolt.
 inline bool syncedShootPrecheck(sync::Snapshot const& state) {
-    return !isReloading(state.reload().type) && state.drawCoolDown() == 0 && state.meleeCoolDown() == 0;
+    return !isReloading(state.reload().type) && state.drawCoolDown() == 0 && !state.isBolting() && state.meleeCoolDown() == 0;
 }
 
 } // namespace tacz::gun

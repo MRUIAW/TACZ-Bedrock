@@ -61,6 +61,11 @@ int64_t serverNowMs() {
     return std::chrono::duration_cast<std::chrono::milliseconds>(Clock::now().time_since_epoch()).count();
 }
 
+int64_t boltNowMs() {
+    // getBoltTime uses Java's wall-clock elapsed milliseconds, not shot timestamps.
+    return std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::system_clock::now().time_since_epoch()).count();
+}
+
 // ShooterDataHolder, reduced to what is implemented.
 struct ShooterState {
     unsigned recoilLookSamples = 0;
@@ -89,6 +94,8 @@ struct ShooterState {
     int64_t              reloadStartedMs  = -1;
     int                  reloadSlot       = -1;
     pack::ResourceId     reloadGunId;
+    bool                 isBolting = false;
+    int64_t              boltTimestamp = -1;
     gun::ReloadState     reloadValue; // full tickReload result, including countdown
     gun::sync::Baseline  syncBaseline;
     std::optional<uint64_t> publishedRuntimeId;
@@ -161,6 +168,8 @@ lua::ScriptApi scriptApi(Player& player, nbt::GunItemState const& item, pack::Gu
     api.reloadTimeMs   = s.reloadStartedMs < 0 ? 0 : api.nowMs - s.reloadStartedMs;
     api.shooterKey     = keyOf(player);
     api.aimingProgress = s.aimingProgress;
+    api.isBolting     = s.isBolting;
+    api.boltTimeMs    = s.isBolting ? boltNowMs() - s.boltTimestamp : 0;
     auto ammoId        = entry.data.ammoId;
     api.extractAmmo    = [&player, ammoId](int n) { return ammoId ? nbt::extractAmmo(player, *ammoId, n) : 0; };
     api.inventoryHasAmmo = [&player, ammoId] { return ammoId && nbt::countAmmo(player, *ammoId) > 0; };
@@ -207,6 +216,8 @@ void observeSelection(Player& player, ShooterState& s) {
         player.isAlive() && !player.isDead() && !player.isSpectator() && item.has_value()}, next != s.selection);
     if (next == s.selection) return;
     stopReload(player, s, "weapon switched");
+    s.isBolting = false; // ShooterDataHolder.initialData, not an extra death cancel
+    s.boltTimestamp = -1;
     s.remaining = 0;
     s.lastShot.reset();
     s.isAiming = false;
@@ -273,6 +284,7 @@ char const* handleShoot(Player& player, int64_t timestamp) {
         return "NETWORK_FAIL";
     }
     if (gun::isReloading(s.reloadState)) return "IS_RELOADING";
+    if (gun::boltBlocksAction(s.isBolting)) return "IS_BOLTING";
     if (gun::sprintBlocksShot(s.sprintTimeS)) return "IS_SPRINTING";
 
     gun::GunAmmo ammo{item->ammo, item->barrel};
@@ -343,6 +355,7 @@ char const* handleReload(Player& player) {
         return "COOL_DOWN";
     }
     if (s.remaining > 0) return "COOL_DOWN";
+    if (gun::boltBlocksAction(s.isBolting)) return "IS_BOLTING";
     if (!canReload(player, *item, *entry)) return "CANNOT_RELOAD";
 
     gun::GunAmmo ammo{item->ammo, item->barrel};
@@ -428,6 +441,53 @@ void tickReload(Player& player, ShooterState& s) {
     }
 }
 
+// LivingEntityBolt.java:27-78. Empty request; all state comes from server item/data.
+char const* handleBolt(Player& player) {
+    auto item = nbt::readGun(player.getSelectedItem());
+    if (!item) return "NOT_GUN";
+    auto entry = gunEntry(item->gunId);
+    if (!entry) return "ID_NOT_EXIST";
+    std::lock_guard lock(mutex);
+    auto& s = stateOf(player);
+    observeSelection(player, s);
+    auto api = scriptApi(player, *item, *entry, s);
+    gun::BoltCheck check;
+    check.shootCooldown = gun::syncedShootCooldownMs(true, &entry->data, item->fireMode, serverNowMs(), s.clockOffset, s.lastShot);
+    check.drawCooldown = gun::syncedDrawCooldownMs(true, &entry->data, s.draw, serverNowMs());
+    check.reload = s.reloadState;
+    check.serverBolting = s.isBolting;
+    check.type = entry->data.bolt;
+    check.ammo = api.ammo;
+    check.inventoryFed = api.useInventoryAmmo();
+    check.inventoryHasAmmo = api.inventoryHasAmmo && api.inventoryHasAmmo();
+    check.needCheckAmmo = api.needCheckAmmo;
+    check.scriptedHooks = gunLogic().hasBoltHooks(entry->data);
+    if (auto reason = gun::serverBoltRefusal(check)) return reason;
+    s.boltTimestamp = boltNowMs();
+    s.isBolting = true; // ModernKineticGunItem.startBolt default; Lua dispatch is 0.4.9
+    logger().info("[bolt] {} started {}", player.getRealName(), item->gunId.toString());
+    return nullptr;
+}
+
+void tickBolt(Player& player, ShooterState& s) {
+    if (!s.isBolting) return;
+    auto item = nbt::readGun(player.getSelectedItem());
+    auto entry = item ? gunEntry(item->gunId) : nullptr;
+    if (!entry || gunLogic().hasBoltHooks(entry->data)) s.isBolting = false;
+    else {
+        auto api = scriptApi(player, *item, *entry, s);
+        s.isBolting = lua::defaultTickBolt(api);
+        if (api.ammo != gun::GunAmmo{item->ammo, item->barrel}) {
+            bool chambered = !item->barrel && api.ammo.barrel;
+            item->ammo = api.ammo.magazine;
+            item->barrel = api.ammo.barrel;
+            nbt::writeSelectedGun(player, *item); // same balanced NBT path as tickReload
+            if (chambered) logger().info("[bolt] {} chambered", player.getRealName());
+        }
+    }
+    if (!s.isBolting) logger().info("[bolt] {} finished", player.getRealName());
+}
+
 // All native value arguments here are fully defined SDK types, never an opaque container.
 static_assert(sizeof(AttributeModificationContext) == 8);
 static_assert(sizeof(MutableAttributeWithContext) == 16);
@@ -504,6 +564,7 @@ void publishShooterData(Player& player, ShooterState& s) {
     snapshot.set({gun::sync::Key::DrawCoolDown, gun::syncedDrawCooldownMs(item.has_value(), data, s.draw, now)});
     snapshot.set({gun::sync::Key::IsAiming, s.isAiming});
     snapshot.set({gun::sync::Key::SprintTime, s.sprintTimeS});
+    snapshot.set({gun::sync::Key::IsBolting, s.isBolting});
     char const* fullReason = nullptr;
     {
         std::lock_guard lock(syncQueueMutex);
@@ -554,6 +615,7 @@ void tick(Level& level) {
             s.nextRound += s.period;
         }
         tickReload(player, s);
+        tickBolt(player, s); // LivingEntityMixin:223-236, after reload/aim/sprint, before publication
     }
     // After every player's aim/sprint/burst/reload simulation, not from producers.
     level.forEachPlayer([&](Player& player) {
@@ -641,6 +703,15 @@ public:
             logger().info("[reload] {} refused: {}", player->getRealName(), refused);
             // ClientMessagePlayerReloadGun.java:21-30 sends no refusal reply.
         }
+    }
+};
+
+class BoltHandler final : public ll::network::PacketHandlerBase<BoltHandler, net::BoltPacket> {
+public:
+    void handlePacket(NetworkIdentifier const& netId, NetEventCallback&, net::BoltPacket const& packet) const {
+        auto player = senderOf(netId, packet.mSenderSubId);
+        if (!player) return;
+        if (auto refused = handleBolt(*player)) logger().info("[bolt] {} refused: {}", player->getRealName(), refused);
     }
 };
 

@@ -28,7 +28,7 @@ inline constexpr size_t KeyCount = static_cast<size_t>(Key::Count);
 enum class SyncMode { All };
 inline constexpr SyncMode mode(Key) { return SyncMode::All; }
 inline constexpr std::array ProducedKeys{Key::ShootCoolDown, Key::MeleeCoolDown, Key::ReloadState,
-    Key::AimingProgress, Key::DrawCoolDown, Key::IsAiming, Key::SprintTime}; // is_bolting from 0.4.8
+    Key::AimingProgress, Key::DrawCoolDown, Key::IsAiming, Key::SprintTime, Key::IsBolting};
 inline constexpr size_t MaxPayloadSize = 4 + 8 + 1 + KeyCount * (1 + 1 + 8);
 
 using Value = std::variant<int64_t, gun::ReloadState, float, bool>;

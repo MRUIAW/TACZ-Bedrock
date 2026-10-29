@@ -20,11 +20,10 @@ namespace {
 constexpr int InstructionLimit = 10'000'000;
 constexpr int HookInterval     = 100'000;
 
-int instructionBudget = 0;
-
 void countHook(lua_State* L, lua_Debug*) {
-    instructionBudget -= HookInterval;
-    if (instructionBudget <= 0) luaL_error(L, "script exceeded %d instructions", InstructionLimit);
+    auto& budget = **static_cast<int**>(lua_getextraspace(L));
+    budget -= HookInterval;
+    if (budget <= 0) luaL_error(L, "script exceeded %d instructions", InstructionLimit);
 }
 
 // ScriptManager.getModuleName: "<namespace>_<path>".
@@ -62,6 +61,7 @@ sol::object toLua(sol::state_view lua, nlohmann::json const& j) {
 struct GunLogic::Impl {
     pack::GunPackRegistry const& packs;
     LogFn                        warn;
+    int                          instructionBudget = 0; // per VM, not shared with client query VM
     sol::state                   lua;
 
     std::unordered_map<std::string, std::optional<sol::table>> scripts;      // by module name
@@ -78,6 +78,7 @@ struct GunLogic::Impl {
     // ScriptManager.secureStandardGlobals: base, package, table, string, math (LuaJ also had
     // bit32, which Lua 5.4 dropped; the default pack does not use it).
     void initGlobals() {
+        *static_cast<int**>(lua_getextraspace(lua.lua_state())) = &instructionBudget;
         lua.open_libraries(sol::lib::base, sol::lib::package, sol::lib::table, sol::lib::string, sol::lib::math);
         lua["dofile"]       = sol::lua_nil;
         lua["loadfile"]     = sol::lua_nil;
@@ -266,5 +267,17 @@ void GunLogic::interruptReload(ScriptApi& api) {
 void GunLogic::clearScriptData(int64_t shooterKey) { mImpl->scriptData.erase(shooterKey); }
 
 bool GunLogic::loadScript(pack::ResourceId const& id) { return mImpl->script(id).has_value(); }
+
+bool GunLogic::hasBoltHooks(pack::GunData const& data) {
+    if (!data.script) return false;
+    auto table = mImpl->script(*data.script);
+    if (!table) return false; // same missing/failed module policy as existing script loading
+    mImpl->instructionBudget = InstructionLimit; // __index may itself be a Lua function
+    // Any non-nil declaration is deferred: a malformed non-function must not
+    // accidentally enable Java's default path (checkFunction rejects it in Java).
+    sol::object start = (*table)["start_bolt"];
+    sol::object tick = (*table)["tick_bolt"];
+    return start.get_type() != sol::type::nil || tick.get_type() != sol::type::nil;
+}
 
 } // namespace tacz::lua
