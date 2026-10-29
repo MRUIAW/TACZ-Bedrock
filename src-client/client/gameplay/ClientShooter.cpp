@@ -48,6 +48,7 @@
 #include "gun/DrawRules.h"
 #include "gun/ClientWorldSession.h"
 #include "gun/ClientStateLock.h"
+#include "gun/ClientTickGate.h"
 #include "mod/TaczMod.h"
 #include "nbt/AmmoItem.h"
 #include "nbt/StackLimitProbe.h"
@@ -96,6 +97,8 @@ gun::ReloadStateType reloadType() { return localSyncedState().reload().type; }
 std::optional<gun::SprintIntentScope> sprintLife;
 std::optional<gun::HandSelection> sprintSelection;
 std::optional<bool> previousAlive;
+std::atomic<uint64_t> clientTickCount{0}; // tick listener may run on another thread
+gun::ClientTickGate reloadCancelTickGate; // frame-owned; never gates shooting itself
 
 // ClientLevelTickEvent is synchronous in ClientLevel::$_subTick, whereas frame()
 // is after MinecraftGame::update. Do not assume an unproven native call/thread
@@ -366,6 +369,8 @@ void frame() {
         sprintLife.reset();
         sprintSelection.reset();
         previousAlive.reset();
+        clientTickCount.store(0, std::memory_order_relaxed);
+        reloadCancelTickGate.reset();
         lastShot.reset();
         shotTimestamp.reset();
         previousShotTimestamp.reset();
@@ -467,10 +472,10 @@ void frame() {
     }
     bool continuous = gun::firesContinuously(gun->entry->data, gun->state.fireMode);
     if (!continuous && lastShotSucceeded) return;
-    // LocalPlayerMixin.java:34-36 / LocalPlayerReload.java:33-50: each attempted
-    // shoot first requests interruption. No synthetic one-cancel-per-press latch;
-    // ShootKey.java:67-69 consumes a semi-auto press only on actual shoot success.
-    if (gun::isReloading(reloadType())) {
+    // Java's shoot attempts/cancellation run once per client tick (ShootKey.java:
+    // 40-43, LocalPlayerMixin.java:34-36). Only cancel side effects are tick-gated;
+    // retain frame-driven shooting and success-only semi-auto press consumption.
+    if (gun::isReloading(reloadType()) && reloadCancelTickGate.tryAcquire(clientTickCount.load(std::memory_order_relaxed))) {
         net::CancelReloadPacket{}.sendToServer();
         anim::cancelReload();
     }
@@ -522,6 +527,8 @@ void clearSyncedData(bool summarize) {
     }
     syncedEntities.clear();
     localRuntimeId = 0;
+    clientTickCount.store(0, std::memory_order_relaxed);
+    reloadCancelTickGate.reset();
     reloadTypePublished = 0;
     aimingProgressPublished = 0;
     isAimingPublished = false;
@@ -634,6 +641,7 @@ void enable() {
         endWorld(&event.self());
     });
     listeners[3] = bus.emplaceListener<ll::event::ClientLevelTickEvent>([](ll::event::ClientLevelTickEvent&) {
+        if (worldSession.current()) clientTickCount.fetch_add(1, std::memory_order_relaxed);
         aim::tick();
         tickStateLock(); // LocalPlayerMixin.java:109-113; real client tick, never frame cadence
         turn::tick(); // one fixed bob step per real client tick, even without a gun

@@ -142,6 +142,7 @@ still read `aim::snapshot()`; no wholesale prediction replacement.
 | Local draw/reload lock guards in shoot; composite fire-select/inspect guard | Java shoot pending-predicate and precheck (`LocalPlayerShoot.java:136,189–204`); fire-select/inspect read clientStateLock only (`LocalPlayerFireSelect.java:29`; `LocalPlayerInspect.java:35`) |
 | 0.4.6 SyncDiagnostics, first/full/absent/rejection/summary logs | Acceptance complete except respawn; remove as assigned. Decode validation, token checks, absent drops/pruning and lifecycle remain |
 
+Reload-cancel packets and animation triggers are limited to one per real client tick via an atomic ClientLevelTickEvent counter and a session-reset gate (Java `ShootKey.java:40–43`); the accepted frame-driven shooting divergence remains, without a per-press latch or shooting gate.
 Explicit input cancellation remains. The default state machine plays reload
 once and has no universal synced-idle cancellation (`resources/tacz/default_state_machine.lua:77–87,215–269`).
 For example Java's shell animation reacts to INPUT_CANCEL_RELOAD

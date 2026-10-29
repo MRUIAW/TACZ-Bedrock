@@ -37,6 +37,7 @@ round, the minor number goes up by 1 for each finished feature or phase.
 
 ### Changed
 
+- Limit reload-cancel packets and animation triggers to one per real client tick (Java ShootKey tick cadence), using an atomic tick counter; shooting stays frame-driven and no per-press latch is restored.
 - Reload, fire-select and inspect use the generic lock; shoot checks pending
   non-shoot predicates and synced draw/melee/reload, retaining predicted burst
   presentation. Gameplay no longer follows the local draw-animation guard.
