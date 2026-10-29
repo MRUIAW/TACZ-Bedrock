@@ -117,7 +117,9 @@ LL_TYPE_INSTANCE_HOOK(AimSensitivityHook, ll::memory::HookPriority::Normal, Loca
     if (!state.world || !state.gun || state.player != reinterpret_cast<uintptr_t>(this)) { origin(delta); return; }
     float base;
     { std::lock_guard lock(cameraMutex); base = lastBaseFov; }
-    auto scale = model::aimingSensitivity(base, state.ironZoom, state.progress, screenDistance, sensitivityMultiplier);
+    // MouseHandlerMixin.java:57: synced progress for sensitivity ONLY. FOV,
+    // model pose, recoil and crosshair still use the locally predicted snapshot.
+    auto scale = model::aimingSensitivity(base, state.ironZoom, shooter::syncedAimingProgress(), screenDistance, sensitivityMultiplier);
     Vec2 applied{delta.x * scale, delta.z * scale};
     origin(applied);
 }
@@ -256,10 +258,12 @@ void frame(IClientInstance& client, LocalPlayer& player, std::optional<pack::Res
     auto reload = shooter::reloadState();
     // ShootKey.stopSprint applies even during draw, with no display, or on a
     // refused/dry/semi-auto held trigger. Reuse all existing input/state/wire gates.
-    bool blockSprint = gun::blocksSprint(stopSprint, usable && target, usable ? reload : gun::ReloadStateType::NotReloading);
+    // LocalPlayerSprint.java:27-29: synced intent, not target/progress>0. Keep
+    // native/input/wire latch gates even while local put-away disallows ADS.
+    bool blockSprint = gun::blocksSprint(stopSprint, shooter::syncedIsAiming(), reload);
     sprintPlayer = blockSprint ? reinterpret_cast<uintptr_t>(&player) : 0;
     auto input = player.getEntityContext().tryGetComponent<MoveInputComponent>();
-    sprintInput = (usable || stopSprint) && input ? reinterpret_cast<uintptr_t>(&*input) : 0;
+    sprintInput = (usable || blockSprint) && input ? reinterpret_cast<uintptr_t>(&*input) : 0;
     sprintBlocked=blockSprint;
     sprintSender=blockSprint ? reinterpret_cast<uintptr_t>(&client.getPacketSender()) : 0;
     sprintSubId=client.getClientSubId();

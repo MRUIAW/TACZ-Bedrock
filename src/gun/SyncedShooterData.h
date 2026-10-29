@@ -27,7 +27,8 @@ enum class Key : uint8_t {
 inline constexpr size_t KeyCount = static_cast<size_t>(Key::Count);
 enum class SyncMode { All };
 inline constexpr SyncMode mode(Key) { return SyncMode::All; }
-inline constexpr std::array ProducedKeys{Key::ReloadState, Key::SprintTime}; // 0.4.6 only
+inline constexpr std::array ProducedKeys{Key::ShootCoolDown, Key::MeleeCoolDown, Key::ReloadState,
+    Key::AimingProgress, Key::DrawCoolDown, Key::IsAiming, Key::SprintTime}; // is_bolting from 0.4.8
 inline constexpr size_t MaxPayloadSize = 4 + 8 + 1 + KeyCount * (1 + 1 + 8);
 
 using Value = std::variant<int64_t, gun::ReloadState, float, bool>;
@@ -70,6 +71,12 @@ public:
     void set(Entry const& entry) { values.at(static_cast<size_t>(entry.key)) = entry.value; }
     gun::ReloadState const& reload() const { return std::get<gun::ReloadState>(get(Key::ReloadState)); }
     float sprintTime() const { return std::get<float>(get(Key::SprintTime)); }
+    int64_t shootCoolDown() const { return std::get<int64_t>(get(Key::ShootCoolDown)); }
+    int64_t meleeCoolDown() const { return std::get<int64_t>(get(Key::MeleeCoolDown)); }
+    int64_t drawCoolDown() const { return std::get<int64_t>(get(Key::DrawCoolDown)); }
+    float aimingProgress() const { return std::get<float>(get(Key::AimingProgress)); }
+    bool isAiming() const { return std::get<bool>(get(Key::IsAiming)); }
+    bool isBolting() const { return std::get<bool>(get(Key::IsBolting)); }
 };
 
 inline Message full(uint64_t runtimeId, Snapshot const& state, std::span<Key const> keys = ProducedKeys) {

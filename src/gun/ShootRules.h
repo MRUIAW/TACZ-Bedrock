@@ -47,7 +47,9 @@ inline bool firesContinuously(GunData const& data, std::optional<FireMode> mode)
 
 // Minimum time between trigger pulls, ms: burst min_interval, otherwise the shoot interval.
 inline int64_t triggerIntervalMs(GunData const& data, std::optional<FireMode> mode) {
-    if (mode == FireMode::Burst) return static_cast<int64_t>(data.burst.minInterval * 1000.0);
+    // Java LivingEntityShoot.java:251 / LocalPlayerShoot.java:328 multiply as float
+    // before truncating (promoting e.g. 0.57F to double would yield 569, not 570).
+    if (mode == FireMode::Burst) return static_cast<int64_t>(static_cast<float>(data.burst.minInterval) * 1000.f);
     return shootIntervalMs(data, mode);
 }
 

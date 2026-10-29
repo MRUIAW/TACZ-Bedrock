@@ -92,8 +92,8 @@ public:
 };
 
 // Server -> entity owner and trackers. Pure codec is shared by both variants/tests.
-// Malformed payloads reach the handler as a rejection, never as partial state;
-// returning a transport error here would bypass our session diagnostic.
+// Bounded raw payloads reach the handler for pure-codec validation; malformed
+// payloads are dropped there, never exposed as partial entity state.
 class SyncedShooterDataPacket final : public ll::network::PacketBase<SyncedShooterDataPacket> {
 public:
     std::string payload;

@@ -40,6 +40,7 @@
 #include "gun/Reload.h"
 #include "gun/DrawRules.h"
 #include "gun/ShootRules.h"
+#include "gun/ShooterCooldowns.h"
 #include "gun/Sprint.h"
 #include "model/Aiming.h"
 #include "lua/GunLogic.h"
@@ -74,7 +75,6 @@ struct ShooterState {
     gun::DrawCooldown draw;
     std::optional<int64_t> clockOffset; // server ms - client ms, set on the first trigger pull
     std::optional<int64_t> lastShot;    // client timestamp of the last accepted trigger pull
-    int64_t                lastShotServerMs = -1;
 
     // Rounds of the current trigger pull still to fire (bursts).
     int                           remaining = 0;
@@ -209,7 +209,6 @@ void observeSelection(Player& player, ShooterState& s) {
     stopReload(player, s, "weapon switched");
     s.remaining = 0;
     s.lastShot.reset();
-    s.lastShotServerMs = -1;
     s.isAiming = false;
     s.aimingProgress = 0;
     s.aimingTimestamp = serverNowMs();
@@ -292,7 +291,6 @@ char const* handleShoot(Player& player, int64_t timestamp) {
     }
 
     s.lastShot         = timestamp;
-    s.lastShotServerMs = now;
     s.gunId            = item->gunId;
     s.mode             = item->fireMode;
     s.slot             = player.getSelectedItemSlot();
@@ -339,8 +337,9 @@ char const* handleReload(Player& player) {
     observeSelection(player, s);
     if (drawing(s, *entry)) return "IS_DRAWING";
     if (gun::isReloading(s.reloadState)) return "ALREADY_RELOADING";
-    // getShootCoolDown() != 0 at the server's own clock.
-    if (s.lastShotServerMs >= 0 && gun::triggerIntervalMs(data, item->fireMode) - (serverNowMs() - s.lastShotServerMs) - 5 > 0) {
+    // LivingEntityReload uses the same getter as synced publication, not receipt
+    // time. Pending burst rounds remain an explicitly retained port restriction.
+    if (gun::syncedShootCooldownMs(true, &data, item->fireMode, serverNowMs(), s.clockOffset, s.lastShot) != 0) {
         return "COOL_DOWN";
     }
     if (s.remaining > 0) return "COOL_DOWN";
@@ -493,7 +492,17 @@ void publishShooterData(Player& player, ShooterState& s) {
         s.publishedRuntimeId = runtimeId;
     }
     gun::sync::Snapshot snapshot;
+    auto item = nbt::readGun(player.getSelectedItem());
+    auto entry = item ? gunEntry(item->gunId) : nullptr;
+    auto data = entry ? &entry->data : nullptr;
+    auto now = serverNowMs();
+    snapshot.set({gun::sync::Key::ShootCoolDown, gun::syncedShootCooldownMs(item.has_value(), data,
+        item ? item->fireMode : std::nullopt, now, s.clockOffset, s.lastShot)});
+    snapshot.set({gun::sync::Key::MeleeCoolDown, gun::syncedMeleeCooldownMs(item.has_value(), data)});
     snapshot.set({gun::sync::Key::ReloadState, s.reloadValue});
+    snapshot.set({gun::sync::Key::AimingProgress, s.aimingProgress});
+    snapshot.set({gun::sync::Key::DrawCoolDown, gun::syncedDrawCooldownMs(item.has_value(), data, s.draw, now)});
+    snapshot.set({gun::sync::Key::IsAiming, s.isAiming});
     snapshot.set({gun::sync::Key::SprintTime, s.sprintTimeS});
     char const* fullReason = nullptr;
     {
@@ -508,7 +517,6 @@ void publishShooterData(Player& player, ShooterState& s) {
     if (fullReason) {
         auto full = gun::sync::full(runtimeId, snapshot);
         net::SyncedShooterDataPacket{full}.sendTo(player);
-        logger().info("[sync] full {} reason={} entries={} runtimeId={}", player.getRealName(), fullReason, full.entries.size(), runtimeId);
     }
     // Java tick END (SyncedEntityDataEvent.java:89-126). Deliberate phase
     // difference: our existing ServerLevelTickEvent runs BEFORE native subTick.
@@ -631,12 +639,7 @@ public:
         if (!player) return;
         if (char const* refused = handleReload(*player)) {
             logger().info("[reload] {} refused: {}", player->getRealName(), refused);
-            // TEMP until 0.4.7: preserve immediate refusal recovery through the new
-            // transport, self only, without consuming dirty state. Java sends nothing:
-            // ClientMessagePlayerReloadGun.java:21-30. Generic state lock lands next.
-            std::lock_guard lock(mutex);
-            net::SyncedShooterDataPacket{gun::sync::Message{player->getRuntimeID().rawID,
-                {{gun::sync::Key::ReloadState, stateOf(*player).reloadValue}}}}.sendTo(*player);
+            // ClientMessagePlayerReloadGun.java:21-30 sends no refusal reply.
         }
     }
 };

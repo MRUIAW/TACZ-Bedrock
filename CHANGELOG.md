@@ -8,6 +8,52 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 Versioning rule for this project: the patch number goes up by 1 for each small item or test
 round, the minor number goes up by 1 for each finished feature or phase.
 
+## [0.4.7] - 2026-10-29
+
+### Accepted 0.4.6 — user-tested
+
+- Reload animation/ammo, magazine reload continuing after fire attempts (matching
+  Java), full/no-reserve refused reload leaving firing available, sprint→fire,
+  world rejoin and dimension change passed. Join/dimension full-sync logs were
+  present; integrated self runtime IDs matched (`1=1`, `self=true`), with zero
+  rejected, absent and stale packets in session summaries.
+- Respawn full sync was not live-tested (no death), not a failure.
+- Single-player Esc pause lets the animation finish without refilling ammo while
+  the world is paused, matching Java without Open to LAN. Accepted unchanged;
+  no pause investigation or fix in this version.
+
+### Added
+
+- Java client state lock with Shoot/Draw/Reload acquisition, predicate observation,
+  250 ms unobserved-operation timeout and authoritative completion gates on real
+  client ticks. Bolt/Melee predicates are ready for later producers. The local
+  fire-rate cooldown remains the cadence clock, not the authoritative lock.
+- Shoot/draw/melee cooldown getters and synced aim production: seven keys in full
+  snapshots, protocol revision 1 unchanged; bolting stays unproduced. Reload
+  validation now shares the translated shoot-cooldown getter. Burst min_interval
+  conversion now uses Java float multiplication before truncation.
+- Temporary world-end `[lock]` acquisition/timeout/max-held summary, to be removed
+  after acceptance. See `docs/SYNC-0.4.7.md` for semantics and the live checklist.
+
+### Changed
+
+- Reload, fire-select and inspect use the generic lock; shoot checks pending
+  non-shoot predicates and synced draw/melee/reload, retaining predicted burst
+  presentation. Gameplay no longer follows the local draw-animation guard.
+- Mouse sensitivity and client sprint suppression read synced aiming progress and
+  aiming intent. Local FOV, gun pose, camera recoil and crosshair remain predicted.
+- Java-style refused reload: no server reply and no animation cancellation on
+  timeout/synced idle. Explicit user interruption remains; pack state machines
+  retain access to synced reload state. No synthetic cancel-history latch.
+
+### Removed
+
+- 0.4.6's temporary refusal send and all `[sync]` diagnostics/counters. Decode
+  validation, session rejection and entity-store lifecycle remain.
+- No bolt implementation, StartTracking hook or publication-phase change. Existing
+  translated-clock, burst-remaining, player-only and fixed-schema differences are
+  documented; live 0.4.7 acceptance and respawn full-sync testing remain pending.
+
 ## [0.4.6] - 2026-10-29
 
 ### Added

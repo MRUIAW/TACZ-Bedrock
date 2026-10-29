@@ -22,8 +22,10 @@ bool ownsClient(IClientInstance const* client); // cached identity only, no nati
 void enable();
 void disable();
 
-// The local player's reload state as last predicted or reported by the server.
+// Thread-safe projections of the local-player synced view, reset at world end.
 gun::ReloadStateType reloadState();
+float syncedAimingProgress();
+bool syncedIsAiming();
 
 struct AnimationTiming {
     int64_t interval = 0;

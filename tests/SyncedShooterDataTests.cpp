@@ -11,6 +11,7 @@ namespace sync = gun::sync;
 constexpr std::array allKeys{sync::Key::ShootCoolDown, sync::Key::MeleeCoolDown, sync::Key::ReloadState,
     sync::Key::AimingProgress, sync::Key::DrawCoolDown, sync::Key::IsAiming, sync::Key::SprintTime, sync::Key::IsBolting};
 constexpr uint64_t actorId = 0xfedcba9876543210ull;
+constexpr std::array reloadSprintKeys{sync::Key::ReloadState, sync::Key::SprintTime};
 sync::Snapshot active() {
     sync::Snapshot state;
     state.set({sync::Key::ReloadState, gun::ReloadState{gun::ReloadStateType::TacticalFeeding, 813}});
@@ -38,8 +39,9 @@ TEST_CASE("Shooter sync schema follows Java declaration order types defaults and
     CHECK(state.reload().type == gun::ReloadStateType::NotReloading);
     CHECK(state.reload().countDown == -1);
     CHECK(state.sprintTime() == 0);
-    CHECK(sync::ProducedKeys == std::array{sync::Key::ReloadState, sync::Key::SprintTime});
-    CHECK(sync::full(actorId, state).entries.size() == 2);
+    CHECK(sync::ProducedKeys == std::array{sync::Key::ShootCoolDown, sync::Key::MeleeCoolDown,
+        sync::Key::ReloadState, sync::Key::AimingProgress, sync::Key::DrawCoolDown, sync::Key::IsAiming, sync::Key::SprintTime});
+    CHECK(sync::full(actorId, state).entries.size() == 7);
 }
 
 TEST_CASE("Shooter sync codec round trips empty partial and all typed values") {
@@ -92,7 +94,7 @@ TEST_CASE("Shooter sync codec rejects every truncation without a partial message
 }
 
 TEST_CASE("Shooter sync codec rejects revision unknown duplicate count ordinal bool trailing and oversize") {
-    auto bytes = sync::encode(sync::full(actorId, active()));
+    auto bytes = sync::encode(sync::full(actorId, active(), reloadSprintKeys));
     auto bad = bytes; bad[0] = 2; checkRejected(bad, sync::DecodeError::Revision);
     bad = bytes; bad[13] = 8; checkRejected(bad, sync::DecodeError::UnknownKey);
     bad = bytes; bad[23] = bad[13]; checkRejected(bad, sync::DecodeError::DuplicateKey);
@@ -106,7 +108,7 @@ TEST_CASE("Shooter sync codec rejects revision unknown duplicate count ordinal b
 
 TEST_CASE("Shooter sync codec rejects all nonfinite float categories before any apply") {
     for (uint32_t bits : {0x7f800000u, 0xff800000u, 0x7fc00000u, 0x7f800001u, 0xffc12345u}) {
-        auto bytes = sync::encode(sync::full(actorId, active()));
+        auto bytes = sync::encode(sync::full(actorId, active(), reloadSprintKeys));
         for (size_t i = 0; i < 4; ++i) bytes[24 + i] = static_cast<char>((bits >> (8 * i)) & 0xff);
         checkRejected(bytes, sync::DecodeError::NonFinite);
         sync::EntityStore store; store.begin(1);
@@ -181,14 +183,12 @@ TEST_CASE("Shooter sync publishes sprint decay to exact zero without client deca
     CHECK(store.local(1, actorId).sprintTime() == 0);
 }
 
-TEST_CASE("Shooter sync full and temporary self-only refusal leave the dirty baseline untouched") {
+TEST_CASE("Shooter sync full snapshot leaves the dirty baseline untouched") {
     sync::Baseline baseline;
     auto state = active();
     auto before = baseline.changed(actorId, state);
     auto full = sync::full(actorId, state);
-    sync::Message refusal{actorId, {{sync::Key::ReloadState, state.reload()}}};
     CHECK(sync::decode(sync::encode(full)));
-    CHECK(sync::decode(sync::encode(refusal)));
     auto after = baseline.changed(actorId, state);
     REQUIRE(before.entries.size() == 2);
     REQUIRE(after.entries.size() == before.entries.size());
