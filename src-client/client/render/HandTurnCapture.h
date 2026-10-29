@@ -20,7 +20,6 @@ public:
 };
 struct HandTurnBase {
     std::optional<glm::mat4> captured;
-    bool rejected=false;
 };
 void captureHandTurn(IClientInstance& client, Matrix const& mv);
 HandTurnBase consumeHandTurn(IClientInstance& client, ScreenContext& screen);

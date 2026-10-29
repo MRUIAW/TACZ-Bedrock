@@ -61,6 +61,6 @@ Sample sample(IClientInstance& client, LocalPlayer& player, float alpha) {
         if (head) yaw=std::lerp(static_cast<double>(head->mYHeadRotO),static_cast<double>(head->mYHeadRot),
             static_cast<double>(alpha));
     }
-    return {copy.bob.frame(rotation.x,yaw,alpha),copy.bob.pitch,copy.bob.yaw};
+    return {copy.bob.frame(rotation.x,yaw,alpha)};
 }
 } // namespace tacz::client::turn

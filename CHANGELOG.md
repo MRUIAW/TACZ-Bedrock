@@ -8,6 +8,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 Versioning rule for this project: the patch number goes up by 1 for each small item or test
 round, the minor number goes up by 1 for each finished feature or phase.
 
+## [0.4.5] - 2026-10-29
+
+### User-tested 0.4.4
+
+- All passed: fast horizontal, vertical and diagonal turns basically match Java
+  with View Bobbing ON; OFF behaves the same. Arms follow the gun during ADS,
+  firing, reload and put-away while turning, without misalignment.
+- No opening sway on world entry or respawn. Riding, third person, main menu
+  and world re-entry remain normal.
+- `2026-10-29.4.log`: 1,203 `[turn-inertia]` lines, 1,130 `capture=hit`
+  (View Bobbing ON), 73 `capture=fallback` (OFF), `rejections=0` throughout;
+  no `[tacz]` errors or "First-person gun render failed".
+
+### Removed
+
+- Accepted 0.4.4's temporary `[turn-inertia]` diagnostic, counters and diagnostic-only
+  sample/capture fields and residual-angle helper. Inertia and capture behaviour
+  remain unchanged; matrix behaviour checks are retained.
+
 ## [0.4.4] - 2026-10-29
 
 ### User-tested 0.4.3

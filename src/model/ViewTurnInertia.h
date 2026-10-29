@@ -23,7 +23,6 @@ struct ViewTurnBob {
 };
 ViewTurnFrame viewTurnFrame(double dx, double dy);
 glm::mat4 viewTurnResidual(ViewTurnFrame const& turn);
-float viewTurnResidualDegrees(glm::mat4 const& residual);
 animation::Pose effectiveViewTurnPose(GeoModel const& model, animation::Pose const& animation, ViewTurnFrame const& turn);
 
 // Comparison-only identities. Native objects are never dereferenced by the pure validator.

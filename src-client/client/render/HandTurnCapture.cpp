@@ -38,7 +38,7 @@ HandTurnBase consumeHandTurn(IClientInstance& client, ScreenContext& screen) {
     if (!scope || !scope->capture) return {};
     auto capture=*scope->capture;
     scope->capture.reset(); // single use; validation is against the PRE-push top at hook entry
-    if (!model::validHandTurnCapture(capture.key,keyFor(client,screen))) return {{},true};
-    return {capture.base,false};
+    if (!model::validHandTurnCapture(capture.key,keyFor(client,screen))) return {};
+    return {capture.base};
 }
 } // namespace tacz::client::render

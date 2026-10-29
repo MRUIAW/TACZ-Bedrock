@@ -256,3 +256,22 @@ These are exact field formats, **not claimed runtime samples**. No log from a
 - Tests: `tests/ViewTurnInertiaTests.cpp`, `tests/ItemTooltipTests.cpp`.
 - Release/docs: `xmake.lua`, `tooth.json`, `packs/behavior_packs/tacz_bp/manifest.json`,
   `packs/resource_packs/tacz_rp/manifest.json`, `CHANGELOG.md`, `docs/ROADMAP.md`, this document.
+
+## 0.4.5 acceptance
+
+- User-tested 0.4.4: fast horizontal, vertical and diagonal turns basically match
+  Java with View Bobbing ON; OFF behaves the same. ADS, firing, reload and put-away
+  while turning keep arms aligned with the gun. No opening sway on world entry or
+  respawn; riding, third person, main menu and world re-entry are normal.
+- `F:\Games\Minecraft\LeviLauncher\versions\1.26.51.01-LeviLamina\logs\2026-10-29.4.log`:
+  1,203 `[turn-inertia]` lines, 1,130 `capture=hit` (ON), 73 `capture=fallback`
+  (OFF), `rejections=0` throughout; no `[tacz]` errors or
+  "First-person gun render failed". This acceptance supersedes the pending status
+  above for these user-tested paths; unreported backend/custom-camera checks are
+  not claimed as tested.
+- 0.4.5 removes the temporary diagnostic, its counters, sample/capture-only fields
+  and residual-angle helper. Capture validation, fallback and inertia are unchanged;
+  residual matrix finiteness and composition behaviour remain tested.
+- 0.4.5 offline validation: server/client x64 Release **build ok** (27.390 s /
+  31.500 s); tests **235 cases / 921,815 assertions, Status: SUCCESS**. Client
+  configuration remains active; no push, deployment or game launch.

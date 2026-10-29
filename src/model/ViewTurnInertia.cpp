@@ -54,10 +54,6 @@ glm::mat4 viewTurnResidual(ViewTurnFrame const& turn) {
     c=glm::rotate(c,-a,{1,0,0});
     return glm::mat4(glm::rotate(c,-b,{0,1,0}));
 }
-float viewTurnResidualDegrees(glm::mat4 const& residual) {
-    auto q=glm::normalize(glm::quat_cast(residual));
-    return glm::degrees(2.f*std::atan2(glm::length(glm::vec3(q.x,q.y,q.z)),std::abs(q.w)));
-}
 animation::Pose effectiveViewTurnPose(GeoModel const& model, animation::Pose const& animation, ViewTurnFrame const& turn) {
     auto result=animation;
     if (model.find("root")<0 || (turn.sx==0 && turn.sy==0)) return result;

@@ -114,8 +114,6 @@ TEST_CASE("Turn residual is single-axis identity and the raw diagonal commutator
         auto y=glm::rotate(glm::mat4(1),glm::radians(d.y*.1f),{0,1,0});
         near(model::viewTurnResidual(model::viewTurnFrame(d.x,d.y)),x*y*glm::transpose(x)*glm::transpose(y));
     }
-    CHECK(model::viewTurnResidualDegrees(model::viewTurnResidual(model::viewTurnFrame(25,25)))
-        ==doctest::Approx(.1090658).epsilon(.001));
     // Axis/sign basis: at any proper captured camera basis B, local +X/+Y are
     // still Java's right/up axes. There is no model Y reflection before C.
     auto base=glm::rotate(glm::mat4(1),.61f,{0,1,0});
@@ -172,7 +170,8 @@ TEST_CASE("Turn yaw unwrap crosses boundaries and common rebasing never wraps vi
     bob.initialize(1e30,1e30); bob.tick(-1e30,-1e30);
     auto f=bob.frame(-1e30,-1e30,.5f);
     CHECK(std::isfinite(f.dx)); CHECK(std::isfinite(f.dy));
-    CHECK(std::isfinite(model::viewTurnResidualDegrees(model::viewTurnResidual(f))));
+    auto residual=model::viewTurnResidual(f);
+    for (int c=0;c<4;++c) for (int r=0;r<4;++r) CHECK(std::isfinite(residual[c][r]));
 }
 TEST_CASE("Turn nonfinite input retires the state and next valid tick initializes cleanly") {
     model::ViewTurnBob bob; bob.initialize(10,20);

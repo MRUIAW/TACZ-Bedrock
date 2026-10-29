@@ -597,28 +597,6 @@ bool drawGun(ItemInHandRenderer& renderer, BaseActorRenderContext& context, Hand
     // GunItemRendererWrapper.java:144-156,185-206. Never apply the inverse rotations
     // alone to this already-unswayed matrix. View Bobbing OFF uses the current top.
     auto selectedBase=handBase.captured.value_or(screen.camera.worldMatrixStack->top()._m.get());
-    // Temporary acceptance diagnostic, strictly throttled (including state changes).
-    struct TurnDiagnostic {
-        std::chrono::steady_clock::time_point at{};
-        uint64_t world=0, hits=0, fallbacks=0, rejections=0;
-        int capture=-1;
-        bool changed=false;
-    };
-    static thread_local TurnDiagnostic td;
-    if (td.world!=session) { td={}; td.world=session; }
-    int captureState=handBase.captured ? 1 : handBase.rejected ? 2 : 0;
-    td.changed|=td.capture!=captureState;
-    td.capture=captureState;
-    td.hits+=captureState==1; td.fallbacks+=captureState!=1; td.rejections+=captureState==2;
-    auto turnNow=std::chrono::steady_clock::now();
-    if ((td.changed || std::abs(inertia.dx)>.001 || std::abs(inertia.dy)>.001)
-        && turnNow-td.at>=std::chrono::seconds(1)) {
-        logger().info("[turn-inertia] world={} tickPitch={:.6f} tickYaw={:.6f} dx={:.6f} dy={:.6f} sx={:.6f} sy={:.6f} residualDeg={:.6f} capture={} hits={} fallbacks={} rejections={}",
-            session,turnSample.tickPitch,turnSample.tickYaw,inertia.dx,inertia.dy,inertia.sx,inertia.sy,
-            model::viewTurnResidualDegrees(residual),captureState==1 ? "hit" : captureState==2 ? "rejected" : "fallback",
-            td.hits,td.fallbacks,td.rejections);
-        td.at=turnNow; td.changed=false;
-    }
     if (path==1 && !model::rigidGunPoseCompatible(pose.pose)) {
         if (!visual->warnedIncompatible) logger().warn("[gun-render] empty-name pose channel cannot be statically folded; using path 0 for this pose");
         visual->warnedIncompatible=true; path=0; counters.path=path;
