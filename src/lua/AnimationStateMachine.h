@@ -8,6 +8,7 @@
 
 #include "model/AnimationController.h"
 #include "pack/GunPackLoader.h"
+#include "gun/AttachmentRules.h"
 
 namespace tacz::lua {
 
@@ -30,7 +31,11 @@ struct AnimationContext {
     std::function<void(int64_t)> adjustShootInterval;
     animation::LogFn print;
     // path, key, mode: mode 0 reads the NBT tag type, mode 1 its primitive value.
-    std::function<nlohmann::json(std::vector<std::string> const&, std::string const&, int)> readNbt;
+    gun::NbtReader readNbt;
+    gun::AllowedAttachmentTypes const* allowedAttachmentTypes = nullptr; // this side's gun data; unknown disallows all
+    [[nodiscard]] std::string getAttachment(std::string const& type) const {
+        return gun::getAttachment(allowedAttachmentTypes, readNbt, type);
+    }
 };
 
 // TickAnimationEvent's input classification (including missing input and slow movement).

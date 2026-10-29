@@ -9,6 +9,7 @@
 #include "gun/Reload.h"
 #include "gun/ShootRules.h"
 #include "gun/BoltRules.h"
+#include "gun/AttachmentRules.h"
 #include "pack/GunData.h"
 #include "pack/ResourceId.h"
 
@@ -38,6 +39,7 @@ struct ScriptApi {
     int64_t              boltNowMs = 0; // deterministic clock when boltClock is unset
     int64_t              boltTimestamp = 0; // caller reads back after script calls
     std::function<int64_t()> boltClock; // server wall clock, sampled on each getBoltTime
+    gun::NbtReader readNbt; // caller-owned item user data, read only during the hook
 
     // Removes up to n rounds of the gun's ammo from the shooter's inventory; returns how many.
     std::function<int(int)> extractAmmo;
@@ -103,6 +105,9 @@ struct ScriptApi {
         return isBolting ? subtractTime(boltClock ? boltClock() : boltNowMs, boltTimestamp) : 0;
     }
     void adjustBoltTime(int64_t alpha) { boltTimestamp = subtractTime(boltTimestamp, alpha); }
+    [[nodiscard]] std::string getAttachment(std::string const& type) const {
+        return gun::getAttachment(data ? &data->allowAttachmentTypes : nullptr, readNbt, type);
+    }
 };
 
 // ModernKineticGunItem.java:340-359. Feed can precede OR follow the action time.

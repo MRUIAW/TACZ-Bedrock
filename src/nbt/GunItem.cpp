@@ -54,6 +54,27 @@ std::optional<GunItemState> readGun(ItemStack const& item) {
     return state;
 }
 
+nlohmann::json readNbt(CompoundTag const* tag, std::vector<std::string> const& path, std::string const& key, int mode) {
+    if (path.size() > 64) return {};
+    for (auto const& p : path) {
+        if (!tag || !tag->contains(p, Tag::Compound)) return {};
+        tag = &(*tag)[p].get<CompoundTag>();
+    }
+    if (!tag || !tag->contains(key)) return {};
+    auto const& value = (*tag)[key];
+    if (mode == 0) return static_cast<int>(value.index());
+    switch (static_cast<Tag::Type>(value.index())) {
+    case Tag::Byte: return static_cast<schar>(value.get<ByteTag>().data);
+    case Tag::Short: return value.get<ShortTag>().data;
+    case Tag::Int: return value.get<IntTag>().data;
+    case Tag::Int64: return value.get<Int64Tag>().data;
+    case Tag::Float: return value.get<FloatTag>().data;
+    case Tag::Double: return value.get<DoubleTag>().data;
+    case Tag::String: return static_cast<std::string const&>(value.get<StringTag>());
+    default: return {};
+    }
+}
+
 bool writeSelectedGun(Player& player, GunItemState const& state) {
     ItemStack item(player.getSelectedItem());
     if (item.isNull()) return false;

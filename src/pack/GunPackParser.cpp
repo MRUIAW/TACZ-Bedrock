@@ -401,9 +401,11 @@ GunData parseGunData(nlohmann::json const& j) {
     if (auto* heat = object(j, "heat")) data.heat = parseHeat(*heat);
     if (auto* types = array(j, "allow_attachment_types")) {
         for (auto const& v : *types) {
-            if (v.is_null()) data.allowAttachmentTypes.push_back(std::nullopt);
+            // Gson's enum adapter calls nextString: NUMBER text cannot name an
+            // AttachmentType, so it becomes null; BOOLEAN still fails the file.
+            if (v.is_null() || v.is_number()) data.allowAttachmentTypes.push_back(std::nullopt);
             else if (v.is_string()) data.allowAttachmentTypes.push_back(v.get<std::string>());
-            else fail("allow_attachment_types", "an array of strings/null");
+            else fail("allow_attachment_types", "an array of strings/numbers/null");
         }
     }
     read(j, "weight", data.weight);

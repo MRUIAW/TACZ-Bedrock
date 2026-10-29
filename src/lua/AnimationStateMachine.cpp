@@ -8,6 +8,7 @@
 
 #define SOL_ALL_SAFETIES_ON 1
 #include <sol/sol.hpp>
+#include "lua/BooleanCoercion.h"
 
 #include "gun/Reload.h"
 
@@ -238,7 +239,7 @@ struct AnimationStateMachine::Impl {
         a["ensureTrackLineSize"] = [this](AnimationContext&, double n) { controller.ensureTrackLineSize(integer(n)); };
         a["getTrackLineSize"] = [this](AnimationContext&) { return controller.getTrackLineSize(); };
         a["assignNewTrack"] = [this](AnimationContext&, double l) { return controller.assignNewTrack(integer(l)); };
-        a["findIdleTrack"] = [this](AnimationContext&, double l, bool interrupt) { return controller.findIdleTrack(integer(l), interrupt); };
+        a["findIdleTrack"] = [this](AnimationContext&, double l, sol::object interrupt) { return controller.findIdleTrack(integer(l), luaJBoolean(interrupt)); };
         a["ensureTracksAmount"] = [this](AnimationContext&, double l, double n) { controller.ensureTracksAmount(integer(l), integer(n)); };
         // Several original pistol scripts look up an undefined SWITCH_MODE_TRACK.
         // Treat a nil optional index as an absent track, so stopAnimation is a no-op,
@@ -247,15 +248,15 @@ struct AnimationStateMachine::Impl {
             return n ? controller.getTrack(integer(l),integer(*n)) : -1;
         };
         a["getAsSingletonTrack"] = [this](AnimationContext&, double l) { return controller.getAsSingletonTrack(integer(l)); };
-        a["runAnimation"] = [this](AnimationContext&, std::string name, double t, bool blend, double type, float transition) {
-            controller.runAnimation(name, integer(t), blend, playType(type), transition);
+        a["runAnimation"] = [this](AnimationContext&, std::string name, double t, sol::object blend, double type, float transition) {
+            controller.runAnimation(name, integer(t), luaJBoolean(blend), playType(type), transition);
         };
         a["stopAnimation"] = [this](AnimationContext&, double t) { controller.stopAnimation(integer(t)); };
         a["holdAnimation"] = [this](AnimationContext&, double t) { controller.holdAnimation(integer(t)); };
         a["pauseAnimation"] = [this](AnimationContext&, double t) { controller.pauseAnimation(integer(t)); };
         a["resumeAnimation"] = [this](AnimationContext&, double t) { controller.resumeAnimation(integer(t)); };
-        a["setAnimationProgress"] = [this](AnimationContext&, double t, float p, bool n) { controller.setAnimationProgress(integer(t), p, n); };
-        a["adjustAnimationProgress"] = [this](AnimationContext&, double t, float p, bool n) { controller.adjustAnimationProgress(integer(t), p, n); };
+        a["setAnimationProgress"] = [this](AnimationContext&, double t, float p, sol::object n) { controller.setAnimationProgress(integer(t), p, luaJBoolean(n)); };
+        a["adjustAnimationProgress"] = [this](AnimationContext&, double t, float p, sol::object n) { controller.adjustAnimationProgress(integer(t), p, luaJBoolean(n)); };
         a["isHolding"] = [this](AnimationContext&, double t) { return controller.info(integer(t)).holding; };
         a["isStopped"] = [this](AnimationContext&, double t) { return controller.info(integer(t)).stopped; };
         // Preserve AnimationStateContext.isPause's (surprising) !isPausing return value.
@@ -263,7 +264,7 @@ struct AnimationStateMachine::Impl {
         a["hasAnimationPrototype"] = [this](AnimationContext&, std::string const& name) { return controller.hasAnimationPrototype(name); };
         a["trigger"] = [this](AnimationContext&, std::string const& input) { trigger(input); };
         a["shouldHideCrossHair"] = [](AnimationContext& c) { return c.hideCrossHair; };
-        a["setShouldHideCrossHair"] = [](AnimationContext& c, bool hide) { c.hideCrossHair = hide; };
+        a["setShouldHideCrossHair"] = [](AnimationContext& c, sol::object hide) { c.hideCrossHair = luaJBoolean(hide); };
         a["hasBulletInBarrel"] = [](AnimationContext& c) { return c.barrel; };
         a["getAmmoCount"] = [](AnimationContext& c) { return c.ammo; };
         a["getMaxAmmoCount"] = [](AnimationContext& c) { return c.maxAmmo; };
@@ -299,7 +300,7 @@ struct AnimationStateMachine::Impl {
         a["popShellFrom"] = [](AnimationContext& c, double index) { if (c.shells.size() < 4096) c.shells.push_back(integer(index)); };
         a["getStateMachineParams"] = [this](AnimationContext&) { return params; };
         a["getNbtAccessor"] = [](AnimationContext& c) { return NbtView{&c, {}}; };
-        a["getAttachment"] = [](AnimationContext&, std::string const&) { return "tacz:empty"; };
+        a["getAttachment"] = &AnimationContext::getAttachment;
         a["isAiming"] = [](AnimationContext& c) { return c.aiming; };
         a["getAimingProgress"] = [](AnimationContext& c) { return c.aimingProgress; };
         for (auto key : {"isCrawl", "shouldSlide", "isOverHeat", "isCharging"}) a[key] = [](AnimationContext&) { return false; };

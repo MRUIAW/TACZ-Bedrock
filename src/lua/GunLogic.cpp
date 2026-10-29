@@ -11,6 +11,7 @@
 
 #define SOL_ALL_SAFETIES_ON 1
 #include <sol/sol.hpp>
+#include "lua/BooleanCoercion.h"
 
 namespace tacz::lua {
 
@@ -157,7 +158,7 @@ struct GunLogic::Impl {
             "hasAmmoInBarrel",
             &ScriptApi::hasAmmoInBarrel,
             "setAmmoInBarrel",
-            &ScriptApi::setAmmoInBarrel,
+            [](ScriptApi& a, sol::object value) { a.setAmmoInBarrel(luaJBoolean(value)); },
             "putAmmoInMagazine",
             &ScriptApi::putAmmoInMagazine,
             "removeAmmoFromMagazine",
@@ -182,6 +183,8 @@ struct GunLogic::Impl {
             &ScriptApi::getBoltTime,
             "adjustBoltTime",
             &ScriptApi::adjustBoltTime,
+            "getAttachment",
+            &ScriptApi::getAttachment,
             "getScriptParams",
             [this](ScriptApi& a, sol::this_state) -> sol::table { return paramsFor(a); },
             "cacheScriptData",

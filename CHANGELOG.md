@@ -8,6 +8,39 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 Versioning rule for this project: the patch number goes up by 1 for each small item or test
 round, the minor number goes up by 1 for each finished feature or phase.
 
+## [0.4.10] - 2026-10-30
+
+### Accepted 0.4.9 — user-tested
+
+- Local LeviLamina BDS + client, partly headless-input-driven: M870 bolt repeated
+  over ten times (feed/finish 0.32/0.57 s); empty shell reload 0+1 → 1+1 → 2+1;
+  firing interrupted after the current shell, without firing the interrupting press
+  (Java behavior). CCRP M1887 long 0.59/0.69 s; ClassicR Kar98 total-time bolt
+  1.29 s without script errors (reload not tested); SPAS-12 SEMI 0.34/0.54 s
+  (BURST untested, 0.4.11). AWP default bolt 0.94 s and zero-action M107 passed.
+  User confirmed feel and bolt animations look right.
+
+### Added
+
+- Read-only getAttachment(type) for gun logic and animation scripts, through one
+  pure helper: this side's allow_attachment_types guard, exact enum names, typed
+  Attachment<TYPE>/tag/AttachmentId NBT and Java ResourceLocation.tryParse rules.
+  Unknown gun data, disallowed types or invalid/missing NBT return tacz:empty;
+  builtin_attachments are not substituted. No attachment installation or NBT writes.
+- Gson allow-list aliases accept exact serialized names and enum toString names;
+  numeric entries become null, while booleans and non-array lists still fail.
+  Existing ordinary-string primitive coercion and other enum lists are unchanged.
+
+### Fixed
+
+- Match FiguraMC LuaJ boolean-parameter truthiness in six registrations:
+  gun logic setAmmoInBarrel; animation findIdleTrack, runAnimation,
+  setAnimationProgress, adjustAnimationProgress, setShouldHideCrossHair.
+  Only nil/false coerce to false; even 0 is true. This unblocks the Kar98 empty
+  clip-load call passing consumeAmmoFromPlayer's numeric result, preserving Java's
+  zero-stock chamber=true quirk. Hook return-value checks remain strict.
+  See `docs/ATTACHMENT-0.4.10.md` for citations, tests, caller scan and acceptance.
+
 ## [0.4.9] - 2026-10-30
 
 ### Accepted 0.4.8 — user-tested

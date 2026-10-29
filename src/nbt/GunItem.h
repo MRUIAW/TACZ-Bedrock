@@ -5,9 +5,11 @@
 
 #include "pack/GunData.h"
 #include "pack/ResourceId.h"
+#include "gun/AttachmentRules.h"
 
 class ItemStack;
 class Player;
+class CompoundTag;
 
 // Gun state stored on the item, read and written with TACZ's NBT keys and encodings
 // (api/item/nbt/GunItemDataAccessor): GunFireMode is the Java enum name, HasBulletInBarrel a byte.
@@ -26,6 +28,9 @@ std::optional<pack::FireMode> parseFireModeName(std::string const& name);
 
 // The gun state of an item, or nullopt if it has no valid GunId.
 std::optional<GunItemState> readGun(ItemStack const& item);
+
+// Read-only primitive/type view of item user data; also used by the animation VM.
+nlohmann::json readNbt(CompoundTag const* tag, std::vector<std::string> const& path, std::string const& key, int mode);
 
 // Writes the state into the player's selected slot and syncs the inventory to the client.
 // Returns false if the slot is empty.

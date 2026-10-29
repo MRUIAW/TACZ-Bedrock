@@ -171,6 +171,8 @@ lua::ScriptApi scriptApi(Player& player, nbt::GunItemState const& item, pack::Gu
     api.isBolting     = s.isBolting;
     api.boltTimestamp = s.boltTimestamp;
     api.boltClock     = boltNowMs;
+    auto const* tag = player.getSelectedItem().mUserData.get();
+    api.readNbt = [tag](auto const& path, auto const& key, int mode) { return nbt::readNbt(tag, path, key, mode); };
     auto ammoId        = entry.data.ammoId;
     api.extractAmmo    = [&player, ammoId](int n) { return ammoId ? nbt::extractAmmo(player, *ammoId, n) : 0; };
     api.inventoryHasAmmo = [&player, ammoId] { return ammoId && nbt::countAmmo(player, *ammoId) > 0; };
