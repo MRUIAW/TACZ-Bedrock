@@ -15,6 +15,7 @@
 #include "ll/api/event/ListenerBase.h"
 #include "ll/api/event/player/PlayerDisconnectEvent.h"
 #include "ll/api/event/player/PlayerDieEvent.h"
+#include "ll/api/event/player/PlayerJoinEvent.h"
 #include "ll/api/event/player/PlayerRespawnEvent.h"
 #include "ll/api/event/server/ServerStoppingEvent.h"
 #include "ll/api/event/world/ServerLevelTickEvent.h"
@@ -24,6 +25,7 @@
 #include "ll/api/service/Bedrock.h"
 
 #include "mc/legacy/ActorUniqueID.h"
+#include "mc/legacy/ActorRuntimeID.h"
 #include "mc/network/ServerNetworkHandler.h"
 #include "mc/server/ServerPlayer.h"
 #include "mc/world/actor/Actor.h"
@@ -66,7 +68,6 @@ struct ShooterState {
     int64_t aimingTimestamp = -1;
     float sprintTimeS = 0;
     std::optional<Clock::time_point> sprintTimestamp;
-    std::optional<float> syncedSprintTime;
     gun::ShootSprintIntent shootSprintIntent;
     Mob const* sprintOwner = nullptr; // comparison only, including actor replacement/removal
     gun::HandSelection selection;
@@ -88,6 +89,10 @@ struct ShooterState {
     int64_t              reloadStartedMs  = -1;
     int                  reloadSlot       = -1;
     pack::ResourceId     reloadGunId;
+    gun::ReloadState     reloadValue; // full tickReload result, including countdown
+    gun::sync::Baseline  syncBaseline;
+    std::optional<uint64_t> publishedRuntimeId;
+    std::optional<int> observedDimension;
 };
 
 std::mutex                                 mutex;
@@ -99,6 +104,13 @@ std::mutex sprintMutex;
 std::unordered_set<Mob const*> sprintBlockedOwners;
 std::unordered_set<int64_t> sprintLifeResets;
 bool sprintHooked=false;
+// Event callbacks may run inside shooter actions. Queue only, without taking mutex.
+std::mutex syncQueueMutex;
+std::unordered_map<int64_t, char const*> pendingFullSync;
+void queueFullSync(Player const& player, char const* reason) {
+    std::lock_guard lock(syncQueueMutex);
+    pendingFullSync[player.getOrCreateUniqueID().rawID] = reason;
+}
 void sprintPolicy(Player& player,bool blocked) {
     std::lock_guard lock(sprintMutex);
     if (blocked) sprintBlockedOwners.insert(static_cast<Mob*>(&player));
@@ -112,7 +124,7 @@ LL_TYPE_INSTANCE_HOOK(ServerAimSprint,ll::memory::HookPriority::Normal,Mob,&Mob:
     origin(value); // reject native server re-entry, not just the later tick correction
 }
 
-std::array<ll::event::ListenerPtr, 5> listeners;
+std::array<ll::event::ListenerPtr, 6> listeners;
 
 int64_t       keyOf(Player const& player) { return player.getOrCreateUniqueID().rawID; }
 ShooterState& stateOf(Player const& player) { return states[keyOf(player)]; }
@@ -155,10 +167,6 @@ lua::ScriptApi scriptApi(Player& player, nbt::GunItemState const& item, pack::Gu
     return api;
 }
 
-void sendReloadState(Player& player, gun::ReloadState state) {
-    net::ReloadStatePacket{static_cast<int>(state.type), state.countDown}.sendTo(player);
-}
-
 void stopReload(Player& player, ShooterState& s, char const* why);
 
 void applySprintPolicy(Player& player, ShooterState& s) {
@@ -180,6 +188,11 @@ void queueShootSprintReset(Player& player) {
 // Called from tick and every action, before using a previous gun's state. Slot is part of
 // identity so switching between two stacks of the same GunId still starts a fresh draw.
 void observeSelection(Player& player, ShooterState& s) {
+    auto dimension = static_cast<int>(player.getDimensionId());
+    // LL 26.51.9 has no typed player dimension-change event. Observation is also
+    // used by actions, but publication always waits for the next shooter tick.
+    if (s.observedDimension && *s.observedDimension != dimension) queueFullSync(player, "dimension");
+    s.observedDimension = dimension;
     auto item = nbt::readGun(player.getSelectedItem());
     gun::HandSelection next{item ? std::optional{item->gunId} : std::nullopt, player.getSelectedItemSlot()};
     {
@@ -339,11 +352,13 @@ char const* handleReload(Player& player) {
     s.reloadStartedMs  = serverNowMs();
     s.reloadSlot       = player.getSelectedItemSlot();
     s.reloadGunId      = item->gunId;
+    s.reloadValue      = {s.reloadState, 0};
 
     auto api = scriptApi(player, *item, *entry, s);
     if (!gunLogic().startReload(api)) {
         s.reloadState     = gun::ReloadStateType::NotReloading;
         s.reloadStartedMs = -1;
+        s.reloadValue     = {};
         return "SCRIPT_REFUSED";
     }
     logger().info(
@@ -354,7 +369,6 @@ char const* handleReload(Player& player) {
         item->ammo,
         gun::hasChamberedRound(data.bolt,item->barrel) ? "+1" : ""
     );
-    sendReloadState(player, {s.reloadState, 0});
     return nullptr;
 }
 
@@ -363,9 +377,9 @@ void stopReload(Player& player, ShooterState& s, char const* why) {
     if (!gun::isReloading(s.reloadState)) return;
     s.reloadState     = gun::ReloadStateType::NotReloading;
     s.reloadStartedMs = -1;
+    s.reloadValue     = {};
     gunLogic().clearScriptData(keyOf(player));
     logger().info("[reload] {} reload stopped: {}", player.getRealName(), why);
-    sendReloadState(player, {});
 }
 
 // LivingEntityReload.cancelReload -> ModernKineticGunItem.interruptReload. Scripts decide what
@@ -386,7 +400,7 @@ void handleCancelReload(Player& player) {
 
 // LivingEntityReload.tickReloadState, once per server tick.
 void tickReload(Player& player, ShooterState& s) {
-    if (!gun::isReloading(s.reloadState)) return;
+    if (!gun::isReloading(s.reloadState)) { s.reloadValue = {}; return; }
     auto item = nbt::readGun(player.getSelectedItem());
     // Switching away from the gun resets the shooter (LivingEntityDrawGun -> initialData).
     if (!item || item->gunId != s.reloadGunId || player.getSelectedItemSlot() != s.reloadSlot) {
@@ -406,7 +420,8 @@ void tickReload(Player& player, ShooterState& s) {
         nbt::writeSelectedGun(player, *item);
         logger().info("[reload] {} loaded: {}{} rounds", player.getRealName(), item->ammo, item->barrel ? "+1" : "");
     }
-    if (next.type != s.reloadState) sendReloadState(player, next);
+    // LivingEntityMixin.java:223,237 publishes tickReloadState's WHOLE result.
+    s.reloadValue = gun::isReloading(next.type) ? next : gun::ReloadState{};
     s.reloadState = next.type;
     if (!gun::isReloading(next.type)) {
         s.reloadStartedMs = -1;
@@ -469,10 +484,37 @@ void tickSprint(Player& player, ShooterState& s) {
     s.sprintTimestamp = now;
     s.sprintTimeS = gun::advanceSprintTime(s.sprintTimeS, elapsed,
         entry ? std::optional{entry->data.sprintTime} : std::nullopt, player.isSprinting(), player.isSneaking());
-    if (!s.syncedSprintTime || *s.syncedSprintTime != s.sprintTimeS) {
-        net::SprintTimePacket{s.sprintTimeS}.sendTo(player);
-        s.syncedSprintTime = s.sprintTimeS;
+}
+
+void publishShooterData(Player& player, ShooterState& s) {
+    auto runtimeId = player.getRuntimeID().rawID;
+    if (s.publishedRuntimeId != runtimeId) {
+        s.syncBaseline = {};
+        s.publishedRuntimeId = runtimeId;
     }
+    gun::sync::Snapshot snapshot;
+    snapshot.set({gun::sync::Key::ReloadState, s.reloadValue});
+    snapshot.set({gun::sync::Key::SprintTime, s.sprintTimeS});
+    char const* fullReason = nullptr;
+    {
+        std::lock_guard lock(syncQueueMutex);
+        if (auto found = pendingFullSync.find(keyOf(player)); found != pendingFullSync.end()) {
+            fullReason = found->second;
+            pendingFullSync.erase(found);
+        }
+    }
+    // SyncedEntityDataEvent.java:54-65: full self sync is independent of dirty
+    // publication. StartTracking initialization is explicitly deferred to stage 8.
+    if (fullReason) {
+        auto full = gun::sync::full(runtimeId, snapshot);
+        net::SyncedShooterDataPacket{full}.sendTo(player);
+        logger().info("[sync] full {} reason={} entries={} runtimeId={}", player.getRealName(), fullReason, full.entries.size(), runtimeId);
+    }
+    // Java tick END (SyncedEntityDataEvent.java:89-126). Deliberate phase
+    // difference: our existing ServerLevelTickEvent runs BEFORE native subTick.
+    gun::sync::publish(runtimeId, snapshot, s.syncBaseline,
+        [&](auto const& dirty) { net::SyncedShooterDataPacket{dirty}.sendTo(player); },
+        [&](auto const& dirty) { net::SyncedShooterDataPacket{dirty}.sendTo(static_cast<Actor const&>(player), player); });
 }
 
 void tick(Level& level) {
@@ -505,6 +547,11 @@ void tick(Level& level) {
         }
         tickReload(player, s);
     }
+    // After every player's aim/sprint/burst/reload simulation, not from producers.
+    level.forEachPlayer([&](Player& player) {
+        publishShooterData(player, stateOf(player));
+        return true;
+    });
 }
 
 class AimHandler final : public ll::network::PacketHandlerBase<AimHandler, net::AimPacket> {
@@ -584,8 +631,12 @@ public:
         if (!player) return;
         if (char const* refused = handleReload(*player)) {
             logger().info("[reload] {} refused: {}", player->getRealName(), refused);
-            // The client already played its reload sound; tell it the reload is not happening.
-            sendReloadState(*player, {});
+            // TEMP until 0.4.7: preserve immediate refusal recovery through the new
+            // transport, self only, without consuming dirty state. Java sends nothing:
+            // ClientMessagePlayerReloadGun.java:21-30. Generic state lock lands next.
+            std::lock_guard lock(mutex);
+            net::SyncedShooterDataPacket{gun::sync::Message{player->getRuntimeID().rawID,
+                {{gun::sync::Key::ReloadState, stateOf(*player).reloadValue}}}}.sendTo(*player);
         }
     }
 };
@@ -616,19 +667,25 @@ void enable() {
             if (auto found = states.find(key); found != states.end()) sprintBlockedOwners.erase(found->second.sprintOwner);
         }
         states.erase(key);
+        { std::lock_guard syncLock(syncQueueMutex); pendingFullSync.erase(key); }
         if (logic) logic->clearScriptData(key);
     });
     listeners[2] = bus.emplaceListener<ll::event::ServerStoppingEvent>([](ll::event::ServerStoppingEvent&) {
         std::lock_guard lock(mutex);
         states.clear();
+        { std::lock_guard syncLock(syncQueueMutex); pendingFullSync.clear(); }
         { std::lock_guard sprintLock(sprintMutex); sprintBlockedOwners.clear(); sprintLifeResets.clear(); }
         logic.reset(); // a fresh Lua state per world, as TACZ reloads scripts with the data packs
     });
     listeners[3] = bus.emplaceListener<ll::event::PlayerDieEvent>([](ll::event::PlayerDieEvent& event) {
         queueShootSprintReset(event.self());
     });
+    listeners[5] = bus.emplaceListener<ll::event::PlayerJoinEvent>([](ll::event::PlayerJoinEvent& event) {
+        queueFullSync(event.self(), "join");
+    });
     listeners[4] = bus.emplaceListener<ll::event::PlayerRespawnEvent>([](ll::event::PlayerRespawnEvent& event) {
         queueShootSprintReset(event.self());
+        queueFullSync(event.self(), "respawn");
     });
 }
 
@@ -651,6 +708,7 @@ void disable() {
         });
     }
     states.clear();
+    { std::lock_guard syncLock(syncQueueMutex); pendingFullSync.clear(); }
     logic.reset();
 }
 

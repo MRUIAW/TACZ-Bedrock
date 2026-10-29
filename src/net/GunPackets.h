@@ -2,6 +2,8 @@
 
 #include <cstdint>
 
+#include "gun/SyncedShooterData.h"
+
 #include "ll/api/network/packet/Packet.h"
 
 #include "mc/deps/core/utility/BinaryStream.h"
@@ -89,45 +91,27 @@ public:
     Bedrock::Result<void> read(ReadOnlyBinaryStream&) override { return {}; }
 };
 
-// Server -> client: the shooter's reload state (TACZ syncs it as entity data, RELOAD_STATE_KEY).
-// Sent on every state change, and in reply to a refused reload request.
-class ReloadStatePacket final : public ll::network::PacketBase<ReloadStatePacket> {
+// Server -> entity owner and trackers. Pure codec is shared by both variants/tests.
+// Malformed payloads reach the handler as a rejection, never as partial state;
+// returning a transport error here would bypass our session diagnostic.
+class SyncedShooterDataPacket final : public ll::network::PacketBase<SyncedShooterDataPacket> {
 public:
-    int     state     = 0; // ReloadStateType ordinal
-    int64_t countDown = -1;
-
-    ReloadStatePacket() = default;
-    ReloadStatePacket(int s, int64_t c) : state(s), countDown(c) {}
-
-    void write(BinaryStream& stream) const override {
-        stream.writeVarInt(state, nullptr, nullptr);
-        stream.writeSignedInt64(countDown, nullptr, nullptr);
-    }
-
+    std::string payload;
+    gun::sync::DecodeError transportError = gun::sync::DecodeError::None;
+    SyncedShooterDataPacket() = default;
+    explicit SyncedShooterDataPacket(gun::sync::Message const& message) : payload(gun::sync::encode(message)) {}
+    void write(BinaryStream& stream) const override { stream.write(payload.data(), payload.size()); }
     Bedrock::Result<void> read(ReadOnlyBinaryStream& stream) override {
-        auto s = stream.getVarInt();
-        if (!s) return nonstd::make_unexpected(s.error());
-        auto c = stream.getSignedInt64();
-        if (!c) return nonstd::make_unexpected(c.error());
-        state     = *s;
-        countDown = *c;
-        return {};
-    }
-};
-
-// Server -> owning client: TACZ's SPRINT_TIME_KEY. Sent initially and whenever
-// the authoritative value changes, including its final zero. Never predicted.
-class SprintTimePacket final : public ll::network::PacketBase<SprintTimePacket> {
-public:
-    float seconds = 0;
-
-    SprintTimePacket() = default;
-    explicit SprintTimePacket(float value) : seconds(value) {}
-    void write(BinaryStream& stream) const override { stream.writeFloat(seconds, nullptr, nullptr); }
-    Bedrock::Result<void> read(ReadOnlyBinaryStream& stream) override {
-        auto value = stream.getFloat();
-        if (!value) return nonstd::make_unexpected(value.error());
-        seconds = *value;
+        payload.clear();
+        transportError = gun::sync::DecodeError::None;
+        if (stream.mHasOverflowed || stream.mReadPointer > stream.mView.size()) {
+            transportError = gun::sync::DecodeError::Truncated;
+        } else {
+            auto remaining = stream.mView.substr(static_cast<size_t>(stream.mReadPointer));
+            if (remaining.size() > gun::sync::MaxPayloadSize) transportError = gun::sync::DecodeError::Oversize;
+            else payload.assign(remaining);
+        }
+        stream.mReadPointer = stream.mView.size();
         return {};
     }
 };

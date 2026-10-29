@@ -8,6 +8,32 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 Versioning rule for this project: the patch number goes up by 1 for each small item or test
 round, the minor number goes up by 1 for each finished feature or phase.
 
+## [0.4.6] - 2026-10-29
+
+### Added
+
+- Java-style entity-scoped shooter sync: one revisioned packet, eight fixed typed
+  keys/defaults, whole-packet validation, full/dirty snapshots and a session-scoped
+  client entity store. Synthetic codec, change/routing and lifecycle tests.
+- Queued full self snapshots on join, respawn and observed dimension change;
+  change-only publication to the owner and native entity trackers (owner excluded).
+- Temporary low-volume `[sync]` acceptance diagnostics: full snapshots, first apply
+  (or first absent entity, including runtime IDs), rate-limited decode rejections
+  and a world-end summary. Remove these diagnostics after acceptance.
+
+### Changed
+
+- Reload state (including countdown) and sprint time now use the common store and
+  end-of-shooter-tick publication; retire the dedicated reload/sprint packets.
+  Existing local fire timing, predicted ADS, reload request/cancel/250 ms recovery
+  and authoritative sprint-zero gate remain; remote values have no consumers yet.
+- Deliberate staged differences from Java: fixed IDs/revision instead of registration
+  handshake; player-only producers; current pre-native `ServerLevelTickEvent` phase;
+  StartTracking full initialization deferred to stage 8. Temporary immediate self-only
+  reload-refusal reply stays until 0.4.7's generic lock/no-reply port. Reserved keys
+  are neither produced nor consumed. See `docs/SYNC-0.4.6.md`.
+- In-game acceptance is pending; no game launch, deployment or push in this change.
+
 ## [0.4.5] - 2026-10-29
 
 ### User-tested 0.4.4

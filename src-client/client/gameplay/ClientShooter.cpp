@@ -1,6 +1,7 @@
 #include "client/gameplay/ClientShooter.h"
 
 #include <array>
+#include <algorithm>
 #include <atomic>
 #include <chrono>
 #include <cstdint>
@@ -32,6 +33,8 @@
 #include "mc/client/player/LocalPlayer.h"
 #include "mc/deps/input/HIDController.h"
 #include "mc/deps/input/MouseAction.h"
+#include "mc/legacy/ActorRuntimeID.h"
+#include "mc/world/level/Level.h"
 
 #include "client/sound/GunSound.h"
 #include "client/animation/GunAnimation.h"
@@ -77,20 +80,25 @@ using LeaveSignature = void (ClientInstance::*)(bool, bool);
 static_assert(std::is_same_v<decltype(&MinecraftGame::$update), FrameSignature>);
 static_assert(std::is_same_v<decltype(&ClientInstance::_requestLeaveGameImpl), LeaveSignature>);
 
-// Server-reported state (TACZ's synced RELOAD_STATE_KEY / SPRINT_TIME_KEY).
-// Packet handlers write mailboxes; frame() applies only this world generation.
-std::mutex                          serverStateMutex;
-struct ReloadReply {
-    gun::ReloadState state;
+// Packet threads only decode/enqueue. Entity resolution, store and consumers are
+// frame-owned, as with ServerMessageUpdateEntityData.java:42-61's main-thread work.
+std::mutex serverStateMutex;
+struct SyncedReply {
+    gun::sync::Message message;
     uint64_t world;
 };
-std::optional<ReloadReply> serverReloadState;
-struct SprintReply {
-    float seconds;
-    uint64_t world;
+std::vector<SyncedReply> serverDataInbox;
+gun::sync::EntityStore syncedEntities;
+uint64_t localRuntimeId = 0; // frame-owned local-player view, not a cached actor pointer
+gun::sync::Snapshot const& localSyncedState() { return syncedEntities.local(worldSession.current(), localRuntimeId); }
+gun::ReloadStateType reloadType() { return localSyncedState().reload().type; }
+// TEMP acceptance diagnostics; remove after acceptance (0.4.6 CHANGELOG).
+struct SyncDiagnostics {
+    uint64_t packets = 0, selfEntries = 0, remoteEntries = 0, droppedAbsent = 0, droppedStale = 0, rejected = 0;
+    bool firstApplied = false, firstAbsent = false, revisionLogged = false;
+    std::optional<Clock::time_point> lastRejection;
 };
-std::optional<SprintReply> serverSprintTime;
-float syncedSprintTime = 0; // getSynSprintTime(); frame-owned, no local decay
+SyncDiagnostics syncDiagnostics; // protected by serverStateMutex
 std::optional<gun::SprintIntentScope> sprintLife;
 std::optional<gun::HandSelection> sprintSelection;
 
@@ -100,8 +108,11 @@ std::optional<int64_t> shotTimestamp;            // system time, for GunAnimatio
 std::optional<int64_t> previousShotTimestamp;    // clientLastShootTimestamp (previous trigger pull)
 bool                   lastShotSucceeded = false; // ShootKey.lastTimeShootSuccess
 bool                   dryFireArmed      = true;  // SoundPlayManager.DRY_SOUND_TRACK
-gun::ReloadStateType   reloadType        = gun::ReloadStateType::NotReloading; // getSynReloadState()
 std::atomic<int>       reloadTypePublished{0};
+// Cancellation-dispatch history only, NOT gameplay authority. Preserve the old
+// selection reset so a previous gun's delayed idle entry cannot cancel the new
+// gun's animation; the entity store itself is never cleared by selection.
+gun::ReloadStateType reloadReplyType = gun::ReloadStateType::NotReloading;
 // Client state lock (LocalPlayerDataHolder.clientStateLock): set when a reload is requested,
 // held until the server confirms or refuses it, or 250 ms pass.
 std::optional<Clock::time_point> reloadLockedAt;
@@ -184,7 +195,7 @@ std::optional<pack::ResourceId> displaySound(HeldGun const& gun, std::string con
 void reload(HeldGun const& gun) {
     auto const& data = gun.entry->data;
     if (data.reload.type == pack::FeedType::Inventory) return;
-    if (reloadLockedAt || anim::actionsBlocked() || gun::isReloading(reloadType)) return;
+    if (reloadLockedAt || anim::actionsBlocked() || gun::isReloading(reloadType())) return;
     if (gun::clientCooldownMs(data, gun.state.fireMode, nowMs(), lastShot) > 0) return;
     if (lastShot && nowMs() - *lastShot < 100) return;
     // canReload: not full and, outside creative, carrying the ammo.
@@ -212,7 +223,7 @@ bool shoot(HeldGun const& gun, int64_t now, bool chained) {
     auto        mode = gun.state.fireMode;
     if (gun::clientCooldownMs(data, mode, now, lastShot) > 0) return false;
     // preCheck: no shooting while reloading.
-    if (gun::isReloading(reloadType) || reloadLockedAt || anim::actionsBlocked()) return false;
+    if (gun::isReloading(reloadType()) || reloadLockedAt || anim::actionsBlocked()) return false;
 
     gun::GunAmmo ammo{gun.state.ammo, gun.state.barrel};
     int          rounds = gun::availableRounds(*data.bolt, ammo);
@@ -225,7 +236,7 @@ bool shoot(HeldGun const& gun, int64_t now, bool chained) {
     }
     if (*data.bolt == pack::Bolt::ManualAction && !ammo.barrel) return false; // bolting comes later
     // Java checks the server-synced value after preCheck, before shot effects.
-    if (gun::sprintBlocksShot(syncedSprintTime)) return false;
+    if (gun::sprintBlocksShot(localSyncedState().sprintTime())) return false;
 
     int64_t interval = gun::triggerIntervalMs(data, mode);
     // A stall longer than an interval (loading, alt-tab) restarts the rhythm instead of
@@ -263,33 +274,71 @@ void measureFrameRate() {
     logged = true;
 }
 
-void applyServerReloadState() {
-    std::optional<ReloadReply> reply;
-    {
-        std::lock_guard lock(serverStateMutex);
-        reply.swap(serverReloadState);
-    }
-    if (!reply || !worldSession.accepts(reply->world)) return;
-    auto const* state = &reply->state;
+void applyServerReloadState(gun::ReloadState const& state) {
+    auto previous = reloadReplyType;
     bool wasRequested = reloadLockedAt.has_value();
     reloadLockedAt.reset();
     // Dispatch cancellation for refusal / interruption, not every NOT_RELOADING sync packet.
     // Whether this changes a track is the pack state machine's decision, as in TACZ.
-    if (!gun::isReloading(state->type) && gun::isReloading(reloadType) && !gun::isReloadFinishing(reloadType)) {
+    if (!gun::isReloading(state.type) && gun::isReloading(previous) && !gun::isReloadFinishing(previous)) {
         if (!reloadCancelRequested) anim::cancelReload();
     }
-    if (!gun::isReloading(state->type) && !gun::isReloading(reloadType) && wasRequested && !reloadCancelRequested) {
+    if (!gun::isReloading(state.type) && !gun::isReloading(previous) && wasRequested && !reloadCancelRequested) {
         anim::cancelReload();
     }
-    if (!gun::isReloading(state->type)) reloadCancelRequested = false;
-    reloadType = state->type;
-    reloadTypePublished = static_cast<int>(reloadType);
+    if (!gun::isReloading(state.type)) reloadCancelRequested = false;
+    reloadReplyType = state.type;
 }
 
-void applyServerSprintTime() {
-    std::optional<SprintReply> reply;
-    { std::lock_guard lock(serverStateMutex); reply.swap(serverSprintTime); }
-    if (reply && worldSession.accepts(reply->world)) syncedSprintTime = reply->seconds;
+void applyServerData(LocalPlayer& player) {
+    auto world = worldSession.current();
+    syncedEntities.begin(world);
+    localRuntimeId = player.getRuntimeID().rawID;
+    auto exists = [&](uint64_t id) { return id == localRuntimeId || player.getLevel().getRuntimeEntity(ActorRuntimeID{id}, false) != nullptr; };
+    syncedEntities.prune(exists);
+    std::vector<SyncedReply> replies;
+    { std::lock_guard lock(serverStateMutex); replies.swap(serverDataInbox); }
+    for (auto const& reply : replies) {
+        if (!worldSession.accepts(reply.world)) {
+            std::lock_guard lock(serverStateMutex);
+            ++syncDiagnostics.droppedStale;
+            continue;
+        }
+        bool self = reply.message.runtimeId == localRuntimeId;
+        if (!exists(reply.message.runtimeId)) {
+            bool first;
+            {
+                std::lock_guard lock(serverStateMutex);
+                ++syncDiagnostics.droppedAbsent;
+                first = !syncDiagnostics.firstAbsent;
+                syncDiagnostics.firstAbsent = true;
+            }
+            // Also expose a potential self-id mismatch when no packet can apply.
+            if (first) logger().info("[sync] first absent runtimeId={} localRuntimeId={} entries={}",
+                reply.message.runtimeId, localRuntimeId, reply.message.entries.size());
+            continue; // Java drops updates for unknown entities, with no replay queue.
+        }
+        if (!syncedEntities.apply(reply.world, reply.message)) {
+            std::lock_guard lock(serverStateMutex);
+            ++syncDiagnostics.droppedStale;
+            continue;
+        }
+        bool first;
+        {
+            std::lock_guard lock(serverStateMutex);
+            first = !syncDiagnostics.firstApplied;
+            syncDiagnostics.firstApplied = true;
+            (self ? syncDiagnostics.selfEntries : syncDiagnostics.remoteEntries) += reply.message.entries.size();
+        }
+        if (first) logger().info("[sync] first applied runtimeId={} localRuntimeId={} self={} entries={}",
+            reply.message.runtimeId, localRuntimeId, self, reply.message.entries.size());
+        if (self) for (auto const& entry : reply.message.entries) {
+            // Each reload entry (including an unchanged refusal value) is today's
+            // reply/ack. Do not unlock on unrelated keys or introduce 0.4.7's lock.
+            if (entry.key == gun::sync::Key::ReloadState) applyServerReloadState(localSyncedState().reload());
+        }
+    }
+    reloadTypePublished = static_cast<int>(reloadType());
 }
 
 // ShootKey.autoShoot and the reload / fire-select keys. Runs every rendered frame on the main thread.
@@ -300,12 +349,16 @@ void frame() {
         for (auto& down : actionKeyDown) down = false;
         {
             std::lock_guard lock(serverStateMutex);
-            serverReloadState.reset();
             // A fresh session's initial sync may arrive before its first frame.
-            // Keep it; discard only replies from a retired world generation.
-            if (serverSprintTime && !worldSession.accepts(serverSprintTime->world)) serverSprintTime.reset();
+            // Keep ALL its entries; discard only retired-world queued work.
+            std::erase_if(serverDataInbox, [](auto const& reply) {
+                if (worldSession.accepts(reply.world)) return false;
+                ++syncDiagnostics.droppedStale;
+                return true;
+            });
         }
-        syncedSprintTime = 0;
+        syncedEntities.begin(worldSession.current());
+        localRuntimeId = 0;
         sprintLife.reset();
         sprintSelection.reset();
         lastShot.reset();
@@ -315,8 +368,8 @@ void frame() {
         reloadCancelRequested = false;
         lastShotSucceeded = false;
         dryFireArmed      = true;
-        reloadType        = gun::ReloadStateType::NotReloading;
         reloadTypePublished = 0;
+        reloadReplyType = gun::ReloadStateType::NotReloading;
         reloadLockedAt.reset();
         pendingShots.clear();
         aim::clear();
@@ -351,8 +404,8 @@ void frame() {
         shotTimestamp.reset();
         previousShotTimestamp.reset();
         predictedMode.reset();
-        reloadType = gun::ReloadStateType::NotReloading;
         reloadTypePublished = 0;
+        reloadReplyType = gun::ReloadStateType::NotReloading;
         reloadCancelRequested = false;
     }
     auto const* display = gun && gun->entry->index.display
@@ -361,10 +414,9 @@ void frame() {
         gun ? &gun->entry->data : nullptr, display, selectionChanged || sprintSelectionChanged, anim::aimAllowed(),
         gun::shootStopsSprint(inGameplay(), mainHand.has_value(),
             player->isSpectator(), triggerDown.load()));
-    applyServerReloadState();
-    applyServerSprintTime();
+    applyServerData(*player);
     // tickStateLock: a request the server never answered stops blocking after 250 ms.
-    if (reloadLockedAt && Clock::now() - *reloadLockedAt > std::chrono::milliseconds(250) && !gun::isReloading(reloadType)) {
+    if (reloadLockedAt && Clock::now() - *reloadLockedAt > std::chrono::milliseconds(250) && !gun::isReloading(reloadType())) {
         reloadLockedAt.reset();
         anim::cancelReload();
     }
@@ -391,7 +443,7 @@ void frame() {
         lastShotSucceeded = false;
         return;
     }
-    bool stateLocked = anim::actionsBlocked() || reloadLockedAt || gun::isReloading(reloadType)
+    bool stateLocked = anim::actionsBlocked() || reloadLockedAt || gun::isReloading(reloadType())
                     || gun::clientCooldownMs(gun->entry->data, gun->state.fireMode, nowMs(), lastShot) > 0;
     if (wantsFireSelect && !stateLocked) {
         if (auto id = displaySound(*gun, "fire_select")) sound::play(*id, 1.0f, 1.0f);
@@ -415,7 +467,7 @@ void frame() {
         return;
     }
     // LocalPlayerMixin.shoot: pulling the trigger interrupts a reload first.
-    if (gun::isReloading(reloadType)) {
+    if (gun::isReloading(reloadType())) {
         if (!lastShotSucceeded && !reloadCancelRequested) {
             net::CancelReloadPacket{}.sendToServer();
             anim::cancelReload();
@@ -429,25 +481,30 @@ void frame() {
     if (shoot(*gun, nowMs(), continuous && lastShotSucceeded)) lastShotSucceeded = true;
 }
 
-class ReloadStateHandler final : public ll::network::PacketHandlerBase<ReloadStateHandler, net::ReloadStatePacket> {
+class SyncedShooterDataHandler final : public ll::network::PacketHandlerBase<SyncedShooterDataHandler, net::SyncedShooterDataPacket> {
 public:
-    void handlePacket(NetworkIdentifier const&, NetEventCallback&, net::ReloadStatePacket const& packet) const {
+    void handlePacket(NetworkIdentifier const&, NetEventCallback&, net::SyncedShooterDataPacket const& packet) const {
         auto world = worldSession.current();
         if (!world) return;
-        auto type = gun::reloadStateFromOrdinal(packet.state);
-        if (!type) return;
-        std::lock_guard lock(serverStateMutex);
-        if (worldSession.accepts(world)) serverReloadState = ReloadReply{{*type, packet.countDown}, world};
-    }
-};
-
-class SprintTimeHandler final : public ll::network::PacketHandlerBase<SprintTimeHandler, net::SprintTimePacket> {
-public:
-    void handlePacket(NetworkIdentifier const&, NetEventCallback&, net::SprintTimePacket const& packet) const {
-        auto world = worldSession.current();
-        if (!world) return;
-        std::lock_guard lock(serverStateMutex);
-        if (worldSession.accepts(world)) serverSprintTime = SprintReply{packet.seconds, world};
+        auto decoded = packet.transportError == gun::sync::DecodeError::None
+            ? gun::sync::decode(packet.payload) : gun::sync::DecodeResult{packet.transportError, {}};
+        bool logRejection = false;
+        {
+            std::lock_guard lock(serverStateMutex);
+            if (!worldSession.accepts(world)) { ++syncDiagnostics.droppedStale; return; }
+            ++syncDiagnostics.packets;
+            if (!decoded) {
+                ++syncDiagnostics.rejected;
+                auto now = Clock::now();
+                if (decoded.error == gun::sync::DecodeError::Revision) {
+                    logRejection = !syncDiagnostics.revisionLogged;
+                    syncDiagnostics.revisionLogged = true; // once per session, regardless of flood
+                } else logRejection = !syncDiagnostics.lastRejection || now - *syncDiagnostics.lastRejection >= std::chrono::seconds(1);
+                if (logRejection) syncDiagnostics.lastRejection = now;
+            } else serverDataInbox.push_back({std::move(decoded.message), world});
+        }
+        if (logRejection) logger().warn("[sync] rejected reason={} revision={} generation={}",
+            gun::sync::errorName(decoded.error), gun::sync::ProtocolRevision, world);
     }
 };
 
@@ -476,12 +533,29 @@ LL_TYPE_INSTANCE_HOOK(ShooterFrameHook, ll::memory::HookPriority::Normal, Minecr
     }
 }
 
+void clearSyncedData(bool summarize) {
+    SyncDiagnostics diagnostic;
+    {
+        std::lock_guard lock(serverStateMutex);
+        syncDiagnostics.droppedStale += serverDataInbox.size();
+        serverDataInbox.clear();
+        diagnostic = syncDiagnostics;
+    }
+    syncedEntities.clear();
+    localRuntimeId = 0;
+    reloadTypePublished = 0;
+    reloadReplyType = gun::ReloadStateType::NotReloading;
+    if (summarize) logger().info("[sync] session packets={} selfEntries={} remoteEntries={} droppedAbsent={} droppedStale={} rejected={}",
+        diagnostic.packets, diagnostic.selfEntries, diagnostic.remoteEntries, diagnostic.droppedAbsent, diagnostic.droppedStale, diagnostic.rejected);
+}
+
 void endWorld(IClientInstance const* client) {
     if (!worldSession.current() || !client || joinedClient.load() != client) return;
     // Do not look up the primary client here: it can already have been detached from the
     // global service when exit callbacks arrive. Request-leave runs before that teardown.
     sound::stopAnimation();
     worldSession.close();
+    clearSyncedData(true);
     turn::clear();
     nbt::releaseStackLimitProbe();
     hud::releaseWorld(client);
@@ -577,7 +651,13 @@ void enable() {
         // Also retire a previous generation if a native transfer bypassed the leave event.
         endWorld(joinedClient.load());
         joinedClient = &event.self();
-        auto world = worldSession.open();
+        uint64_t world;
+        {
+            std::lock_guard lock(serverStateMutex);
+            serverDataInbox.clear();
+            syncDiagnostics = {};
+            world = worldSession.open();
+        }
         resetPending = true;
         logger().info("[world] local player loaded: generation {}", world);
     });
@@ -607,7 +687,9 @@ void disable() {
     }
     triggerDown  = false;
     sound::stopAnimation();
+    bool hadWorld = worldSession.current() != 0;
     worldSession.close();
+    clearSyncedData(hadWorld);
     turn::clear();
     joinedClient = nullptr;
     resetPending = true;
