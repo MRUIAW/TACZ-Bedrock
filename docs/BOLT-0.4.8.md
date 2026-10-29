@@ -1,5 +1,7 @@
 # 0.4.8 — Java default manual bolt
 
+Historical 0.4.8 design: accepted in 0.4.9; its temporary script staging/query VM were removed by [BOLT-0.4.9.md](BOLT-0.4.9.md).
+
 ## Java mechanism and scope
 
 Java paths below are relative to `_reference/TACZ/src/main/java/com/tacz/guns/`.

@@ -8,6 +8,36 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 Versioning rule for this project: the patch number goes up by 1 for each small item or test
 round, the minor number goes up by 1 for each finished feature or phase.
 
+## [0.4.9] - 2026-10-30
+
+### Accepted 0.4.8 — user-tested
+
+- AWP/M700 automatic bolt with trigger released or held, no extra held shot,
+  fire/reload exclusion during bolt, zero-action M107/M109 without wedging,
+  correct ammo on mid-bolt switch, and no fake bolt on staged M870/Kar98 passed.
+  AK47, respawn, dimension change and rejoin passed. The finish→immediate-fire
+  latch wedge fixed in 1423ce3 passed retest.
+- Empty magazine was not separately reported; logs show empty reload after
+  bolting without repeated bolts. No stronger acceptance claim is made.
+
+### Added
+
+- Lua start_bolt/tick_bolt dispatch with per-hook Java defaults and strict
+  function/boolean checks; getBoltTime and adjustBoltTime on the script API.
+  Server sets the timestamp before start, writes adjusted timestamps back and
+  commits start-hook ammo/chamber mutations even when it returns false.
+- Hook failures warn once per gun/hook and stop instead of throwing out of the
+  server tick, the existing reload-style error-policy divergence. VM-local
+  instruction budgets retained; inherited/functional module lookup is protected.
+  See `docs/BOLT-0.4.9.md` for the dispatch, scratch pack scan and live checklist.
+
+### Removed
+
+- 0.4.8 script-bolt staging rule and client query VM; the client no longer inspects
+  gun scripts. Per-frame latch observation and once-per-completed-tick auto-bolt
+  remain. Kar98 reload awaits getAttachment (0.4.10); SPAS-12 BURST/Super90 await
+  Lua shoot/shootOnce (0.4.11); inventory-fed TB23 remains later work.
+
 ## [0.4.8] - 2026-10-29
 
 ### Accepted 0.4.7 — user-tested

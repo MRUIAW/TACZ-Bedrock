@@ -1,6 +1,7 @@
 #pragma once
 
 #include <algorithm>
+#include <bit>
 #include <cstdint>
 #include <functional>
 #include <optional>
@@ -13,7 +14,7 @@
 
 // The object gun logic scripts receive as `api`, after TACZ's ModernKineticGunScriptAPI.
 // It works on a copy of the gun's state; the caller writes `ammo` back to the item afterwards.
-// Reload and default bolt are implemented; Lua bolt hooks/shooting/heat follow later.
+// Reload and bolt are implemented; Lua shooting/heat follow later.
 namespace tacz::lua {
 
 class GunLogic;
@@ -34,7 +35,9 @@ struct ScriptApi {
     int64_t              nowMs        = 0;
     float                aimingProgress = 0;
     bool                 isBolting = false;
-    int64_t              boltTimeMs = 0;
+    int64_t              boltNowMs = 0; // deterministic clock when boltClock is unset
+    int64_t              boltTimestamp = 0; // caller reads back after script calls
+    std::function<int64_t()> boltClock; // server wall clock, sampled on each getBoltTime
 
     // Removes up to n rounds of the gun's ammo from the shooter's inventory; returns how many.
     std::function<int(int)> extractAmmo;
@@ -91,8 +94,15 @@ struct ScriptApi {
 
     // TACZ FireMode ordinals: AUTO 0, SEMI 1, BURST 2, UNKNOWN 3.
     [[nodiscard]] int getFireMode() const { return fireMode ? static_cast<int>(*fireMode) : 3; }
-    // ModernKineticGunScriptAPI.java:312-317. Not registered for Lua until 0.4.9.
-    [[nodiscard]] int64_t getBoltTime() const { return isBolting ? boltTimeMs : 0; }
+    // Java long subtraction wraps; preserve it without C++ signed overflow.
+    static int64_t subtractTime(int64_t a, int64_t b) {
+        return std::bit_cast<int64_t>(static_cast<uint64_t>(a) - static_cast<uint64_t>(b));
+    }
+    // ModernKineticGunScriptAPI.java:312-317,372-374. Inactive even inside start_bolt.
+    [[nodiscard]] int64_t getBoltTime() const {
+        return isBolting ? subtractTime(boltClock ? boltClock() : boltNowMs, boltTimestamp) : 0;
+    }
+    void adjustBoltTime(int64_t alpha) { boltTimestamp = subtractTime(boltTimestamp, alpha); }
 };
 
 // ModernKineticGunItem.java:340-359. Feed can precede OR follow the action time.

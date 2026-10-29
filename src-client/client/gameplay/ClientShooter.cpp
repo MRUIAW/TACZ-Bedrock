@@ -7,7 +7,6 @@
 #include <cstdint>
 #include <limits>
 #include <map>
-#include <memory>
 #include <mutex>
 #include <optional>
 #include <random>
@@ -50,7 +49,7 @@
 #include "gun/ClientWorldSession.h"
 #include "gun/ClientStateLock.h"
 #include "gun/ClientTickGate.h"
-#include "lua/GunLogic.h"
+#include "gun/BoltRules.h"
 #include "mod/TaczMod.h"
 #include "nbt/AmmoItem.h"
 #include "nbt/StackLimitProbe.h"
@@ -103,7 +102,6 @@ std::atomic<uint64_t> clientTickCount{0}; // tick listener may run on another th
 gun::ClientTickGate reloadCancelTickGate; // frame-owned; never gates shooting itself
 gun::ClientTickGate autoBoltTickGate;
 gun::ClientBoltLatch boltLatch;
-std::unique_ptr<lua::GunLogic> boltQueryLogic; // own client frame VM, never the integrated-server VM
 
 // ClientLevelTickEvent is synchronous in ClientLevel::$_subTick, whereas frame()
 // is after MinecraftGame::update. Do not assume an unproven native call/thread
@@ -243,11 +241,6 @@ void bolt() {
     check.inventoryFed = data.reload.type == pack::FeedType::Inventory;
     check.needCheckAmmo = !player->isCreative();
     check.inventoryHasAmmo = data.ammoId && nbt::countAmmo(*player, *data.ammoId) > 0;
-    if (gun::clientBoltRefusal(check)) return;
-    if (!boltQueryLogic) boltQueryLogic = std::make_unique<lua::GunLogic>(TaczMod::getInstance().gunPacks(),
-        [](auto const& message) { logger().warn("{}", message); });
-    // TEMP 0.4.8 staging: no lock/latch/request/presentation for script bolt hooks.
-    check.scriptedHooks = boltQueryLogic->hasBoltHooks(data);
     if (gun::clientBoltRefusal(check)) return;
     acquireStateLock(gun::LockCondition::Bolt);
     boltLatch.isBolting = true;
@@ -393,7 +386,6 @@ void frame() {
         clientTickCount.store(0, std::memory_order_relaxed);
         reloadCancelTickGate.reset();
         autoBoltTickGate.reset();
-        boltQueryLogic.reset();
         lastShot.reset();
         shotTimestamp.reset();
         previousShotTimestamp.reset();
@@ -562,7 +554,6 @@ void clearSyncedData() {
     reloadCancelTickGate.reset();
     autoBoltTickGate.reset();
     boltLatch.reset();
-    boltQueryLogic.reset();
     reloadTypePublished = 0;
     aimingProgressPublished = 0;
     isAimingPublished = false;

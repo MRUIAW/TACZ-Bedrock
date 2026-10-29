@@ -169,7 +169,8 @@ lua::ScriptApi scriptApi(Player& player, nbt::GunItemState const& item, pack::Gu
     api.shooterKey     = keyOf(player);
     api.aimingProgress = s.aimingProgress;
     api.isBolting     = s.isBolting;
-    api.boltTimeMs    = s.isBolting ? boltNowMs() - s.boltTimestamp : 0;
+    api.boltTimestamp = s.boltTimestamp;
+    api.boltClock     = boltNowMs;
     auto ammoId        = entry.data.ammoId;
     api.extractAmmo    = [&player, ammoId](int n) { return ammoId ? nbt::extractAmmo(player, *ammoId, n) : 0; };
     api.inventoryHasAmmo = [&player, ammoId] { return ammoId && nbt::countAmmo(player, *ammoId) > 0; };
@@ -367,7 +368,9 @@ char const* handleReload(Player& player) {
     s.reloadValue      = {s.reloadState, 0};
 
     auto api = scriptApi(player, *item, *entry, s);
-    if (!gunLogic().startReload(api)) {
+    bool started = gunLogic().startReload(api);
+    s.boltTimestamp = api.boltTimestamp;
+    if (!started) {
         s.reloadState     = gun::ReloadStateType::NotReloading;
         s.reloadStartedMs = -1;
         s.reloadValue     = {};
@@ -408,6 +411,7 @@ void handleCancelReload(Player& player) {
     if (!gun::isReloading(s.reloadState)) return;
     auto api = scriptApi(player, *item, *entry, s);
     gunLogic().interruptReload(api);
+    s.boltTimestamp = api.boltTimestamp;
 }
 
 // LivingEntityReload.tickReloadState, once per server tick.
@@ -426,6 +430,7 @@ void tickReload(Player& player, ShooterState& s) {
     }
     auto api  = scriptApi(player, *item, *entry, s);
     auto next = gunLogic().tickReload(api);
+    s.boltTimestamp = api.boltTimestamp;
     if (api.ammo != gun::GunAmmo{item->ammo, item->barrel}) {
         item->ammo   = api.ammo.magazine;
         item->barrel = api.ammo.barrel;
@@ -439,6 +444,16 @@ void tickReload(Player& player, ShooterState& s) {
         s.reloadStartedMs = -1;
         logger().info("[reload] {} reload finished", player.getRealName());
     }
+}
+
+// Both hook paths commit mutations even when a hook returns false or errors.
+void commitBoltAmmo(Player& player, nbt::GunItemState& item, lua::ScriptApi const& api) {
+    if (api.ammo == gun::GunAmmo{item.ammo, item.barrel}) return;
+    bool chambered = !item.barrel && api.ammo.barrel;
+    item.ammo = api.ammo.magazine;
+    item.barrel = api.ammo.barrel;
+    nbt::writeSelectedGun(player, item); // same balanced NBT path as tickReload
+    if (chambered) logger().info("[bolt] {} chambered", player.getRealName());
 }
 
 // LivingEntityBolt.java:27-78. Empty request; all state comes from server item/data.
@@ -461,10 +476,16 @@ char const* handleBolt(Player& player) {
     check.inventoryFed = api.useInventoryAmmo();
     check.inventoryHasAmmo = api.inventoryHasAmmo && api.inventoryHasAmmo();
     check.needCheckAmmo = api.needCheckAmmo;
-    check.scriptedHooks = gunLogic().hasBoltHooks(entry->data);
     if (auto reason = gun::serverBoltRefusal(check)) return reason;
     s.boltTimestamp = boltNowMs();
-    s.isBolting = true; // ModernKineticGunItem.startBolt default; Lua dispatch is 0.4.9
+    api.boltTimestamp = s.boltTimestamp; // start_bolt sees the timestamp, but isBolting is still false
+    s.isBolting = gunLogic().startBolt(api);
+    s.boltTimestamp = api.boltTimestamp;
+    commitBoltAmmo(player, *item, api); // start mutations persist regardless of its result
+    if (!s.isBolting) {
+        logger().info("[bolt] {} start_bolt returned false", player.getRealName());
+        return nullptr;
+    }
     logger().info("[bolt] {} started {}", player.getRealName(), item->gunId.toString());
     return nullptr;
 }
@@ -473,17 +494,12 @@ void tickBolt(Player& player, ShooterState& s) {
     if (!s.isBolting) return;
     auto item = nbt::readGun(player.getSelectedItem());
     auto entry = item ? gunEntry(item->gunId) : nullptr;
-    if (!entry || gunLogic().hasBoltHooks(entry->data)) s.isBolting = false;
+    if (!entry) s.isBolting = false;
     else {
         auto api = scriptApi(player, *item, *entry, s);
-        s.isBolting = lua::defaultTickBolt(api);
-        if (api.ammo != gun::GunAmmo{item->ammo, item->barrel}) {
-            bool chambered = !item->barrel && api.ammo.barrel;
-            item->ammo = api.ammo.magazine;
-            item->barrel = api.ammo.barrel;
-            nbt::writeSelectedGun(player, *item); // same balanced NBT path as tickReload
-            if (chambered) logger().info("[bolt] {} chambered", player.getRealName());
-        }
+        s.isBolting = gunLogic().tickBolt(api);
+        s.boltTimestamp = api.boltTimestamp;
+        commitBoltAmmo(player, *item, api);
     }
     if (!s.isBolting) logger().info("[bolt] {} finished", player.getRealName());
 }

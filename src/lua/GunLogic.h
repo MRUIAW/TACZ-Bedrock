@@ -35,15 +35,16 @@ public:
     // ModernKineticGunItem.interruptReload (no default behaviour).
     void interruptReload(ScriptApi& api);
 
+    // ModernKineticGunItem.startBolt/tickBolt: independently default each missing hook.
+    // Errors (including non-functions/non-booleans) warn once per gun/hook and stop.
+    bool startBolt(ScriptApi& api);
+    bool tickBolt(ScriptApi& api);
+
     // ShooterDataHolder.scriptData: dropped when the shooter's gun state resets.
     void clearScriptData(int64_t shooterKey);
 
     // Loads a script module; false (and a warning) if it does not compile or return a table.
     bool loadScript(pack::ResourceId const& id);
-
-    // Runtime module-table lookup (including require/metatable inheritance), never
-    // source-text matching. TEMP 0.4.8: either declared bolt hook defers this gun.
-    bool hasBoltHooks(pack::GunData const& data);
 
     struct Impl;
 

@@ -61,8 +61,9 @@ sol::object toLua(sol::state_view lua, nlohmann::json const& j) {
 struct GunLogic::Impl {
     pack::GunPackRegistry const& packs;
     LogFn                        warn;
-    int                          instructionBudget = 0; // per VM, not shared with client query VM
+    int                          instructionBudget = 0; // per VM, including independent test VMs
     sol::state                   lua;
+    sol::protected_function      boltDispatch;
 
     std::unordered_map<std::string, std::optional<sol::table>> scripts;      // by module name
     std::map<pack::ResourceId, sol::table>                     scriptParams; // GunData.script_param
@@ -104,6 +105,20 @@ struct GunLogic::Impl {
         lua["UNKNOWN"] = 3;
 
         registerApi();
+
+        // Protect lookup too: __index may execute Lua or throw. Nil alone means
+        // absent; checkFunction/checkboolean reject all other invalid types.
+        boltDispatch = lua.safe_script(R"(
+            local type, error = type, error
+            return function(api, module, name)
+                local fn = module[name]
+                if fn == nil then return nil end
+                if type(fn) ~= 'function' then error(name .. ': function or nil expected') end
+                local value = fn(api)
+                if type(value) ~= 'boolean' then error(name .. ': boolean result expected') end
+                return value
+            end
+        )", sol::script_pass_on_error).get<sol::protected_function>();
 
         sol::table preload = package["preload"];
         for (auto const& [id, source] : packs.dataScripts()) {
@@ -163,6 +178,10 @@ struct GunLogic::Impl {
             [](ScriptApi& a) { return a.aimingProgress; },
             "getCurrentTimestamp",
             [](ScriptApi& a) { return a.nowMs; },
+            "getBoltTime",
+            &ScriptApi::getBoltTime,
+            "adjustBoltTime",
+            &ScriptApi::adjustBoltTime,
             "getScriptParams",
             [this](ScriptApi& a, sol::this_state) -> sol::table { return paramsFor(a); },
             "cacheScriptData",
@@ -228,6 +247,15 @@ struct GunLogic::Impl {
         }
         return result;
     }
+
+    bool bolt(ScriptApi& a, char const* name, bool start) {
+        auto table = a.data->script ? script(*a.data->script) : std::nullopt;
+        if (!table) return start || defaultTickBolt(a);
+        auto result = call(a, boltDispatch, name, *table, name);
+        if (!result.valid()) return false;
+        if (result.get_type() == sol::type::nil) return start || defaultTickBolt(a);
+        return result.get<bool>();
+    }
 };
 
 GunLogic::GunLogic(pack::GunPackRegistry const& packs, LogFn warn)
@@ -268,16 +296,14 @@ void GunLogic::clearScriptData(int64_t shooterKey) { mImpl->scriptData.erase(sho
 
 bool GunLogic::loadScript(pack::ResourceId const& id) { return mImpl->script(id).has_value(); }
 
-bool GunLogic::hasBoltHooks(pack::GunData const& data) {
-    if (!data.script) return false;
-    auto table = mImpl->script(*data.script);
-    if (!table) return false; // same missing/failed module policy as existing script loading
-    mImpl->instructionBudget = InstructionLimit; // __index may itself be a Lua function
-    // Any non-nil declaration is deferred: a malformed non-function must not
-    // accidentally enable Java's default path (checkFunction rejects it in Java).
-    sol::object start = (*table)["start_bolt"];
-    sol::object tick = (*table)["tick_bolt"];
-    return start.get_type() != sol::type::nil || tick.get_type() != sol::type::nil;
+bool GunLogic::startBolt(ScriptApi& api) {
+    api.logic = this;
+    return mImpl->bolt(api, "start_bolt", true);
+}
+
+bool GunLogic::tickBolt(ScriptApi& api) {
+    api.logic = this;
+    return mImpl->bolt(api, "tick_bolt", false);
 }
 
 } // namespace tacz::lua

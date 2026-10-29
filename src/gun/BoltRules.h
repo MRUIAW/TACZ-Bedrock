@@ -25,7 +25,6 @@ struct BoltCheck {
     std::optional<Bolt> type = Bolt::ManualAction;
     GunAmmo ammo;
     bool inventoryFed = false, inventoryHasAmmo = false, needCheckAmmo = true;
-    bool scriptedHooks = false; // TEMP 0.4.8 staging; removed in 0.4.9
 };
 inline char const* boltAmmoCheck(BoltCheck const& c) {
     if (c.type != Bolt::ManualAction) return "NOT_MANUAL_ACTION";
@@ -42,7 +41,6 @@ inline char const* serverBoltRefusal(BoltCheck const& c) {
     if (c.drawCooldown != 0) return "IS_DRAWING";
     if (c.serverBolting) return "IS_BOLTING";
     if (auto reason = boltAmmoCheck(c)) return reason;
-    if (c.scriptedHooks) return "SCRIPT_BOLT_DEFERRED";
     return nullptr;
 }
 // LocalPlayerBolt.java:26-78 deliberately tests the general lock and local latch,
@@ -54,7 +52,6 @@ inline char const* clientBoltRefusal(BoltCheck const& c) {
     if (!c.knownData) return "ID_NOT_EXIST";
     if (!c.hasDisplay) return "NO_DISPLAY";
     if (auto reason = boltAmmoCheck(c)) return reason;
-    if (c.scriptedHooks) return "SCRIPT_BOLT_DEFERRED";
     return nullptr;
 }
 // Shared shoot/reload authoritative exclusion, not an animation completion test.
