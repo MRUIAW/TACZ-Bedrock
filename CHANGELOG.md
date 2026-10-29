@@ -8,6 +8,46 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 Versioning rule for this project: the patch number goes up by 1 for each small item or test
 round, the minor number goes up by 1 for each finished feature or phase.
 
+## [0.4.4] - 2026-10-29
+
+### User-tested 0.4.3
+
+- All passed: sprint then hold fire stops sprint without flicker and fires after
+  recovery; held semi-auto fires once; release resumes sprint. Normal firing,
+  ADS, reload, sneak+sprint and switching remain unchanged.
+- `2026-10-29.3.log`, 11:13:27: `stopIntent=true sprinting=false
+  sprintTime=0.110162`, then `0.000000` 150 ms later.
+
+### Added
+
+- TACZ root-node view-turn inertia, after animation evaluation: fixed half-step
+  bob per client tick, interpolated lag, tanh-limited translation and quaternion
+  postcomposition. One immutable effective pose feeds gun, constraints and arms;
+  rigid/CPU caches also invalidate on turn inertia, independent of animation revision.
+- Temporary `[turn-inertia]` acceptance diagnostic, at most once per second while
+  turning or after capture-state changes: tick view, frame lag, limited offsets,
+  diagonal residual angle and capture hit/fallback/rejection counts. Remove after acceptance.
+
+### Changed
+
+- Bedrock adaptation (approach A): capture the hand matrix before native turn sway,
+  keep hand-bob suppression, validate callback/world/client/player/camera/stack/top/depth,
+  then draw from that base without modifying the native parent. Retain Java's raw
+  diagonal residual after the hand-camera quaternion: base · projection correction ·
+  H · C · placement. View Bobbing OFF still gets root inertia and C via current-top fallback.
+- Deliberate 2a divergence: initialize bob to current view on world entry, player
+  replacement and respawn rather than Java's zero initialization. Continuous yaw
+  uses shortest observation deltas and common rebasing; no teleport/distance reset.
+  Confirmed Java death/sleep gates are retained. Typed head-yaw interpolation while
+  riding and camera-entity identity gating are implemented; live tick/render phase,
+  component availability and render-backend capture consumption still need acceptance.
+- See `docs/TURN-INERTIA-0.4.4.md` for Java/axis/order evidence and runtime checks.
+
+### Removed
+
+- Accepted 0.4.3's temporary `[sprint-server]` diagnostic and `sprintDiagnostic` state.
+  Sprint gameplay, transport and authoritative recovery remain unchanged.
+
 ## [0.4.3] - 2026-10-29
 
 ### User-tested 0.4.2

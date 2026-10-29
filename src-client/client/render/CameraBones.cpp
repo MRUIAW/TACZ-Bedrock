@@ -1,4 +1,5 @@
 #include "client/render/CameraBones.h"
+#include "client/render/HandTurnCapture.h"
 
 #include <type_traits>
 #include <algorithm>
@@ -63,10 +64,11 @@ struct Counts {
 struct RenderScope;
 thread_local RenderScope* renderScope = nullptr;
 struct RenderScope {
+    HandTurnScope handTurn;
     struct Saved { uint64_t world; IClientInstance* client; Registry const* registry; EntityId entity; glm::quat before, after; };
     std::optional<Saved> saved;
     RenderScope* previous = renderScope;
-    RenderScope() { if (previous) previous->restore(); renderScope = this; }
+    explicit RenderScope(ScreenContext& screen) : handTurn(screen) { if (previous) previous->restore(); renderScope = this; }
     void restore() {
         if (!saved) return;
         auto s=*saved;
@@ -100,12 +102,12 @@ void report(uint64_t world, bool bob, bool shake, glm::vec3 angles) {
 }
 LL_TYPE_INSTANCE_HOOK(CameraBonePrep,ll::memory::HookPriority::Normal,InGamePlayScreen,
     &InGamePlayScreen::$_renderLevelPrep,void,ScreenContext& screen,LevelRenderer& renderer,Actor& actor) {
-    RenderScope scope;
+    RenderScope scope(screen);
     origin(screen,renderer,actor);
 }
 LL_TYPE_INSTANCE_HOOK(CameraBoneRender,ll::memory::HookPriority::Normal,InGamePlayScreen,
     &InGamePlayScreen::$render,void,ScreenContext& screen,FrameRenderObject const& frame) {
-    RenderScope scope;
+    RenderScope scope(screen);
     origin(screen,frame);
 }
 LL_TYPE_INSTANCE_HOOK(CameraBoneSetup,ll::memory::HookPriority::Normal,LevelRendererPlayer,

@@ -35,6 +35,7 @@
 
 #include "client/sound/GunSound.h"
 #include "client/animation/GunAnimation.h"
+#include "client/animation/ViewTurnInertia.h"
 #include "client/gameplay/ClientAim.h"
 #include "client/gameplay/ClientRecoil.h"
 #include "client/render/GunRenderer.h"
@@ -481,6 +482,7 @@ void endWorld(IClientInstance const* client) {
     // global service when exit callbacks arrive. Request-leave runs before that teardown.
     sound::stopAnimation();
     worldSession.close();
+    turn::clear();
     nbt::releaseStackLimitProbe();
     hud::releaseWorld(client);
     recoil::requestClear();
@@ -566,6 +568,7 @@ void enable() {
     });
     listeners[3] = bus.emplaceListener<ll::event::ClientLevelTickEvent>([](ll::event::ClientLevelTickEvent&) {
         aim::tick();
+        turn::tick(); // one fixed bob step per real client tick, even without a gun
         anim::captureMovementTick();
     });
     listeners[4] = bus.emplaceListener<ll::event::ClientJoinLevelEvent>([](ll::event::ClientJoinLevelEvent& event) {
@@ -605,6 +608,7 @@ void disable() {
     triggerDown  = false;
     sound::stopAnimation();
     worldSession.close();
+    turn::clear();
     joinedClient = nullptr;
     resetPending = true;
     anim::clear();

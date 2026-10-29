@@ -77,6 +77,8 @@
 
 #include "debug/RenderDebug.h"
 #include "client/animation/GunAnimation.h"
+#include "client/animation/ViewTurnInertia.h"
+#include "client/render/HandTurnCapture.h"
 #include "client/gameplay/ClientShooter.h"
 #include "client/gameplay/ClientAim.h"
 #include "client/render/PlayerArms.h"
@@ -133,6 +135,7 @@ struct GunVisual {
     model::RigidGunModel              rigid;
     model::BoneFrame                  frame;
     uint64_t                          frameRevision=0;
+    glm::vec2                         frameTurn{0}, meshTurn{0};
     std::array<std::vector<std::unique_ptr<GroupMesh>>,2> rigidMeshes;
     std::array<bool,2>                 rigidReady{};
     bool                              warnedIncompatible=false;
@@ -529,13 +532,14 @@ void pop(MatrixStack::MatrixStackRef& ref) {
     ref.stack = nullptr;
 }
 
-bool drawGun(ItemInHandRenderer& renderer, BaseActorRenderContext& context) {
+bool drawGun(ItemInHandRenderer& renderer, BaseActorRenderContext& context, HandTurnBase const& handBase) {
     auto callStart=std::chrono::steady_clock::now();
     auto session = shooter::worldToken();
     if (!session) return false; // menu meshes pass through without any world-service access
     auto pose = anim::snapshot();
     if (!model::canUseGunRenderResources(session, pose.world, pose.gun.has_value())) return false;
     auto& client = context.mClientInstance;
+    if (!shooter::ownsClient(&client) || pose.client!=reinterpret_cast<uintptr_t>(&client)) return false;
     auto* player = client.getLocalPlayer();
     if (!player) return false;
     auto gunId = pose.gun;
@@ -580,21 +584,58 @@ bool drawGun(ItemInHandRenderer& renderer, BaseActorRenderContext& context) {
         ++counters.invalidMeshes;
         return pose.puttingAway;
     }
+    auto turnSample=turn::sample(client,*player,context.mFrameAlpha);
+    auto const& inertia=turnSample.frame;
+    auto effectivePose=model::effectiveViewTurnPose(visual->model,pose.pose,inertia);
+    glm::vec2 rootTurn{inertia.sx,inertia.sy};
+    auto residual=model::viewTurnResidual(inertia);
+    // NOT the original TACZ implementation (Bedrock adaptation): Java TACZ keeps
+    // vanilla's xBob/yBob hand lag and appends inverse -0.1 rotations. We render
+    // from the pre-turn-sway hand matrix instead, then re-apply Java's net residual
+    // C=Rx(a)*Ry(b)*Rx(-a)*Ry(-b) in base * projection correction * H * C * placement
+    // order. Java's H is before vanilla lag: ItemInHandRendererMixin.java:34-36,
+    // GunItemRendererWrapper.java:144-156,185-206. Never apply the inverse rotations
+    // alone to this already-unswayed matrix. View Bobbing OFF uses the current top.
+    auto selectedBase=handBase.captured.value_or(screen.camera.worldMatrixStack->top()._m.get());
+    // Temporary acceptance diagnostic, strictly throttled (including state changes).
+    struct TurnDiagnostic {
+        std::chrono::steady_clock::time_point at{};
+        uint64_t world=0, hits=0, fallbacks=0, rejections=0;
+        int capture=-1;
+        bool changed=false;
+    };
+    static thread_local TurnDiagnostic td;
+    if (td.world!=session) { td={}; td.world=session; }
+    int captureState=handBase.captured ? 1 : handBase.rejected ? 2 : 0;
+    td.changed|=td.capture!=captureState;
+    td.capture=captureState;
+    td.hits+=captureState==1; td.fallbacks+=captureState!=1; td.rejections+=captureState==2;
+    auto turnNow=std::chrono::steady_clock::now();
+    if ((td.changed || std::abs(inertia.dx)>.001 || std::abs(inertia.dy)>.001)
+        && turnNow-td.at>=std::chrono::seconds(1)) {
+        logger().info("[turn-inertia] world={} tickPitch={:.6f} tickYaw={:.6f} dx={:.6f} dy={:.6f} sx={:.6f} sy={:.6f} residualDeg={:.6f} capture={} hits={} fallbacks={} rejections={}",
+            session,turnSample.tickPitch,turnSample.tickYaw,inertia.dx,inertia.dy,inertia.sx,inertia.sy,
+            model::viewTurnResidualDegrees(residual),captureState==1 ? "hit" : captureState==2 ? "rejected" : "fallback",
+            td.hits,td.fallbacks,td.rejections);
+        td.at=turnNow; td.changed=false;
+    }
     if (path==1 && !model::rigidGunPoseCompatible(pose.pose)) {
         if (!visual->warnedIncompatible) logger().warn("[gun-render] empty-name pose channel cannot be statically folded; using path 0 for this pose");
         visual->warnedIncompatible=true; path=0; counters.path=path;
     }
     auto visit=[&](model::Bone const& bone,model::Bone const* parent) { return model::gunVisibility(bone,parent,pose.renderState); };
-    if (visual->frame.world.empty() || visual->frameRevision!=pose.revision) {
-        model::evaluateBoneFrame(visual->model,visual->rigid,pose.pose,visit,visual->frame);
+    if (visual->frame.world.empty() || visual->frameRevision!=pose.revision || visual->frameTurn!=rootTurn) {
+        model::evaluateBoneFrame(visual->model,visual->rigid,effectivePose,visit,visual->frame);
         visual->frameRevision=pose.revision;
+        visual->frameTurn=rootTurn;
     }
     bool twoSided = debug::gunTwoSided;
-    if (path==0 && (!visual->mesh || pose.revision != visual->animationRevision || twoSided != visual->meshTwoSided)) {
+    if (path==0 && (!visual->mesh || pose.revision != visual->animationRevision || visual->meshTurn!=rootTurn || twoSided != visual->meshTwoSided)) {
         auto start = std::chrono::steady_clock::now();
-        visual->vertices = model::bake(visual->model,visit,pose.pose,true);
+        visual->vertices = model::bake(visual->model,visit,effectivePose,true);
         buildMesh(screen, *visual, twoSided);
         visual->animationRevision = pose.revision;
+        visual->meshTurn=rootTurn;
         counters.lastMesh = pose.revision;
         double ms = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - start).count();
         // Log once per visual after 120 changing poses: CPU bake + tessellation/upload submission,
@@ -718,7 +759,7 @@ bool drawGun(ItemInHandRenderer& renderer, BaseActorRenderContext& context) {
     auto progress = sameAimGun ? aiming.progress : 0.f;
     auto viewProgress = sameAimGun ? aiming.viewProgress : 0.f;
     auto placement = model::firstPersonAimTransform(visual->idleView, visual->ironView, viewProgress);
-    placement = model::applyConstraint(placement,model::constraintTransform(visual->model,pose.pose),viewProgress);
+    placement = model::applyConstraint(placement,model::constraintTransform(visual->model,effectivePose),viewProgress);
     glm::quat cameraRotation{1,0,0,0};
     if (auto it = pose.pose.find("camera"); cameraBonesEnabled(client) && it != pose.pose.end() && it->second.rotation)
         cameraRotation = model::scaledCameraRotation(model::cameraBoneRotation(*it->second.rotation),progress,sameAimGun ? aiming.ironZoom : 1.f);
@@ -737,7 +778,7 @@ bool drawGun(ItemInHandRenderer& renderer, BaseActorRenderContext& context) {
     // Camera stack edit need not reach renderMesh. P_native * correction == P_model;
     // place the correction in the consumed per-draw transform (also honored by RTX).
     auto transform = model::modelProjectionTransform(nativeProjection,fov,debug::gunDepthMode)
-        * glm::mat4_cast(cameraRotation) * placement;
+        * glm::mat4_cast(cameraRotation) * residual * placement;
     if (!debug::freezePose || !visual->frozen) {
         visual->transform = transform;
         visual->capturedDepthMode = debug::gunDepthMode;
@@ -745,7 +786,7 @@ bool drawGun(ItemInHandRenderer& renderer, BaseActorRenderContext& context) {
     visual->frozen = debug::freezePose;
     if (debug::meshDiagnostics && path==0) {
         auto& d=visual->diagnostics;
-        auto clip=nativeProjection*camera.viewMatrixStack->top()._m.get()*camera.worldMatrixStack->top()._m.get()*visual->transform;
+        auto clip=nativeProjection*camera.viewMatrixStack->top()._m.get()*selectedBase*visual->transform;
         auto now=std::chrono::steady_clock::now();
         if (d.revision!=revision) { d.previous.clear(); d.hasClip=false; d.frames=d.changes=d.topologyChanges=0; d.maxDelta=d.maxClipDelta=0; d.revision=revision; d.at=now; }
         d.previousHash=d.hash; d.hash=model::positionHash(visual->vertices);
@@ -762,13 +803,13 @@ bool drawGun(ItemInHandRenderer& renderer, BaseActorRenderContext& context) {
             auto const& raw=visual->mesh->mRawData.get();
             d.rawBytes=raw.size(); d.rawHash=14695981039346656037ull;
             for (auto byte:raw) { d.rawHash^=byte; d.rawHash*=1099511628211ull; }
-            auto repeat=model::bake(visual->model,visit,pose.pose,true);
+            auto repeat=model::bake(visual->model,visit,effectivePose,true);
             float magnitude=0;
             for (auto const& v:visual->vertices) for (int axis=0;axis<3;++axis) magnitude=std::max(magnitude,std::abs(v.pos[axis]));
             logger().info("[mesh-jitter] path=0 world={} freeze={} frames={} changes={} topologyChanges={} hash={:016x} previousHash={:016x} maxAbsPos={:.9g} consecutiveMaxDelta={:.9g} repeatMaxDelta={:.9g} tessellatorMaxDelta={:.9g} clipMatrixMaxDelta={:.9g} rawBytes={} rawHash={:016x} viewTranslation={} worldTranslation={} nativePacking=unknown frame=model-blocks cpuPosition=float32",
                 session,debug::freezePose.load(),d.frames,d.changes,d.topologyChanges,d.hash,d.previousHash,magnitude,d.maxDelta,
                 model::positionDelta(visual->vertices,repeat),d.uploadDelta,d.maxClipDelta,d.rawBytes,d.rawHash,
-                str(glm::vec3(camera.viewMatrixStack->top()._m.get()[3])),str(glm::vec3(camera.worldMatrixStack->top()._m.get()[3])));
+                str(glm::vec3(camera.viewMatrixStack->top()._m.get()[3])),str(glm::vec3(selectedBase[3])));
             d.at=now; d.frames=d.changes=d.topologyChanges=0; d.maxDelta=d.maxClipDelta=0;
         }
     }
@@ -787,12 +828,12 @@ bool drawGun(ItemInHandRenderer& renderer, BaseActorRenderContext& context) {
     }
     if (progress < .9f) visual->loggedAimProjection = false;
     if ((progress >= .999f && !visual->loggedAimProjection) || debugChanged) {
-        auto mv = camera.viewMatrixStack->top()._m.get()*camera.worldMatrixStack->top()._m.get()*visual->transform;
-        auto ndc = model::sightProjection(visual->model,pose.pose,mv,nativeProjection);
+        auto mv = camera.viewMatrixStack->top()._m.get()*selectedBase*visual->transform;
+        auto ndc = model::sightProjection(visual->model,effectivePose,mv,nativeProjection);
         glm::mat4 sight(1);
         for (int i : visual->model.path(visual->model.find("iron_view"))) {
-            auto it = pose.pose.find(visual->model.bones[i].name);
-            sight *= model::partTransform(visual->model.bones[i],it == pose.pose.end() ? nullptr : &it->second);
+            auto it = effectivePose.find(visual->model.bones[i].name);
+            sight *= model::partTransform(visual->model.bones[i],it == effectivePose.end() ? nullptr : &it->second);
         }
         auto clip = nativeProjection*mv*sight*glm::vec4(0,0,0,1);
         logger().info("[ads-projection] world={} nativeFov={:.3f} targetFov={:.3f} modelFov={:.3f} viewProgress={:.4f} ironOriginClip=({:.6f},{:.6f},{:.6f},{:.6f}) sightAxisNDC=({:.6f},{:.6f}) depthMode={} capturedDepthMode={} freeze={} nativeP22={:.9g} nativeP32={:.9g} projectionViaModel=true",
@@ -801,7 +842,7 @@ bool drawGun(ItemInHandRenderer& renderer, BaseActorRenderContext& context) {
     }
     auto world            = camera.worldMatrixStack->push(false);
     world.stack->_isDirty = true;
-    world.mat->_m         = world.mat->_m.get() * visual->transform;
+    world.mat->_m         = selectedBase * visual->transform; // base * projection correction * H * C * placement
 
     TextureVariant const& texture = (materialIndex == 4 || materialIndex == 5) ? TextureVariant{}
         : alphaCompatibility && !blended ? visual->cutoutTexture : visual->texture;
@@ -884,7 +925,8 @@ LL_TYPE_INSTANCE_HOOK(
     ItemContextFlags        flags
 ) {
     try {
-        if (drawGun(*this, context)) return; // replaces the vanilla hand and held item, as TACZ does
+        auto handBase=consumeHandTurn(context.mClientInstance,context.mScreenContext); // validate PRE-push, once
+        if (drawGun(*this, context, handBase)) return; // replaces the vanilla hand and held item, as TACZ does
     } catch (std::exception const& e) {
         logger().error("First-person gun render failed: {}", e.what());
     } catch (...) {
@@ -910,7 +952,18 @@ LL_TYPE_INSTANCE_HOOK(
     auto session = shooter::worldToken();
     if (session) {
         auto hud = anim::hudState();
-        if (model::canUseGunRenderResources(session, hud.world, hud.gun.has_value())) return;
+        if (model::canUseGunRenderResources(session, hud.world, hud.gun.has_value())) {
+            // NOT the original TACZ implementation (Bedrock adaptation): Java TACZ keeps
+            // vanilla's xBob/yBob hand lag and appends inverse -0.1 rotations. We render
+            // from the pre-turn-sway hand matrix instead, then re-apply Java's net residual
+            // C=Rx(a)*Ry(b)*Rx(-a)*Ry(-b) in base * projection correction * H * C * placement
+            // order. Java's H precedes lag: ItemInHandRendererMixin.java:34-36,
+            // GunItemRendererWrapper.java:144-156,185-206. Never apply the inverse rotations
+            // alone to this already-unswayed matrix. The native parent is never overwritten.
+            if (shooter::ownsClient(&mClientInstance) && hud.client==reinterpret_cast<uintptr_t>(&mClientInstance))
+                captureHandTurn(mClientInstance,mv);
+            return; // retain 0.4.1's hand-bob suppression, including put-away
+        }
     }
     origin(mv, alpha);
 }

@@ -6,7 +6,6 @@
 #include <memory>
 #include <mutex>
 #include <optional>
-#include <tuple>
 #include <unordered_map>
 #include <unordered_set>
 #include <type_traits>
@@ -70,7 +69,6 @@ struct ShooterState {
     std::optional<float> syncedSprintTime;
     gun::ShootSprintIntent shootSprintIntent;
     Mob const* sprintOwner = nullptr; // comparison only, including actor replacement/removal
-    std::optional<std::tuple<bool, bool, bool>> sprintDiagnostic;
     gun::HandSelection selection;
     gun::DrawCooldown draw;
     std::optional<int64_t> clockOffset; // server ms - client ms, set on the first trigger pull
@@ -474,13 +472,6 @@ void tickSprint(Player& player, ShooterState& s) {
     if (!s.syncedSprintTime || *s.syncedSprintTime != s.sprintTimeS) {
         net::SprintTimePacket{s.sprintTimeS}.sendTo(player);
         s.syncedSprintTime = s.sprintTimeS;
-    }
-    // Temporary acceptance diagnostic: no per-tick float spam, only boolean edges.
-    auto diagnostic = std::tuple{s.shootSprintIntent.held, player.isSprinting(), gun::sprintBlocksShot(s.sprintTimeS)};
-    if (s.sprintDiagnostic != diagnostic) {
-        logger().info("[sprint-server] {} stopIntent={} sprinting={} sprintTime={:.6f}",
-            player.getRealName(), s.shootSprintIntent.held, player.isSprinting(), s.sprintTimeS);
-        s.sprintDiagnostic = diagnostic;
     }
 }
 
