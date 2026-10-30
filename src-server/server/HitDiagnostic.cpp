@@ -12,6 +12,7 @@
 #include "mc/world/actor/ActorCategory.h"
 #include "mc/world/actor/player/Player.h"
 #include "mc/world/level/Level.h"
+#include "mc/world/level/Tick.h"
 #include "mod/TaczMod.h"
 
 namespace tacz::server::hitdiag {
@@ -89,6 +90,15 @@ debug::hit::Tag trigger(Player& player, int64_t timestamp, uint64_t packetClient
     tag.packetClientTick = packetClientTick;
     return tag;
 }
+void teleportEvent(Level const* level, int64_t player, gun::TeleportEvent const& event) {
+    std::lock_guard lock(mutex);
+    if (!scope || scope != level || owner != player || tickIndex - armedAt >= debug::hit::TickLimit) return;
+    auto tag = budget.eventTag(tickIndex);
+    if (!tag) return;
+    auto phase = event.phase == gun::TeleportPhase::Mark ? "mark" : event.phase == gun::TeleportPhase::Ack ? "ack" : "timeout";
+    log(*tag, fmt::format("phase=teleport event={} serverTick={} target={} teleportWaitTicks={} ignoredPackets={}",
+        phase, event.tick, vec(event.target), event.waitTicks, event.ignored));
+}
 void spawn(Player& shooter, debug::hit::Tag tag, int serial, int pellet, glm::dvec3 origin,
     glm::dvec3 direction, glm::dvec3 velocity, gun::AuthInputRing const& input,
     glm::dvec3 inherited, gun::RoundInaccuracy const& inaccuracy) {
@@ -112,7 +122,7 @@ void spawn(Player& shooter, debug::hit::Tag tag, int serial, int pellet, glm::dv
     auto feet = fromNative(shooter.getFeetPos());
     auto nativeMovement = fromNative(shooter.getPosDelta());
     double eyeHeight = gun::javaEyeHeight(shooter.isSneaking(), shooter.isSwimming(), shooter.isGliding(), shooter.isCrawling());
-    log(tag, fmt::format("phase=spawn bullet={} pellet={} shooter={} pos={} previousKnown={} previous={} nativePrevious={} origin={} javaOriginEstimate={} rotation=({:.6f},{:.6f}) direction={} posDelta={} velocity={} packetClientTick={} authKnown={} authClientTick={} authReceiptTick={} authPos={} authRot={} authHeadYaw={} authPreviousPos={} feetPos={} javaEyeHeight={} authFeet={} authPreviousClientTick={} authPreviousReceiptTick={} inherited={} inaccuracyMovement={} inaccuracySpeed={:.6f} inaccuracy={:.6f} inaccuracySource=auth-input-difference inaccuracyType={} inaccuracySamples={} nativeInaccuracySpeed={:.6f}",
+    log(tag, fmt::format("phase=spawn bullet={} pellet={} shooter={} pos={} previousKnown={} previous={} nativePrevious={} origin={} javaOriginEstimate={} rotation=({:.6f},{:.6f}) direction={} posDelta={} velocity={} packetClientTick={} authKnown={} authClientTick={} authReceiptTick={} authPos={} authRot={} authHeadYaw={} authPreviousPos={} feetPos={} javaEyeHeight={} authFeet={} authPreviousClientTick={} authPreviousReceiptTick={} inherited={} inaccuracyMovement={} inaccuracySpeed={:.6f} inaccuracy={:.6f} inaccuracySource=auth-input-difference inaccuracyType={} inaccuracySamples={} nativeInaccuracySpeed={:.6f} teleportPending={} teleportWaitTicks={} originSource={} authRecordSamples={}",
         serial, pellet, shooter.getOrCreateUniqueID().rawID, vec(current), previous.has_value(),
         previous ? vec(*previous) : "unknown", vec(nativePrevious), vec(origin),
         vec(origin), rotation.x, rotation.z,
@@ -127,7 +137,10 @@ void spawn(Player& shooter, debug::hit::Tag tag, int serial, int pellet, glm::dv
         input.previous ? std::to_string(input.previous->clientTick) : "unknown",
         input.previous ? std::to_string(input.previous->receiptTick) : "unknown",
         vec(inherited), vec(inaccuracy.movement), glm::length(inaccuracy.movement), inaccuracy.value,
-        gun::inaccuracyTypeLabel(inaccuracy.type), inaccuracy.samples, glm::length(nativeMovement)));
+        gun::inaccuracyTypeLabel(inaccuracy.type), inaccuracy.samples, glm::length(nativeMovement),
+        input.awaitingTeleportAck, input.teleportWaitTicks(shooter.getLevel().getCurrentTick().tickID),
+        input.awaitingTeleportAck || !input.latest ? "server-fallback" : "auth-input",
+        unsigned(input.latest.has_value()) + unsigned(input.previous.has_value())));
 }
 void segment(debug::hit::Tag tag, int serial, int age, glm::dvec3 from, glm::dvec3 end,
     glm::dvec3 uncutEnd, bool blockHit) {

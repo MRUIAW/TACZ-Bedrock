@@ -32,6 +32,12 @@ public:
         --remaining;
         return Tag{generation, ++nextShot, tick, timestamp};
     }
+    // Lifecycle evidence may precede the first shot. It shares the line budget
+    // without consuming a trigger or changing shot numbering.
+    std::optional<Tag> eventTag(uint64_t tick) const {
+        if (!available()) return {};
+        return Tag{generation, 0, tick, 0};
+    }
     bool take(Tag const& tag) {
         if (!accepts(tag)) return false;
         ++lines; return true;

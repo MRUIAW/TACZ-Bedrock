@@ -20,16 +20,57 @@ struct AuthInput {
     uint64_t receiptTick = 0;
 };
 
+inline constexpr uint64_t TeleportAckTimeoutTicks = 100; // five seconds at 20 TPS
+enum class TeleportPhase { Mark, Ack, Timeout };
+struct TeleportEvent {
+    TeleportPhase phase;
+    uint64_t tick = 0, waitTicks = 0, ignored = 0;
+    glm::dvec3 target{0}; // native teleportTo argument, no coordinate conversion
+};
+
 class AuthInputRing {
 public:
     void bind(uintptr_t world, uintptr_t actor, int dimension) {
         if (world != worldIdentity || actor != actorIdentity || dimension != dimensionIdentity) clear();
         worldIdentity = world; actorIdentity = actor; dimensionIdentity = dimension;
     }
-    void receive(AuthInput value) { previous = latest; latest = value; }
-    void clear() { previous.reset(); latest.reset(); }
+    bool boundToWorld(uintptr_t world) const { return worldIdentity == world; }
+    uint64_t teleportWaitTicks(uint64_t tick) const {
+        return awaitingTeleportAck && tick >= teleportStartTick ? tick - teleportStartTick : 0;
+    }
+    TeleportEvent markTeleport(uint64_t tick, glm::dvec3 target) {
+        clear(); // shared aim AND movement-inaccuracy history, intentionally
+        awaitingTeleportAck = true; teleportStartTick = tick; teleportTarget = target;
+        return {TeleportPhase::Mark, tick, 0, 0, target};
+    }
+    std::optional<TeleportEvent> expireTeleport(uint64_t tick) {
+        if (!awaitingTeleportAck || teleportWaitTicks(tick) < TeleportAckTimeoutTicks) return {};
+        auto event = teleportEvent(TeleportPhase::Timeout, tick);
+        awaitingTeleportAck = false;
+        return event;
+    }
+    std::optional<TeleportEvent> receive(AuthInput value, bool handledTeleport = false) {
+        auto event = expireTeleport(value.receiptTick); // timeout wins at the boundary
+        if (awaitingTeleportAck) {
+            if (!handledTeleport) { ++ignoredTeleportPackets; return {}; }
+            event = teleportEvent(TeleportPhase::Ack, value.receiptTick);
+            awaitingTeleportAck = false;
+        }
+        previous = latest; latest = value;
+        return event;
+    }
+    void clear() {
+        previous.reset(); latest.reset(); awaitingTeleportAck = false;
+        teleportStartTick = ignoredTeleportPackets = 0; teleportTarget = glm::dvec3{0};
+    }
     std::optional<AuthInput> latest, previous;
+    bool awaitingTeleportAck = false;
 private:
+    TeleportEvent teleportEvent(TeleportPhase phase, uint64_t tick) const {
+        return {phase, tick, teleportWaitTicks(tick), ignoredTeleportPackets, teleportTarget};
+    }
+    uint64_t teleportStartTick = 0, ignoredTeleportPackets = 0;
+    glm::dvec3 teleportTarget{0};
     uintptr_t worldIdentity = 0, actorIdentity = 0;
     int dimensionIdentity = 0;
 };
@@ -61,7 +102,7 @@ struct RoundAim {
 
 inline RoundAim roundAim(AuthInputRing const& input, glm::dvec3 fallbackFeet,
     glm::dvec2 fallbackRotation, double eyeHeight) {
-    if (!input.latest) return {midpointEyeFromFeet(fallbackFeet, fallbackFeet, eyeHeight), directionFromRotation(fallbackRotation)};
+    if (input.awaitingTeleportAck || !input.latest) return {midpointEyeFromFeet(fallbackFeet, fallbackFeet, eyeHeight), directionFromRotation(fallbackRotation)};
     auto previous = input.previous.value_or(*input.latest).pos;
     return {midpointEyeFromFeet(authInputFeet(previous), authInputFeet(input.latest->pos), eyeHeight),
         directionFromRotation(input.latest->rot)};

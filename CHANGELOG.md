@@ -23,6 +23,13 @@ round, the minor number goes up by 1 for each finished feature or phase.
 
 ### Fixed
 
+- Server-teleport live fix: after native `Player::$teleportTo`, clear the shared
+  aim/inaccuracy ring for the server player and ignore record capture until the
+  first auth input with `HandledTeleport`. Pending shots use current server feet /
+  eye height / rotation. A 100-server-tick timeout (about five seconds) bounds a
+  lost confirmation; life/world/dimension cleanup clears the wait as well.
+  Immediate server fallback and first-shot STAND versus Java's possible stale
+  xOld midpoint / cached teleport MOVE are explicit user-approved differences.
 - Movement-inaccuracy live fix: user chose the latest two received auth positions'
   difference at the existing `prepareRound` point, zero with fewer than two records.
   Standing ground gravity residue no longer selects MOVE; threshold 0.05 and aim /
@@ -63,7 +70,11 @@ round, the minor number goes up by 1 for each finished feature or phase.
   sample travels with each prepared round, not a fresh spawn-time motion read.
 - Inaccuracy source is now `auth-input-difference`; spawn diagnostics explicitly
   report STAND/MOVE/SNEAK/AIM/LIE type, captured sample count (0/1/2), and spawn-time
-  native-motion speed for comparison. No new hooks or diagnostic budget changes.
+  native-motion speed for comparison. The inaccuracy fix added no hook; the later
+  teleport hook is described above. Diagnostic limits are unchanged.
+- Budgeted teleport mark/ack/timeout events, native server tick/target and ignored
+  packet count; spawn `teleportPending`, `teleportWaitTicks`, `originSource` and
+  `authRecordSamples`. Events can precede a shot and share the existing line limit.
 - `docs/HIT-0.4.14.md`: Java citations, queue/locks, phase relation, exact added
   fields, pending live evidence and test checklist. Synthetic tests cover input
   receipt/lifecycle, origin, unclamped rotation, measured boxes and delayed rounds.
@@ -84,11 +95,15 @@ round, the minor number goes up by 1 for each finished feature or phase.
   alignment; 03:49 airborne movement still gave 7/16 hits at about 15 blocks with
   approximately one-degree native-motion inheritance deflection. Full acceptance
   remains pending; the zero-inheritance interim is awaiting the next live run.
+- `/tp`, pearl, chorus and plugin coverage of the new teleport hook awaits live
+  checks. Rapid consecutive teleports lack ack-ID matching; rubber-band corrections
+  and mount/dismount jumps remain known differences. No distance heuristic or
+  separate inaccuracy history was added. See the teleport section in `HIT-0.4.14.md`.
 - Spread/RNG implementation, bullet scheduling, damage and the
   16-trigger/64-line/400-tick budgets remain unchanged. The thread
   line consumes one of the 64 lines. Matching client/server versions are required
   by the extended shoot packet. 0.4.14 live acceptance pending.
-- Server/client Release builds passed; **361 tests / 936,929 assertions** passed.
+- Server/client Release builds passed; **368 tests / 937,151 assertions** passed.
   Client Release configuration left active. UTF-8 without BOM and whitespace
   checks passed; no push, deployment or game launch.
 

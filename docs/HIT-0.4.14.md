@@ -61,6 +61,8 @@ new-dimension input; it does not discard it merely because shooter observation
 arrived later. There is no placeholder-by-value hook or RVA-installed hook.
 World access is gated by a live server level; enable-time thread recording only
 uses `std::this_thread::get_id`, safe at the main menu.
+Server teleports now additionally clear the shared ring and gate capture until
+`HandledTeleport` or a 100-server-tick timeout (see the teleport section below).
 
 The input mutex is **separate** from `Shooter.cpp`'s mutex. Receive never takes
 the shooter mutex. Native player/packet reads precede the input lock; only copied
@@ -153,7 +155,8 @@ zero horizontally for ordinary walking, sprinting or creative flight.
 The launch path instead uses the pure `gun::pendingShooterInheritance()` = zero.
 This is an explicit interim divergence, **not** Java impulse/gravity emulation:
 jump, fall, knockback, fluid and explosion contributions are also absent.
-No action/packet/session hook, version, target-box or spread/RNG change was made.
+That Step 1 added no action/packet/session hook, version, target-box or spread/RNG
+change; the later teleport fix below adds its explicitly approved native hook.
 
 ### A: Java-like inheritance — not implemented
 
@@ -284,6 +287,159 @@ preparation-time input if the round executes later. Movement input is observed,
 not added to the projectile. The existing opt-in budgets and protocol
 are unchanged; no normal-play diagnostic logging is added.
 
+## Server teleport live fix — user-approved implementation, coverage pending live
+
+06:21 user evidence after server `/tp`: #722 mixed places about 70 blocks apart;
+#723 retained the pre-teleport position 30 blocks behind; #725 used the exact
+between-places midpoint. Subsequent shots and a shot delayed 200 ms were correct.
+The user authorized implementation now and will verify `/tp`, ender pearl and
+chorus fruit coverage; no native-path live success is claimed by this build.
+
+### Detection, confirmation and lifecycle
+
+`src-server/server/HitInput.cpp::AuthInputTeleport` hooks **`Player::$teleportTo`**
+with an asserted `void (Player::*)(Vec3 const&, bool, int, int, bool)` signature.
+LL 26.51.9 headers: `mc/world/actor/player/Player.h:698–704,1379–1380`.
+There was no equivalent LL teleport event in the inspected event set. The hook
+owns a copy of the native target argument, calls `origin` **first**, then marks
+the record. It requires a current server level, a non-client actor in that level,
+and identity equality with the network handler's typed `ServerPlayer` lookup.
+The user-identity component is checked before reading its network ID/sub-client,
+so construction/teardown without that component cannot dereference an empty lookup.
+Client-side Players are never marked, including in an integrated-server process.
+This override is on the primary Player/Mob/Actor chain; it has no secondary-base
+`this` adjustment. The existing auth-receive secondary override still uses
+`thisFor<NetEventCallback>()`. There is no RVA or placeholder-by-value hook.
+
+`PlayerAuthInputPacketPayload.h:64` defines **`HandledTeleport=37`**;
+`:111` stores the flags in `mInputData`. The existing receive hook checks
+`contains(HandledTeleport)`. The state lives in the pure `gun::AuthInputRing`:
+
+1. Mark clears **both aim and movement-inaccuracy** samples, records the native
+   server start tick/target, resets ignored count and sets `awaitingTeleportAck`.
+2. While pending, unflagged receipts increment ignored count but do not enter
+   our ring. Native `origin` still receives every packet; we do not suppress or
+   change Minecraft's own movement/ack processing.
+3. Before expiry, the first flagged packet ends the wait and is the **first**
+   fresh sample (`previous` absent). Its first origin is that received location
+   after the existing anchor/eye conversion, not a midpoint with pre-teleport data.
+4. At **100 server ticks** (about five seconds at 20 TPS), recording is released
+   without requiring an ack. This bounds a lost-flag stall while allowing several
+   seconds for ordinary client/network delay. Expiry is checked by the existing
+   LL level-tick event and also by receive/snapshot, so shots/packets at the boundary
+   do not depend on listener order. Timeout is a single transition; it wins if a
+   flagged packet arrives exactly at expiry, then that packet records normally.
+   With no new packets the empty record continues ordinary server fallback.
+5. Disconnect, death/respawn, dimension change, server stop/disable and observed
+   level/actor/dimension rebinding clear pending state together with the ring.
+   A fresh native teleport during a transition can create a new scoped mark.
+
+The native level's `getCurrentTick().tickID`, **not client tick or wall time**, is
+the deadline clock. No input timestamp sorting, teleport-distance heuristic,
+separate inaccuracy history or aim sanity filter is introduced. Native reads and
+`origin` occur outside the input mutex; copied state alone is changed under it.
+All teleport diagnostic calls occur after releasing it. The hook never acquires
+the shooter mutex. The level-tick expiry collects copied events before logging.
+
+### Fallback and deliberate Java differences
+
+Pending snapshots have no usable samples. `gun::roundAim` explicitly selects the
+existing no-record path: **current native feet + pose eye height, current native
+rotation**, not a frozen saved target and not a pre/post-teleport midpoint.
+Inaccuracy preparation also sees an empty shared ring, then one sample after ack:
+zero movement gives STAND unless AIM/SNEAK takes precedence. An already prepared
+burst retains its existing captured inaccuracy, as documented above; later
+`shootOnce` preparation uses the cleared/new ring. Projectile inheritance stays
+zero and both uncalled motion alternatives remain untouched.
+
+Java reference sources are the external
+[1.20.1 snapshot](https://github.com/MCFireworkDev/MinecraftDeobfuscated-Mojang/tree/39cf080c749058613d9456c53ccdbe74111345ef/minecraft/src/net/minecraft):
+
+- `ServerGamePacketListenerImpl.java:878–885` ignores movement while
+  `awaitingPositionFromClient`; `:479–498` accepts the matching teleport ID and
+  clears the wait. `:1011–1024` sets the position via `absMoveTo` and sends the ID.
+- **The old-position distinction matters:** `Entity.absMoveTo:1328–1335` resets
+  `xo/yo/zo`, not `xOld/yOld/zOld`. `ServerPlayer.teleportTo:1223–1248` routes
+  same-level player teleports through that connection path. Non-player
+  `Entity.teleportTo:2630–2661` instead uses `moveTo:1349–1368`, which resets both.
+  `ServerLevel.tickNonPassenger:715–721` later calls `setOldPosAndRot`.
+  `J/entity/EntityKineticBullet.java:216–218` uses **xOld**, so Java's immediate
+  post-player-teleport midpoint can remain stale until that tick update. The user
+  explicitly rejects reproducing that corner case: server-current fallback here
+  is a deliberate improvement/difference, not an assertion of exact Java parity.
+- Non-riding ender pearls call `teleportTo` (`ThrownEnderpearl.java:62–66`);
+  chorus fruit calls `randomTeleport` (`ChorusFruitItem.java:41`), which routes
+  through `teleportTo` (`LivingEntity.java:3046–3078`). These Java paths do not prove
+  Bedrock hook coverage; that remains part of the user's live check.
+- `J/util/HitboxHelper.java:25–62` does **not** clear on teleport; the only event
+  updates/removal are server player-tick END/logout (`HitboxHelperEvent.java:13–25`).
+  Before its next sample a shot sees the prior cached difference; after a new END
+  sample, pre/post-teleport displacement can give MOVE, then return to zero when
+  stationary samples converge. Clearing our shared ring gives STAND for a newly
+  prepared first hip-fire shot instead. This is accepted; no separate history.
+
+Known remaining differences, explicitly accepted for this scope:
+
+- **Rapid consecutive teleports:** the first HandledTeleport flag ends the latest
+  wait without a transaction-ID match. An earlier teleport's ack may therefore
+  release a later mark. No guessed ID/position matching is added.
+- **Rubber-band corrections and mount/dismount jumps** are not separately detected
+  or fixed. Only paths invoking this native Player teleport override are covered.
+- Plugin/pearl/chorus native-path coverage is awaiting live results. A path not
+  producing a mark must be reported, not silently treated as proven covered.
+- Timeout resumes ordinary receipt recording even without confirmed application;
+  this is the requested bounded-loss policy, not Java's matched-ID handshake.
+
+### Exact teleport diagnostic schema and user live check
+
+At enable, require `[hit-input] teleport hook=true ackTimeoutTicks=100` in addition
+to the existing receive/dimension hook line. Opt-in spawn lines append:
+
+```text
+teleportPending={} teleportWaitTicks={} originSource={} authRecordSamples={}
+```
+
+`originSource` is exactly `server-fallback` or `auth-input`; pending implies
+`server-fallback`, `authKnown=false`, `authRecordSamples=0`. Wait ticks are elapsed
+native server ticks for a pending snapshot, otherwise 0. The record count belongs
+to the per-bullet aim snapshot; `inaccuracySamples` still belongs to its earlier
+prepared cycle and need not match after a teleport during that cycle.
+
+Mark/ack/timeout evidence, including **before the first shot**, is one line each:
+
+```text
+phase=teleport event=mark|ack|timeout serverTick={} target={} teleportWaitTicks={} ignoredPackets={}
+```
+
+`target` is the copied native `teleportTo(pos)` argument, without an assumed feet
+conversion. `serverTick` is the native deadline clock; prefix `tick` is still the
+separate diagnostic checkpoint counter. Prefix `shot=0 triggerTs=0` identifies an
+event, not a shoot trigger. These lines share the **same 64-line/400-tick budget**,
+consume no shoot triggers and are issuer/level scoped. Arming with 0, exhaustion
+or expiry disables them; gameplay timeout/ack handling does not depend on arming.
+
+1. As the target player, arm `/tacz hitdiag server 4` (and client diagnostics for
+   correlation), then server `/tp` that player a large distance and fire immediately.
+   Expect `event=mark`. If still pending, the shot must show `teleportPending=true`,
+   `originSource=server-fallback`, count 0, and `origin = feetPos + (0,eyeHeight,0)`
+   at the new server location. Native rotation supplies direction; configured
+   spread still applies. No old-location or between-places origin should appear.
+2. Expect `event=ack` with elapsed ticks and ignored-packet count. The next shot
+   shows pending false and `auth-input`, initially count 1 (or 2 if another input
+   has arrived). If ack already preceded the immediate shot, this is also valid:
+   use event order and samples, not a requirement to catch the short pending window.
+   Later shots must use only new-location samples; newly prepared first hip fire
+   with 0/1 records has zero movement / STAND, unless aimed/sneaking.
+3. Rearm separately for **ender pearl** and **chorus fruit**. Fire immediately
+   after landing/consumption; check the same mark → fallback-if-pending → ack →
+   fresh-sample sequence. Save full lines. Missing `event=mark` while armed (before
+   budget expiry/exhaustion) identifies a native path needing further investigation.
+4. Normally ack arrives well before 100 ticks. If it does not, expect one
+   `event=timeout`, wait >=100, then pending false and ordinary recording on the
+   next input. Test cleanup via dimension/life/world transitions; no old wait or
+   samples should leak. Stop with 0 and report paired logs/hit counts. Do not use
+   rapid consecutive teleports to assert matched-ack behavior: that remains known.
+
 ## Exact new diagnostic fields and interpretation
 
 Off by default, issuer/level scoped. Commands remain `/tacz hitdiag server N` and
@@ -387,14 +543,15 @@ still take precedence. With 0/1 samples, expect zero / STAND unless aimed/sneaki
 Repeat a burst and confirm movement/count/type/spread remain those prepared by
 that `shootOnce`, even when newer per-bullet aim records arrive; a later
 `shootOnce` prepares afresh. Jump/fall/knockback still inherit zero for now.
-Retest death/respawn, dimension transfer and leave/rejoin; no new hook or cache
-was added. Stop diagnostics with 0 and send full paired logs/hit counts. Further A
+Retest death/respawn, dimension transfer and leave/rejoin; the teleport hook/state
+above now extend the existing ring's cleanup. Stop diagnostics with 0 and send
+full paired logs/hit counts. Further A
 inheritance work and overall 0.4.14 live acceptance remain open; B's phase
 difference is explicitly user-approved.
 
 ## Offline validation
 
-Server and client Release builds passed; **361 test cases / 936,929 assertions**
+Server and client Release builds passed; **368 test cases / 937,151 assertions**
 passed. Client Release configuration remains active. Expected native-hook macro
 warnings remain; no build errors. Edited files validated as UTF-8 without BOM;
 whitespace check passed. No push, deployment or game launch.
@@ -408,7 +565,11 @@ fixtures, non-axis-aligned aim, seeded spread/RNG preservation and unchanged
 bullet gravity/drag. `tests/ShooterInaccuracyTests.cpp` additionally covers stationary
 and horizontal/Y-only auth displacement, 0/1/2 samples and clears, threshold and
 aim/sneak precedence, receipt order/gaps, captured cycle values and explicit type
-labels. Synthetic tests do not establish native sampling parity.
+labels. `tests/TeleportInputTests.cpp` covers shared-ring clear, ignored packets,
+ack as first sample, fallback/new-location origins, 100-server-tick boundary,
+timeout without a shot/input, scope/lifecycle cleanup, the accepted unmatched rapid
+ack behavior and pre-shot diagnostic events sharing the hard line budget.
+Synthetic tests do not establish native sampling parity or teleport path coverage.
 Build commands:
 
 ```powershell

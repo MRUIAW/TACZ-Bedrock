@@ -16,6 +16,7 @@ void shootHandler(Player const& player);
 void arm(Player& player, unsigned shots);
 void clear();
 void tick(Level& level);
+void teleportEvent(Level const* level, int64_t player, gun::TeleportEvent const& event);
 debug::hit::Tag trigger(Player& player, int64_t timestamp, uint64_t packetClientTick);
 void spawn(Player& shooter, debug::hit::Tag tag, int serial, int pellet, glm::dvec3 origin,
     glm::dvec3 direction, glm::dvec3 velocity, gun::AuthInputRing const& input,
