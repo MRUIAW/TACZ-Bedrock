@@ -8,6 +8,47 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 Versioning rule for this project: the patch number goes up by 1 for each small item or test
 round, the minor number goes up by 1 for each finished feature or phase.
 
+## [0.4.12] - 2026-10-30
+
+### Accepted 0.4.11 — user-tested
+
+- Local LeviLamina BDS + 0.4.11 client, LeviHeadlessInput plus hands-on; user accepted.
+  SPAS-12 BURST: 8 pellets/no bolt; SEMI: 8 then bolt at 0.34/0.54 s.
+- Super90 (`sfms:super90m2`): 4 pellets; final script shootOnce(false) gives 8
+  in one pull then empty. db_short SEMI: 16; BURST: 32, both barrels emptied.
+- M1887s: ten rapid pulls give five volleys, alternating ~330/620 ms intervals.
+  Mantis Blade swings 1–2: 7 each; third: 4 + 10 from tick_heat.
+- Colt Python: ~336 ms pull-to-shot, matching the accepted delayed-branch quirk
+  (Java ~200 ms, ours ~300 ms, pinned by tests). No-return start_reload live fix
+  proceeds as Java, warns once; tactical 4→6 and 5→6 hand-confirmed.
+- M16A4 BURST 3 / SEMI 1, AK47 AUTO ~100 ms, Kar98/M870 bolt/reload passed;
+  no script errors.
+
+### Fixed
+
+- Local gun sounds now use lazy bounded memory aliases with Java's per-owner,
+  per-logical-sound FIFO limiter: shoot/keyframes 4, hit 1, default 2. Categories
+  share aliases for the same id; inactive voices are pruned before oldest eviction.
+  Control replaced tails; name-only experiment failed; alias B was user-accepted
+  with Colt Python/AK47/M16A4 overlap and unchanged non-positional playback.
+- Match Java's one temporary base sound: reload/inspect/draw/put-away stop it;
+  shooting stops inspect by logical name; keyframes never replace it. Five-tick
+  END cleanup handles inactive/dead/replaced owners; leave/disable stop all voices.
+- Open-bolt reload progress log no longer displays a false chamber `+1`.
+  Log text only; other `+1` log already uses hasChamberedRound.
+
+### Notes
+
+- Experiments/environment switch and sound-overlap logging removed. Shared Ogg
+  bytes remain per sound id; unknown engine per-alias memory cost needs live
+  measurement. Zero/unlimited remains a pure limiter feature, unreachable through
+  fixed 1/2/4 categories; the bounded adapter explicitly rejects zero.
+- Synthetic tests and `docs/SOUND-0.4.12.md` cover categories, aliases, cleanup,
+  Java stop sites and the pending production live checklist. Volume-squaring,
+  remote shoot_3p and silencer gaps remain unchanged. Full 0.4.12 acceptance pending.
+- Server/client Release builds passed; 343 tests / 926,238 assertions passed.
+  Client Release configuration left active; no push, deployment or game launch.
+
 ## [0.4.11] - 2026-10-30
 
 ### Accepted 0.4.10 — user-tested

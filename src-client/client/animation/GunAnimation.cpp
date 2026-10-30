@@ -173,7 +173,7 @@ void playSounds(std::string const& name, double from, double to) {
     auto const& keys = it->second.sounds;
     // ObjectAnimationSoundChannel.computeIndex includes an exact lower boundary too.
     auto range = [&](double a, double b) {
-        for (auto const& key : keys) if (key.time >= a && key.time <= b) sound::play(key.sound, 1.f, 1.f, true);
+        for (auto const& key : keys) if (key.time >= a && key.time <= b) sound::play(key.sound, 1.f, 1.f, sound::Category::HighFrequency);
     };
     if (from > to && from <= keys.back().time) {
         range(0, to);
@@ -201,7 +201,7 @@ public:
 } // namespace
 
 void reveal() {
-    sound::stopAnimation();
+    sound::stopTemporary(); // AnimateGeoItemRenderer.triggerDraw:372
     session.reset();
     currentGun = hand.visible.gun;
     auto const& gun = currentGun;
@@ -250,7 +250,7 @@ bool held(std::optional<pack::ResourceId> const& gun, int slot) {
         session ? gun::animationMillis(session->entry->data.putAwayTime) : 0,
         next ? gun::animationMillis(next->data.drawTime) : 0);
     if (event == gun::HandSwitch::Event::PutAway) {
-        sound::stopAnimation();
+        sound::stopTemporary(); // LocalPlayerDraw:84 / renderer.triggerPutAway:382
         if (session && session->machine) {
             refresh(); // uses the immutable old item, not the incoming selected slot
             session->machine->setTime(nowSeconds());
@@ -427,7 +427,8 @@ HudState hudState() {
 }
 
 void clear() {
-    sound::stopAnimation();
+    // No extra tmp-sound cancellation on cache/session disposal. Java's explicit
+    // draw/put-away actions above stop tmp; world/disable cleanup stops all voices.
     session.reset();
     currentGun.reset();
     hand.clear();

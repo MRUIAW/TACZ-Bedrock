@@ -246,7 +246,7 @@ void bolt() {
     boltLatch.isBolting = true;
     net::BoltPacket{}.sendToServer();
     if (anim::hasStateMachine()) {
-        if (auto id = displaySound(*gun, "bolt")) sound::play(*id, 1.f, 1.f, true);
+        sound::playGunSound(gun->state.gunId, "bolt", 1.f, 1.f, true);
         anim::bolt();
     }
 }
@@ -274,7 +274,8 @@ void reload(HeldGun const& gun) {
     acquireStateLock(gun::LockCondition::Reload);
     net::ReloadPacket{}.sendToServer();
     bool noAmmo = data.bolt == pack::Bolt::OpenBolt ? gun.state.ammo <= 0 : !gun.state.barrel;
-    if (auto id = displaySound(gun, noAmmo ? "reload_empty" : "reload_tactical")) sound::play(*id, 1.f, 1.f, true);
+    sound::stopTemporary(); // LocalPlayerReload.java:106, not animation keyframes
+    sound::playGunSound(gun.state.gunId, noAmmo ? "reload_empty" : "reload_tactical", 1.f, 1.f, true);
     anim::reload();
 }
 
@@ -294,7 +295,7 @@ bool shoot(HeldGun const& gun, int64_t now, bool chained) {
     int          rounds = gun::availableRounds(*data.bolt, ammo);
     if (rounds < 1) {
         if (dryFireArmed) {
-            if (auto id = displaySound(gun, "dry_fire")) sound::play(*id, 1.0f, soundPitch());
+            if (auto id = displaySound(gun, "dry_fire")) sound::play(*id, 1.0f, soundPitch(), sound::Category::Default);
             dryFireArmed = false;
         }
         return false;
@@ -319,7 +320,8 @@ bool shoot(HeldGun const& gun, int64_t now, bool chained) {
     // Burst: one packet, `count` authoritative rounds; client follow-ups predict only
     // presentation (animation, sound and camera recoil), not damage/ammo consumption.
     auto shootSound = displaySound(gun, "shoot");
-    if (shootSound) sound::play(*shootSound, 0.8f, soundPitch());
+    if (auto inspect = displaySound(gun, "inspect")) sound::stopTemporary(*inspect); // Java:302 (not inspect_empty)
+    if (shootSound) sound::play(*shootSound, 0.8f, soundPitch(), sound::Category::HighFrequency);
     int  burst  = mode == pack::FireMode::Burst ? std::min(std::max(data.burst.count, 1), rounds) : 1;
     auto period = std::chrono::milliseconds(gun::burstShootIntervalMs(data));
     for (int i = 1; i < burst; ++i) pendingShots.push_back({Clock::now() + period * i, shootSound, soundPitch(), shotAt});
@@ -459,7 +461,8 @@ void frame() {
             ++i;
             continue;
         }
-        if (pendingShots[i].sound) sound::play(*pendingShots[i].sound, 0.8f, pendingShots[i].pitch);
+        if (gun) if (auto inspect = displaySound(*gun, "inspect")) sound::stopTemporary(*inspect);
+        if (pendingShots[i].sound) sound::play(*pendingShots[i].sound, 0.8f, pendingShots[i].pitch, sound::Category::HighFrequency);
         if (gun) recoil::shot(gun->entry->data.recoil, gun->state.gunId, pendingShots[i].triggerTimestamp, true);
         anim::shoot();
         pendingShots.erase(pendingShots.begin() + static_cast<std::ptrdiff_t>(i));
@@ -474,7 +477,7 @@ void frame() {
         return;
     }
     if (wantsFireSelect && !stateLocked()) {
-        if (auto id = displaySound(*gun, "fire_select")) sound::play(*id, 1.0f, 1.0f);
+        if (auto id = displaySound(*gun, "fire_select")) sound::play(*id, 1.0f, 1.0f, sound::Category::Default);
         net::FireSelectPacket{}.sendToServer();
         gun->state.fireMode = gun::nextFireMode(gun->entry->data.fireModes, gun->state.fireMode);
         predictedMode = PredictedMode{gun->state.gunId, player->getSelectedItemSlot(), gun->state.fireMode, Clock::now()};
@@ -484,7 +487,8 @@ void frame() {
     // Inspect checks at execution (reload above can acquire), but never acquires.
     if (wantsInspect && !stateLocked()) {
         bool empty = gun->entry->data.bolt == pack::Bolt::OpenBolt ? gun->state.ammo <= 0 : !gun->state.barrel;
-        if (auto id = displaySound(*gun, empty ? "inspect_empty" : "inspect")) sound::play(*id, 1.f, 1.f, true);
+        sound::stopTemporary(); // LocalPlayerInspect.java:51
+        sound::playGunSound(gun->state.gunId, empty ? "inspect_empty" : "inspect", 1.f, 1.f, true);
         anim::inspect();
     }
 
@@ -569,7 +573,7 @@ void endWorld(IClientInstance const* client) {
     if (!worldSession.current() || !client || joinedClient.load() != client) return;
     // Do not look up the primary client here: it can already have been detached from the
     // global service when exit callbacks arrive. Request-leave runs before that teardown.
-    sound::stopAnimation();
+    sound::stopAllTracked(); // SoundPlayManager:315-322, before world token closes
     worldSession.close();
     clearSyncedData();
     turn::clear();
@@ -687,6 +691,7 @@ void enable() {
     hooked = ShooterFrameHook::hook() == 0;
     aim::enable();
     recoil::enable();
+    sound::enable();
     leaveHooked = LeaveWorldHook::hook() == 0;
     if (!leaveHooked) logger().warn("Cannot hook request-leave; event and GPU-generation fallbacks remain active");
     if (!hooked) logger().warn("Cannot hook MinecraftGame::update; guns cannot fire");
@@ -697,6 +702,7 @@ void disable() {
     if (hooked) ShooterFrameHook::unhook();
     if (leaveHooked) LeaveWorldHook::unhook();
     recoil::disable();
+    sound::disable();
     hooked = false;
     leaveHooked = false;
     auto& bus = ll::event::EventBus::getInstance();
@@ -705,7 +711,7 @@ void disable() {
         listener = nullptr;
     }
     triggerDown  = false;
-    sound::stopAnimation();
+    sound::stopAllTracked(); // disable is full sound teardown, not tmpSoundInstance cancellation
     worldSession.close();
     clearSyncedData();
     turn::clear();

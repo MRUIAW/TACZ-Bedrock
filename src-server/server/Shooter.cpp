@@ -512,7 +512,7 @@ void tickReload(Player& player, ShooterState& s) {
         item->ammo   = api.ammo.magazine;
         item->barrel = api.ammo.barrel;
         nbt::writeSelectedGun(player, *item);
-        logger().info("[reload] {} loaded: {}{} rounds", player.getRealName(), item->ammo, item->barrel ? "+1" : "");
+        logger().info("[reload] {} loaded: {}{} rounds", player.getRealName(), item->ammo, gun::hasChamberedRound(entry->data.bolt, item->barrel) ? "+1" : "");
     }
     // LivingEntityMixin.java:223,237 publishes tickReloadState's WHOLE result.
     s.reloadValue = gun::isReloading(next.type) ? next : gun::ReloadState{};
