@@ -71,7 +71,8 @@ capture releases input before taking it. No gameplay branch depends on thread
 IDs/equality. Thus differing hook/shooter threads do not race the input ring or
 deadlock through the shooter lock. This does not assert arbitrary native actor
 APIs are generally thread-safe; the hook uses the player during its native packet
-dispatch. **Actual dispatch thread: pending live evidence** in `phase=threads`.
+dispatch. The supplied 03:48/03:49 `phase=threads` samples show all four IDs equal;
+this is observed dispatch evidence, not a general scheduling guarantee.
 
 At every `bullet::fire`, including retained delayed/burst callbacks:
 
@@ -89,8 +90,8 @@ native pose flags: standing 1.62, sneaking 1.27, swimming/gliding/crawling 0.4.
 substituted for aim. `mPos` is **assumed** player base anchor feet +1.62, not feet
 and not pose-dependent Java eye height. Native standing logs and an independent
 Bedrock server's auth-input conversion corroborate it, but old logs contain no
-raw auth positions. **Position convention: pending live evidence** in
-`authPos`, `authPreviousPos`, `pos`, `feetPos`, `origin` (see below).
+raw auth positions. Supplied 0.4.14 `authPos`/`feetPos` samples now support this
+convention for the observed poses; other pose/transition cases remain live checks.
 
 Corroboration only, not proof of native 1.26.51 semantics:
 [Dragonfly's auth-input handler](https://github.com/df-mc/dragonfly/blob/master/server/session/handler_player_auth_input.go)
@@ -124,16 +125,130 @@ proven identical to Java `xOld`. Keep the existing checkpoint, no guessed future
 motion or extra tick. First bullet scheduling is unchanged; Java entity-addition
 phase analysis remains in `HIT-0.4.13.md`.
 
-Inherited shooter `getPosDelta()` (grounded y=0), spread/RNG and movement
-inaccuracy inputs are intentionally unchanged. Java inheritance uses physical
-`getDeltaMovement`, but Bedrock stored physics delta need not equal it numerically.
-Inaccuracy is a clearer remaining difference: Java cached displacement vs our
-stored delta (which can include gravity). No permission to fix these in 0.4.14.
-Java player ping-rewind/ITargetEntity and native interpolation differences also
-remain outside scope. Latest received input can still be 0–1 input tick older
+The shooter-velocity live fix below supersedes the original unchanged-inheritance
+policy: inheritance is now deliberately zero pending a Java-compatible adapter.
+Movement inaccuracy remains native stored motion; spread/RNG are unchanged.
+Java player ping-rewind/ITargetEntity and native interpolation differences remain
+outside scope. Latest received input can still be 0–1 input tick older
 than the client's local shot pose (a shot can occur before the next movement
 send), as with Java's asynchronous shoot/movement packets; it is not zero-latency
 aim or a guarantee under network loss/stalls.
+
+## Shooter-velocity live fix: approved interim, A/B investigation stopped
+
+This is a live fix of **unaccepted 0.4.14**, with no version bump. The user reports
+the received-input change aligned server/client fire-time direction (0.00 degrees
+yaw difference over 48 shots). In the airborne 03:49 round, about 15 blocks from
+a stationary zombie, 7/16 hit; inherited Bedrock motion bent trajectories about
+one degree. Those results do not establish full 0.4.14 acceptance.
+
+### Step 1: applied exactly as decided
+
+`BulletSystem.cpp::unusedFullBedrockShooterInheritance` retains the previous
+`getPosDelta()` calculation and grounded-Y exclusion, compiled with
+`[[maybe_unused]]` and **never called**. Its comment states that it inherits full
+real Bedrock movement and does not match Java's server velocity, normally near
+zero horizontally for ordinary walking, sprinting or creative flight.
+The launch path instead uses the pure `gun::pendingShooterInheritance()` = zero.
+This is an explicit interim divergence, **not** Java impulse/gravity emulation:
+jump, fall, knockback, fluid and explosion contributions are also absent.
+No action/packet/session hook, version, target-box or spread/RNG change was made.
+
+### A: Java-like inheritance — not implemented
+
+`J/entity/EntityKineticBullet.java:376–379` adds stored shooter velocity, excluding
+grounded Y. The vanilla mapped sources are external, not present in this repo:
+[1.20.1 source snapshot](https://github.com/MCFireworkDev/MinecraftDeobfuscated-Mojang/tree/39cf080c749058613d9456c53ccdbe74111345ef/minecraft/src/net/minecraft).
+
+- `server/network/ServerGamePacketListenerImpl.java:861–990` applies received
+  displacement through `move` and `absMoveTo`, not assignment of packet displacement
+  to stored velocity; takeoff invokes `jumpFromGround` at `:931–933`.
+- Listener `:253–264` calls `ServerPlayer.doTick` and then restores position.
+  `ServerPlayer.java:484–488` calls `Player.tick`; physics still evolves stored
+  velocity. `ServerPlayer.setPlayerInput:1055–1067` accepts locomotion input only
+  while riding, not ordinary on-foot walk/flight inputs.
+- `LivingEntity.java:1966–1974` sets jump Y and adds a 0.2 horizontal sprint-jump
+  vector; `:2097–2119` applies friction/gravity/drag; `:1407–1414` sets knockback.
+  `Entity.rideTick:1827–1832` clears motion before ticking, not permanently afterward.
+  Fluids/explosions/other impulses and collisions can also modify velocity.
+- Mob knockback is not interchangeable with every damage path: vanilla
+  `Player.attack` sends a struck ServerPlayer's motion and restores its previous
+  stored vector (`Player.java:1203–1206`). Forge can additionally modify impulses.
+
+Both supplied LL 26.51.6 source headers and the build's 26.51.9 headers expose
+`Actor.h:180` as `StateVectorComponent::mPosDelta`; `StateVectorComponent.h:12–14`
+separates position/previous position/motion. Auth input also carries `mPosDelta`
+(`PlayerAuthInputPacketPayload.h:101–104`). These declarations do **not** expose
+native writes, or a proven Java-equivalent impulse-only server state.
+`ServerPlayerCurrentMovementComponent.h:14–18` holds applied packet/old position,
+not a separate Java velocity; `OtherImpulse.h` is an empty marker, not a velocity
+accumulator. `LocalMoveVelocityComponent.h` is a Vec3 wrapper with no documented
+Java semantics. No field-name inference is used as a gameplay implementation.
+
+Recalculated `tacz-0.4.14-hit-server.log`: 03:49's 16 spawn lines have horizontal
+`posDelta ≈ (authPos-authPreviousPos)*0.91`; 03:48's 32 lines instead give about
+0.546. At line 307, displacement is `(-0.316848,0,0.295158)`, versus motion
+`(-0.288329,0,0.268595)`. Stationary-ground Y can be -0.0784 with no height change.
+This supports post-drag motion, but cannot prove whether native server writes are
+simulation, packet copying or reconciliation. Dividing out drag still gives real
+locomotion, not Java's normally-zero horizontal stored velocity.
+
+**Open question A:** keep the approved zero interim, or authorize a separately
+reviewed Java shadow simulation? A jump/gravity-only approximation would miss
+collisions, fluids, effects, riding and impulse paths; using native Bedrock motion
+would restore the rejected walking/flight deflection. Neither was implemented.
+
+### B: movement inaccuracy — not implemented, sampling parity unresolved
+
+`J/resource/pojo/data/gun/InaccuracyType.java:75–80` tests the length of
+`HitboxHelper.getPlayerVelocity`, threshold >0.05. `J/util/HitboxHelper.java:25–62`
+retains two sampled positions, returns first minus last (zero without two), and
+does not read physics motion. The cache is sampled at **server player-tick END**
+(`J/event/HitboxHelperEvent.java:13–20`). `ServerHitboxLatencyFix` defaults **true**
+(`J/config/common/OtherConfig.java:34–35`). With it off from a fresh session the
+cache is not populated, so movement speed is zero. If switched off after caching,
+updates stop but the last difference can remain until logout/cache removal;
+there is no alternate native-motion fallback in `getPlayerVelocity`.
+
+Forge's [1.20.1 Player patch](https://github.com/MinecraftForge/MinecraftForge/blob/d13dd327bdc75c010f3358992e80e7e92f51e030/patches/minecraft/net/minecraft/world/entity/player/Player.java.patch)
+emits post-tick at the end of `Player.tick`. This is inside `ServerPlayer.doTick`,
+**before** the packet listener restores pre-physics position. Thus simply naming
+a Bedrock phase END is not evidence of identical samples.
+
+The inspected LL event set has no player-tick-END event. Its
+`ll/api/event/world/ServerLevelTickEvent.cpp:8–10` publishes before native
+`ServerLevel::_subTick`: an existing PRE-level cache is not Java's END-player cache.
+`ServerPlayer.h:155,431` exposes `normalTick/$normalTick`; sampling after its
+return is a candidate, but headers give no body/order proving when queued movement
+has applied, or invocation cadence relative to movement catch-up/shoot dispatch.
+`ServerPlayerMovementComponent.h:25–27,44–46` exposes tick credits and queued auth
+updates, not their execution phase. No new hook is installed on that assumption.
+
+**Open question B:** authorize (1) a per-player post-`normalTick` position cache,
+pending native phase/cadence evidence, or (2) latest two received auth positions?
+Option 1 is a server-tick sampling candidate, not proven Java-phase parity;
+option 2 samples packet receipt, which can be multiple/zero inputs per server
+tick, includes unapplied movement and differs from Java's cached END samples.
+A global level-END cache is also a different checkpoint. Until a choice/evidence,
+`Shooter.cpp::prepareRound` keeps native `getPosDelta().length()` unchanged; it can
+still classify gravity-only stationary motion as MOVE when not aimed/sneaking.
+
+### Actual launch/input diagnostics
+
+Every opt-in `phase=spawn` now appends:
+
+```text
+inherited={} inaccuracyMovement={} inaccuracySpeed={:.6f} inaccuracy={:.6f} inaccuracySource=native-pos-delta
+```
+
+`inherited` is the vector **actually added** after spread, now `(0,0,0)`.
+`inaccuracyMovement` is the exact vector used by `prepareRound`, copied with the
+selected inaccuracy through the retained round closure to the spawn diagnostic;
+`inaccuracySpeed` is its 3D length and `inaccuracy` the selected final spread value.
+It is not resampled at spawn. The older `posDelta` field remains a spawn-time
+native observation and may differ if the round executes later. Movement input
+is observed, not added to the projectile. The existing opt-in budgets and protocol
+are unchanged; no normal-play diagnostic logging is added.
 
 ## Exact new diagnostic fields and interpretation
 
@@ -221,12 +336,25 @@ their 0.4.13 meanings, including native pick timing/reach limitations.
    no old-input aim/history leakage; fallback only until fresh input arrives.
    Stop with 0; no further diagnostic lines. Client chat acknowledges both commands.
 5. Report equality flags, standing coordinate differences, packet/auth tick ordering
-   and hit/miss comparison. Both native facts and full 0.4.14 acceptance remain
-   pending until this run; no invented native-thread or coordinate verification.
+   and hit/miss comparison. Initial live logs support the sampled thread/coordinate
+   facts above; full 0.4.14 acceptance and this velocity fix remain pending.
+
+For this shooter-velocity live fix, repeat the airborne sideways flight/turning
+round at about 15 blocks, plus standing/walking/sprinting controls. Check each
+spawn has `inherited=(0.000000,0.000000,0.000000)` despite nonzero `posDelta` and
+that velocity follows the spread direction without a movement-correlated bend.
+Allow the configured RNG spread; zero inheritance does not mean zero inaccuracy.
+Check `inaccuracySpeed=length(inaccuracyMovement)` and source `native-pos-delta`;
+that input has **not** been fixed to Java's cached displacement. Repeat a burst or
+delayed shot and confirm the logged input belongs to its prepared round, not an
+unrelated spawn-time sample. Jump/fall/knockback likewise inherit zero for now.
+Retest death/respawn, dimension transfer and leave/rejoin; no new hook or cache
+was added. Stop diagnostics with 0 and send full paired logs/hit counts. A/B
+decisions and overall 0.4.14 live acceptance remain open.
 
 ## Offline validation
 
-Server and client Release builds passed; **352 test cases / 936,722 assertions**
+Server and client Release builds passed; **354 test cases / 936,867 assertions**
 passed. Client Release configuration remains active. Expected native-hook macro
 warnings remain; no build errors. Edited files validated as UTF-8 without BOM;
 whitespace check passed. No push, deployment or game launch.
@@ -234,7 +362,11 @@ whitespace check passed. No push, deployment or game launch.
 Synthetic `tests/HitInputTests.cpp` covers receipt order, lifecycle/scope resets,
 fallback/midpoint/pose eye heights, >±90° pitch, gravity-only stored motion versus
 stationary measured box, unique-id replacement/missing history, bounds, and
-per-round delayed-provider refresh. Build commands:
+per-round delayed-provider refresh. The live-fix tests additionally exercise the
+production zero-inheritance policy with walk/sprint/flight/jump/fall/impulse
+fixtures, non-axis-aligned aim, seeded spread/RNG preservation and unchanged
+bullet gravity/drag. They do not establish native sampling parity for A/B.
+Build commands:
 
 ```powershell
 xmake f -a x64 -m release -p windows --target_type=server -y

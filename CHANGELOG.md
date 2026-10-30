@@ -23,6 +23,11 @@ round, the minor number goes up by 1 for each finished feature or phase.
 
 ### Fixed
 
+- Shooter-velocity live fix (no version bump): retain the full-real-Bedrock-motion
+  inheritance calculation compiled in a named `[[maybe_unused]]` function, but
+  never call it. The user-approved interim adds zero inherited velocity, removing
+  walking/flight-correlated bullet deflection. This is not Java jump/gravity or
+  impulse emulation; those contributions are also zero pending a decision.
 - Live fix of unaccepted 0.4.14 (`f56310a`): BDS crashed on player join in
   `ReceivedAuthInput::detour`. The auth-input override receives a secondary
   `NetEventCallback` subobject pointer; use LL's `thisFor<NetEventCallback>()`
@@ -47,21 +52,33 @@ round, the minor number goes up by 1 for each finished feature or phase.
   two auth positions, native player/feet positions, derived auth feet/eye height,
   auth client/receipt ticks and shoot-packet client tick. Candidate lines identify
   the actual measured gameplay box; client arming/stopping gives chat feedback.
+- Opt-in spawn lines report the inherited vector actually added, and the exact
+  captured inaccuracy movement vector, its speed and selected spread value. The
+  sample travels with each prepared round, not a fresh spawn-time motion read.
 - `docs/HIT-0.4.14.md`: Java citations, queue/locks, phase relation, exact added
   fields, pending live evidence and test checklist. Synthetic tests cover input
   receipt/lifecycle, origin, unclamped rotation, measured boxes and delayed rounds.
 
 ### Notes
 
-- Native auth dispatch thread and auth `mPos = feet +1.62` are **pending live
-  evidence** (`authThread`/`levelTickThread`/`shootHandlerThread`/`enableThread`,
-  `authPos`/`authPreviousPos`/`pos`/`feetPos`/`origin`). No native-thread equality
-  is assumed by the separate input-store lock. No shooter lock in the receive hook.
-- Inherited shooter velocity, movement inaccuracy, spread/RNG, bullet scheduling,
-  damage and the 16-trigger/64-line/400-tick budgets remain unchanged. The thread
+- Supplied 03:48/03:49 live logs show all four recorded thread IDs equal and
+  support auth `mPos = feet +1.62` for the sampled poses. This is observed evidence,
+  not a guarantee for all native scheduling/poses. The separate input-store lock
+  assumes no thread equality; no shooter lock is taken in the receive hook.
+- Java inheritance adapter (A) and cached-displacement inaccuracy (B) are **not
+  implemented**: native impulse-state equivalence and player-tick-END sampling
+  parity are unproven. `ServerHitboxLatencyFix` defaults true in Java; off from a
+  fresh cache gives zero movement input, not native velocity. Options/questions
+  and exact citations are in `docs/HIT-0.4.14.md`; no approximation was chosen.
+- User reports 0.00-degree fire-time yaw difference across 48 shots after auth-input
+  alignment; 03:49 airborne movement still gave 7/16 hits at about 15 blocks with
+  approximately one-degree native-motion inheritance deflection. Full acceptance
+  remains pending; the zero-inheritance interim is awaiting the next live run.
+- Movement inaccuracy, spread/RNG, bullet scheduling, damage and the
+  16-trigger/64-line/400-tick budgets remain unchanged. The thread
   line consumes one of the 64 lines. Matching client/server versions are required
   by the extended shoot packet. 0.4.14 live acceptance pending.
-- Server/client Release builds passed; **352 tests / 936,722 assertions** passed.
+- Server/client Release builds passed; **354 tests / 936,867 assertions** passed.
   Client Release configuration left active. UTF-8 without BOM and whitespace
   checks passed; no push, deployment or game launch.
 

@@ -173,7 +173,7 @@ bool sameHold(int64_t key, HeldContext const& context) {
 }
 
 bool fireRound(int64_t key, std::shared_ptr<HeldContext> const& context,
-    pack::GunData const& data, std::optional<pack::FireMode> mode, float inaccuracy, bool consume);
+    pack::GunData const& data, std::optional<pack::FireMode> mode, float inaccuracy, glm::dvec3 inaccuracyMovement, bool consume);
 
 // Every retained closure owns its original item state and resolves the player by
 // key. No player reference, state reference or selected-item NBT pointer escapes.
@@ -245,15 +245,18 @@ lua::ScriptApi scriptApi(Player& player, nbt::GunItemState const& item, pack::Gu
         auto p = taskPlayer(key);
         if (!p) return {};
         auto delta = p->getPosDelta();
-        auto type = gun::inaccuracyType(model::fullyAimed(a.aimingProgress), p->isSneaking(), glm::length(glm::dvec3{delta.x, delta.y, delta.z}));
+        // Step 2B remains undecided: preserve the native-motion input, but carry
+        // this exact sample through the round closure for truthful diagnostics.
+        glm::dvec3 inaccuracyMovement{delta.x, delta.y, delta.z};
+        auto type = gun::inaccuracyType(model::fullyAimed(a.aimingProgress), p->isSneaking(), glm::length(inaccuracyMovement));
         float inaccuracy = gun::inaccuracy(*a.data, a.fireMode, type);
         // Shared immutable registry object, as in Java (not a per-shot copy).
         // reloadGunPacks is called only by mod load, before shooter enable;
         // all tasks are destroyed on world end/disable. Runtime pack reload is
         // deferred and must introduce snapshot ownership before changing this.
         auto const* data = a.data;
-        return [key, context, data, mode = a.fireMode, inaccuracy, consume] {
-            return fireRound(key, context, *data, mode, inaccuracy, consume);
+        return [key, context, data, mode = a.fireMode, inaccuracy, inaccuracyMovement, consume] {
+            return fireRound(key, context, *data, mode, inaccuracy, inaccuracyMovement, consume);
         };
     };
     return api;
@@ -334,7 +337,7 @@ bool drawing(ShooterState const& s, pack::GunEntry const& entry) {
 // One round of the trigger pull: ammo, then the bullets. False ends the pull (TACZ's cycle
 // task returns false when the shooter died, switched weapon or ran dry).
 bool fireRound(int64_t key, std::shared_ptr<HeldContext> const& context,
-    pack::GunData const& data, std::optional<pack::FireMode> mode, float inaccuracy, bool consume) {
+    pack::GunData const& data, std::optional<pack::FireMode> mode, float inaccuracy, glm::dvec3 inaccuracyMovement, bool consume) {
     auto p = taskPlayer(key);
     if (!p || !p->isAlive() || p->isDead() || !sameHold(key, *context)) return false;
     auto& player = *p;
@@ -347,7 +350,7 @@ bool fireRound(int64_t key, std::shared_ptr<HeldContext> const& context,
     item->barrel = ammo.barrel;
     if (consume) nbt::writeSelectedGun(player, *item);
     context->item = *item;
-    bullet::fire(player,item->gunId, data, mode, inaccuracy, context->diagnostic);
+    bullet::fire(player,item->gunId, data, mode, inaccuracy, inaccuracyMovement, context->diagnostic);
     return true;
 }
 

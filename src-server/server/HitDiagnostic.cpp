@@ -90,7 +90,8 @@ debug::hit::Tag trigger(Player& player, int64_t timestamp, uint64_t packetClient
     return tag;
 }
 void spawn(Player& shooter, debug::hit::Tag tag, int serial, int pellet, glm::dvec3 origin,
-    glm::dvec3 direction, glm::dvec3 velocity, gun::AuthInputRing const& input) {
+    glm::dvec3 direction, glm::dvec3 velocity, gun::AuthInputRing const& input,
+    glm::dvec3 inherited, glm::dvec3 inaccuracyMovement, float inaccuracy) {
     if (!tag.generation) return;
     std::lock_guard lock(mutex);
     if (!scope || !budget.accepts(tag)) return;
@@ -110,7 +111,7 @@ void spawn(Player& shooter, debug::hit::Tag tag, int serial, int pellet, glm::dv
     auto const& rotation = shooter.getRotation();
     auto feet = fromNative(shooter.getFeetPos());
     double eyeHeight = gun::javaEyeHeight(shooter.isSneaking(), shooter.isSwimming(), shooter.isGliding(), shooter.isCrawling());
-    log(tag, fmt::format("phase=spawn bullet={} pellet={} shooter={} pos={} previousKnown={} previous={} nativePrevious={} origin={} javaOriginEstimate={} rotation=({:.6f},{:.6f}) direction={} posDelta={} velocity={} packetClientTick={} authKnown={} authClientTick={} authReceiptTick={} authPos={} authRot={} authHeadYaw={} authPreviousPos={} feetPos={} javaEyeHeight={} authFeet={} authPreviousClientTick={} authPreviousReceiptTick={}",
+    log(tag, fmt::format("phase=spawn bullet={} pellet={} shooter={} pos={} previousKnown={} previous={} nativePrevious={} origin={} javaOriginEstimate={} rotation=({:.6f},{:.6f}) direction={} posDelta={} velocity={} packetClientTick={} authKnown={} authClientTick={} authReceiptTick={} authPos={} authRot={} authHeadYaw={} authPreviousPos={} feetPos={} javaEyeHeight={} authFeet={} authPreviousClientTick={} authPreviousReceiptTick={} inherited={} inaccuracyMovement={} inaccuracySpeed={:.6f} inaccuracy={:.6f} inaccuracySource=native-pos-delta",
         serial, pellet, shooter.getOrCreateUniqueID().rawID, vec(current), previous.has_value(),
         previous ? vec(*previous) : "unknown", vec(nativePrevious), vec(origin),
         vec(origin), rotation.x, rotation.z,
@@ -123,7 +124,8 @@ void spawn(Player& shooter, debug::hit::Tag tag, int serial, int pellet, glm::dv
         input.previous ? vec(input.previous->pos) : "unknown", vec(feet), eyeHeight,
         input.latest ? vec(gun::authInputFeet(input.latest->pos)) : "unknown",
         input.previous ? std::to_string(input.previous->clientTick) : "unknown",
-        input.previous ? std::to_string(input.previous->receiptTick) : "unknown"));
+        input.previous ? std::to_string(input.previous->receiptTick) : "unknown",
+        vec(inherited), vec(inaccuracyMovement), glm::length(inaccuracyMovement), inaccuracy));
 }
 void segment(debug::hit::Tag tag, int serial, int age, glm::dvec3 from, glm::dvec3 end,
     glm::dvec3 uncutEnd, bool blockHit) {

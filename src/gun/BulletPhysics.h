@@ -13,6 +13,10 @@
 // is scaled by (1 - friction) and loses `gravity` on y. Water drag is not modelled yet.
 namespace tacz::gun {
 
+// User-approved interim, NOT Java velocity emulation. Keep inheritance zero until
+// the server-player impulse/gravity and sampling differences have a decided adapter.
+inline glm::dvec3 pendingShooterInheritance() { return glm::dvec3{0}; }
+
 struct BulletMotion {
     glm::dvec3 pos{0};
     glm::dvec3 vel{0}; // blocks per tick

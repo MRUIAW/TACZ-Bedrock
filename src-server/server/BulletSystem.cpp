@@ -84,6 +84,15 @@ std::array<ll::event::ListenerPtr, 2> listeners;
 Vec3       toVec3(glm::dvec3 v) { return {static_cast<float>(v.x), static_cast<float>(v.y), static_cast<float>(v.z)}; }
 glm::dvec3 toGlm(Vec3 const& v) { return {v.x, v.y, v.z}; }
 
+// Not called: inherits the shooter's full real Bedrock movement (grounded Y
+// excluded). This does not match Java server-side getDeltaMovement(), normally
+// ~0 horizontally while walking, sprinting or flying. Retained compiled for review.
+[[maybe_unused]] glm::dvec3 unusedFullBedrockShooterInheritance(Player& shooter) {
+    auto inherited = toGlm(shooter.getPosDelta());
+    if (shooter.isOnGround()) inherited.y = 0;
+    return inherited;
+}
+
 void place(Actor& actor, gun::BulletMotion const& motion) {
     auto rot = motion.rotation();
     if (debug::bulletMoveMode == 1) {
@@ -332,7 +341,8 @@ void tickAll(Level& level) {
 
 } // namespace
 
-void fire(Player& shooter,pack::ResourceId const& gunId, pack::GunData const& gun, std::optional<pack::FireMode> mode, float inaccuracy, debug::hit::Tag diagnostic) {
+void fire(Player& shooter,pack::ResourceId const& gunId, pack::GunData const& gun, std::optional<pack::FireMode> mode,
+    float inaccuracy, glm::dvec3 inaccuracyMovement, debug::hit::Tag diagnostic) {
     static std::mt19937 rng{std::random_device{}()};
 
     // Resolve afresh per round, not once per trigger/task. Raw auth input has
@@ -346,9 +356,8 @@ void fire(Player& shooter,pack::ResourceId const& gunId, pack::GunData const& gu
     double speed     = gun::bulletSpeedPerTick(gun, mode) * debug::bulletSpeedScale.load();
     auto   damage    = gun::BulletDamage::from(gun, mode);
     int    pellets   = std::max(gun.bullet.bulletAmount, 1);
-    // Projectile.shootFromRotation: the bullet inherits the shooter's motion (vertical only in the air).
-    auto inherited = toGlm(shooter.getPosDelta());
-    if (shooter.isOnGround()) inherited.y = 0;
+    // Step 1 decision: zero, not the uncalled full-Bedrock-motion adapter above.
+    auto inherited = gun::pendingShooterInheritance();
 
     for (int i = 0; i < pellets; ++i) {
         auto velocity = gun::spreadVelocity(direction, speed, inaccuracy, rng) + inherited;
@@ -381,7 +390,8 @@ void fire(Player& shooter,pack::ResourceId const& gunId, pack::GunData const& gu
         b.serial        = nextSerial++;
         b.gunId         = gunId;
         b.diagnostic    = diagnostic;
-        hitdiag::spawn(shooter, diagnostic, b.serial, i, origin, direction, velocity, input);
+        hitdiag::spawn(shooter, diagnostic, b.serial, i, origin, direction, velocity, input,
+            inherited, inaccuracyMovement, inaccuracy);
         bullets.push_back(std::move(b));
         logger().info(
             "[bullet #{}] fired at {:.2f} blocks/tick (x{:.2f}), inaccuracy {:.2f}, life {} ticks, damage {:.1f} at the muzzle",

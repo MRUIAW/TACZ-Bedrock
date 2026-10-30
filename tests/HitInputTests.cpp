@@ -1,6 +1,8 @@
 #include <doctest/doctest.h>
 #include "gun/HitInput.h"
 #include "gun/BulletHit.h"
+#include "gun/BulletPhysics.h"
+#include "gun/ShootRules.h"
 
 using namespace tacz;
 
@@ -97,4 +99,46 @@ TEST_CASE("Burst and delayed callbacks sample current received movement at each 
     input.receive({{4, 1.62, 0}, {120, 180}});
     auto third = delayed(); CHECK(third.origin.x == 3); CHECK(third.direction.z == doctest::Approx(0.5));
     input.clear(); auto fallback = delayed(); CHECK(fallback.origin.y == 1.62);
+}
+
+TEST_CASE("Interim zero inheritance leaves walking and flying launch directions unbent") {
+    // The production policy deliberately has no native-motion input. Nonzero
+    // walk/flight/jump/fall/impulse fixtures therefore cannot affect its result.
+    for (auto motion : {glm::dvec3{0.09, -0.0784, 0}, glm::dvec3{0.13, -0.0784, 0.08},
+             glm::dvec3{-0.288329, 0, 0.268595}, glm::dvec3{0.2, 0.42, 0},
+             glm::dvec3{0, -0.5, 0}, glm::dvec3{0.4, 0.4, -0.2}}) {
+        CAPTURE(motion.x);
+        CAPTURE(motion.y);
+        CAPTURE(motion.z);
+        for (auto rotation : {glm::dvec2{0, 0}, glm::dvec2{19.673248, -57.136978}, glm::dvec2{-30, 90}}) {
+            auto direction = gun::directionFromRotation(rotation);
+            std::mt19937 rng{123};
+            auto base = gun::spreadVelocity(direction, 25, 0, rng);
+            auto inherited = gun::pendingShooterInheritance();
+            CHECK(inherited == glm::dvec3{0});
+            auto launched = gun::BulletMotion::launchWithVelocity({}, {}, base + inherited);
+            CHECK(launched.vel == base);
+            CHECK(glm::length(glm::cross(glm::normalize(launched.vel), direction)) < 1e-12);
+            CHECK(glm::length((base + motion) - launched.vel) > 0);
+        }
+    }
+}
+
+TEST_CASE("Interim inheritance preserves seeded spread RNG speed and bullet physics") {
+    auto direction = gun::directionFromRotation({12, 34});
+    pack::BulletData data;
+    data.gravity = 0.04f; data.friction = 0.01f; data.life = 5;
+    std::mt19937 unchanged{456}, production{456};
+    for (int round = 0; round < 12; ++round) {
+        auto expected = gun::spreadVelocity(direction, 25, 0.15f, unchanged);
+        auto actual = gun::spreadVelocity(direction, 25, 0.15f, production) + gun::pendingShooterInheritance();
+        CHECK(actual == expected);
+        auto launched = gun::BulletMotion::launchWithVelocity(data, {1, 2, 3}, actual);
+        CHECK(launched.next() == glm::dvec3{1, 2, 3} + expected);
+        REQUIRE(launched.step());
+        CHECK(launched.vel.x == doctest::Approx(expected.x * (1 - double(data.friction))));
+        CHECK(launched.vel.y == doctest::Approx(expected.y * (1 - double(data.friction)) - data.gravity));
+        CHECK(launched.vel.z == doctest::Approx(expected.z * (1 - double(data.friction))));
+    }
+    CHECK(unchanged() == production());
 }
