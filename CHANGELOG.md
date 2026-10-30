@@ -10,6 +10,13 @@ round, the minor number goes up by 1 for each finished feature or phase.
 
 ## [0.4.14] - 2026-10-31
 
+### Accepted 0.4.14 — user-tested, 2026-10-31
+
+- Strafing/turning hit whenever the crosshair was on target. AK47 hip fire used
+  STAND 4.5 at rest and MOVE 5.0 while walking/jumping; inherited velocity was zero.
+- `/tp`, ender pearl and chorus fruit all produced teleport mark/ack, with bullet
+  origin at the new position. The user accepted 0.4.14; known differences remain.
+
 ### 0.4.13 diagnostics — live-tested, not gameplay acceptance
 
 - User's paired 01:59 strafe-and-turn logs: the client picked the stationary zombie
@@ -45,7 +52,7 @@ round, the minor number goes up by 1 for each finished feature or phase.
   `ReceivedAuthInput::detour`. The auth-input override receives a secondary
   `NetEventCallback` subobject pointer; use LL's `thisFor<NetEventCallback>()`
   before `_getServerPlayer` to avoid dispatch through the wrong vtable. Version
-  stays 0.4.14; live acceptance remains pending. Repository hook audit found no
+  stays 0.4.14; acceptance was pending at that fix (accepted above). Repository hook audit found no
   other secondary-base virtual hook incorrectly accessing derived `this`:
   client inventory handlers' `NetEventCallback` is on the primary-base chain;
   secondary app-focus hooks only update independent state and call `origin()`.
@@ -93,16 +100,16 @@ round, the minor number goes up by 1 for each finished feature or phase.
   claim or extra Java-config toggle is introduced. Details: `docs/HIT-0.4.14.md`.
 - User reports 0.00-degree fire-time yaw difference across 48 shots after auth-input
   alignment; 03:49 airborne movement still gave 7/16 hits at about 15 blocks with
-  approximately one-degree native-motion inheritance deflection. Full acceptance
-  remains pending; the zero-inheritance interim is awaiting the next live run.
-- `/tp`, pearl, chorus and plugin coverage of the new teleport hook awaits live
-  checks. Rapid consecutive teleports lack ack-ID matching; rubber-band corrections
+  approximately one-degree native-motion inheritance deflection. These were
+  pre-fix results; the subsequent user acceptance is recorded above.
+- `/tp`, pearl and chorus coverage passed live; arbitrary plugin paths remain
+  unverified. Rapid consecutive teleports lack ack-ID matching; rubber-band corrections
   and mount/dismount jumps remain known differences. No distance heuristic or
   separate inaccuracy history was added. See the teleport section in `HIT-0.4.14.md`.
 - Spread/RNG implementation, bullet scheduling, damage and the
   16-trigger/64-line/400-tick budgets remain unchanged. The thread
   line consumes one of the 64 lines. Matching client/server versions are required
-  by the extended shoot packet. 0.4.14 live acceptance pending.
+  by the extended shoot packet. 0.4.14 live acceptance is recorded above.
 - Server/client Release builds passed; **368 tests / 937,151 assertions** passed.
   Client Release configuration left active. UTF-8 without BOM and whitespace
   checks passed; no push, deployment or game launch.

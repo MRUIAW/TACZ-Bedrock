@@ -1,8 +1,20 @@
-# 0.4.14 — received-input hit registration (live acceptance pending)
+# 0.4.14 — received-input hit registration (live accepted)
 
-2026-10-31. This implements the user's chosen fix, not a claim of live acceptance.
+2026-10-31. The user accepted 0.4.14 after the live fixes below.
 The user deploys/tests; this task does not push, deploy or launch Minecraft.
 `J/` means `_reference/TACZ/src/main/java/com/tacz/guns/`.
+
+## Live acceptance — complete, 2026-10-31
+
+- [x] Strafing and turning hit whenever the crosshair was on target.
+- [x] Standing AK47 hip fire: STAND 4.5; walking/jumping: MOVE 5.0.
+- [x] `inherited=(0,0,0)`.
+- [x] `/tp`, ender pearl and chorus fruit all mark and ack.
+- [x] Bullet origin is at the new position after those teleports.
+
+This records user acceptance, not new agent-run testing. Known differences below
+remain; arbitrary plugin teleport paths and optional regression scenarios are not
+independently claimed tested by these results.
 
 ## Why this change
 
@@ -139,11 +151,11 @@ aim or a guarantee under network loss/stalls.
 
 ## Shooter-velocity live fixes: zero inheritance, B receipt-input decision
 
-This is a live fix of **unaccepted 0.4.14**, with no version bump. The user reports
+These live fixes were developed before 0.4.14 acceptance, with no version bump. The user reports
 the received-input change aligned server/client fire-time direction (0.00 degrees
 yaw difference over 48 shots). In the airborne 03:49 round, about 15 blocks from
 a stationary zombie, 7/16 hit; inherited Bedrock motion bent trajectories about
-one degree. Those results do not establish full 0.4.14 acceptance.
+one degree. Those were pre-fix findings; final acceptance is recorded above.
 
 ### Step 1: applied exactly as decided
 
@@ -287,13 +299,13 @@ preparation-time input if the round executes later. Movement input is observed,
 not added to the projectile. The existing opt-in budgets and protocol
 are unchanged; no normal-play diagnostic logging is added.
 
-## Server teleport live fix — user-approved implementation, coverage pending live
+## Server teleport live fix — /tp, pearl and chorus live accepted
 
 06:21 user evidence after server `/tp`: #722 mixed places about 70 blocks apart;
 #723 retained the pre-teleport position 30 blocks behind; #725 used the exact
 between-places midpoint. Subsequent shots and a shot delayed 200 ms were correct.
-The user authorized implementation now and will verify `/tp`, ender pearl and
-chorus fruit coverage; no native-path live success is claimed by this build.
+The user authorized implementation and subsequently verified `/tp`, ender pearl
+and chorus fruit mark/ack and new-position origins. Plugin paths remain unverified.
 
 ### Detection, confirmation and lifecycle
 
@@ -370,7 +382,7 @@ Java reference sources are the external
 - Non-riding ender pearls call `teleportTo` (`ThrownEnderpearl.java:62–66`);
   chorus fruit calls `randomTeleport` (`ChorusFruitItem.java:41`), which routes
   through `teleportTo` (`LivingEntity.java:3046–3078`). These Java paths do not prove
-  Bedrock hook coverage; that remains part of the user's live check.
+  Bedrock hook coverage; the separate user live check above verified these paths.
 - `J/util/HitboxHelper.java:25–62` does **not** clear on teleport; the only event
   updates/removal are server player-tick END/logout (`HitboxHelperEvent.java:13–25`).
   Before its next sample a shot sees the prior cached difference; after a new END
@@ -385,7 +397,7 @@ Known remaining differences, explicitly accepted for this scope:
   release a later mark. No guessed ID/position matching is added.
 - **Rubber-band corrections and mount/dismount jumps** are not separately detected
   or fixed. Only paths invoking this native Player teleport override are covered.
-- Plugin/pearl/chorus native-path coverage is awaiting live results. A path not
+- Plugin native-path coverage is still unverified; pearl/chorus passed live. A path not
   producing a mark must be reported, not silently treated as proven covered.
 - Timeout resumes ordinary receipt recording even without confirmed application;
   this is the requested bounded-loss policy, not Java's matched-ID handshake.
@@ -509,7 +521,10 @@ zombie: `gameplayVelocity=(0,0,0)` and unshifted `fixedGameplay=raw`, even if
 `posDelta=(0,-0.0784,0)`. Client line appends `inputTick={}`; other fields retain
 their 0.4.13 meanings, including native pick timing/reach limitations.
 
-## User-run live checklist
+## User-run live checklist — acceptance complete
+
+The acceptance checklist at the top is done. The procedure below is retained for
+future regression checks; optional cases are not additional claimed live results.
 
 1. Matching 0.4.14 server/client; confirm `[hit-input] receive/dimension hooks=true/true`.
    Arm each side for 3 triggers, wait two ticks; one standing, motionless shot at
@@ -527,7 +542,7 @@ their 0.4.13 meanings, including native pick timing/reach limitations.
    Stop with 0; no further diagnostic lines. Client chat acknowledges both commands.
 5. Report equality flags, standing coordinate differences, packet/auth tick ordering
    and hit/miss comparison. Initial live logs support the sampled thread/coordinate
-   facts above; full 0.4.14 acceptance and this velocity fix remain pending.
+   facts above; the completed user acceptance run is recorded at the top.
 
 For this shooter-velocity live fix, repeat the airborne sideways flight/turning
 round at about 15 blocks, plus standing/walking/sprinting controls. Check each
@@ -546,7 +561,7 @@ that `shootOnce`, even when newer per-bullet aim records arrive; a later
 Retest death/respawn, dimension transfer and leave/rejoin; the teleport hook/state
 above now extend the existing ring's cleanup. Stop diagnostics with 0 and send
 full paired logs/hit counts. Further A
-inheritance work and overall 0.4.14 live acceptance remain open; B's phase
+inheritance parity remains deferred; 0.4.14 is live accepted and B's phase
 difference is explicitly user-approved.
 
 ## Offline validation
