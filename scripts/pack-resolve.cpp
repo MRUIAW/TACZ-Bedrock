@@ -64,7 +64,7 @@ json reloadProbe(pack::GunPackRegistry const& packs,pack::ResourceId const& scri
             int beforeStock=stock; auto before=api.ammo;
             api.extractAmmo=[&](int n){int take=std::min(std::max(0,n),stock);stock-=take;return take;};
             api.inventoryHasAmmo=[&]{return stock>0;};
-            bool loaded=logic.loadScript(script),started=loaded && logic.startReload(api),finished=false,cancelled=false;
+            bool loaded=logic.loadScript(script),started=loaded && logic.startReload(api)!=lua::ReloadStartResult::Refused,finished=false,cancelled=false;
             if (started) for (int64_t t=0;t<=15000;t+=50) {
                 api.reloadTimeMs=t; auto state=logic.tickReload(api); api.reloadState=state.type;
                 bool cancel=(scenario=="cancel-before-feed" && t==0) || (scenario=="cancel-after-feed" && api.ammo!=before);

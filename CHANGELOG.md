@@ -38,6 +38,11 @@ round, the minor number goes up by 1 for each finished feature or phase.
 
 ### Fixed
 
+- Live-test fix: keep reload started when start_reload returns nil/non-boolean,
+  is a non-function, or throws, as Java's exception skips the refusal reset.
+  Strict checks still warn once; only explicit false refuses. Pre-error ammo,
+  chamber, cache and bolt-timestamp mutations persist. Fixes Colt Python's
+  no-return start_reload; start_bolt and sound concurrency are unchanged.
 - Clear shared script cache unconditionally on selection changes, as Java draw
   initialization does. Bolt/reload/shoot scripts cannot see the previous gun's
   cache after switching. Remove stopReload's non-Java cache clear (including

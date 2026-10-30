@@ -340,6 +340,43 @@ remain stage 8, not disguised as a local prediction fix.
 
 ## Validation and live checklist
 
+### Live-test fix: `start_reload` errors keep reload started
+
+Colt Python's hook writes cache but returns nothing. Java initializes reload state
+and timestamp **before** the hook (`J/entity/shooter/LivingEntityReload.java:68–83`).
+`ModernKineticGunItem.java:121–135,551–559` strictly checks function/boolean types;
+LuaJ `LuaValue.java:943` throws for nil/non-booleans. The exception escapes the
+network runnable (`network/message/ClientMessagePlayerReloadGun.java:24–30`),
+skipping the explicit-false reset. Subsequent `tick_reload` therefore still runs.
+
+The live fix returns `Started` / `Refused` / `Error`. Missing hook defaults to
+Started; explicit false alone is Refused. Nil/no return, non-boolean results,
+non-function values, runtime and lookup errors are Error: warn once using the
+`start_reload:<gun>` key but retain initialized reload state/time. Boolean checks
+remain strict; no other hook is weakened. API item-method wrappers commit ammo,
+chamber and bolt mutations immediately; cache writes are immediate too. Protected
+dispatch copies the API back even on error, and `handleReload` copies the adjusted
+bolt timestamp back before checking refusal, exactly as on success. No rollback.
+
+`start_bolt` is unchanged: Java assigns `isBolting = startBolt(...)` only after a
+successful call (`entity/shooter/LivingEntityBolt.java:76–77`), so an exception
+leaves false; our checked request starts false and its protected error returns false.
+
+**Known difference, reported but not changed:** a runtime error in `tick_reload`
+returns idle here, warns once, preserves pre-error mutations, then Shooter clears
+reload state/time and does not retry. Java's error escapes the entity tick before
+the holder updates at `LivingEntityReload.java:112–118`, leaving reload active and
+eligible to throw again on subsequent ticks. This live fix changes only start.
+Synthetic tests cover all start outcomes, warning deduplication, retained writes
+and subsequent feeding, plus the unchanged tick-error behavior. Sound concurrency
+is excluded from this fix and reserved for a separate 0.4.12 task.
+
+Live-fix validation: server Release → client Release → **331 cases / 926,060
+assertions passed**, client configuration active. Version stays 0.4.11; live
+retest is pending. No push, deployment or game launch.
+
+### Original implementation validation
+
 Automated coverage includes timing/strict boundaries/compensation/counts,
 once-versus-twice phase contract, independent tasks, consume true/false for all
 bolt types, immediate re-chamber ordering, delayed callback lifetime/errors,
@@ -348,7 +385,7 @@ cache reset, previous-shot wall mapping and the Mantis-style later-tick flow.
 Build server Release, then client Release, then tests; finish with client config.
 No push/deploy/game launch is part of this change.
 
-Final validation: **server Release OK → client Release OK → tests OK**, client
+Original implementation validation: **server Release OK → client Release OK → tests OK**, client
 configuration left active. **328 cases / 925,769 assertions** (baseline 305 /
 925,258). All three PowerShell helpers parse successfully without executing live
 input/console/pipe operations. Modified files validate as UTF-8 without BOM or

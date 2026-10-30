@@ -347,7 +347,7 @@ TEST_CASE("Selection reset drops cache for every shoot reload bolt to heat trans
             "tick_heat=function(api) assert(api:getCachedScriptData() == nil) end}");
         auto a = f.api();
         if (std::string(writer) == "shoot") f.logic->shoot(a);
-        else if (std::string(writer) == "start_reload") CHECK(f.logic->startReload(a));
+        else if (std::string(writer) == "start_reload") CHECK(f.logic->startReload(a) == lua::ReloadStartResult::Started);
         else CHECK(f.logic->startBolt(a));
         ++f.hold.generation; f.logic->clearScriptData(1); auto b = f.api(); b.gunId = {"fixture", "second"};
         f.logic->tickHeat(b, -1);
@@ -376,6 +376,114 @@ TEST_CASE("Shoot timing uses previous raw shot plus wall base and interval adjus
     f.previous = 1234; f.last = 1000; f.shoot(pack::FireMode::Burst);
     CHECK(f.last == 1100); CHECK(gun::serverCooldownMs(f.data, pack::FireMode::Burst, 1500, f.last) == 95);
     CHECK(f.warnings.empty());
+}
+
+TEST_CASE("Reload start strict results keep initialized state on errors and refuse only explicit false") {
+    using Result = lua::ReloadStartResult;
+    for (auto const& [tail, expected] : std::vector<std::pair<std::string, Result>>{
+        {"", Result::Error}, {"return nil", Result::Error},
+        {"return 7", Result::Error}, {"return 'true'", Result::Error},
+        {"return {}", Result::Error}, {"error('start failed after mutations')", Result::Error},
+        {"return false", Result::Refused}, {"return true", Result::Started}}) {
+        for (auto initialState : {gun::ReloadStateType::EmptyFeeding, gun::ReloadStateType::TacticalFeeding}) {
+            CAPTURE(tail);
+            CAPTURE(initialState);
+            Fixture f(std::string(R"(return {
+                start_reload=function(api)
+                    api:cacheScriptData({pending=true})
+                    api:putAmmoInMagazine(1)
+                    api:setAmmoInBarrel(true)
+                    api:adjustBoltTime(25)
+            )") + tail + R"(
+                end,
+                tick_reload=function(api)
+                    assert(api:getCachedScriptData().pending)
+                    api:putAmmoInMagazine(4)
+                    return NOT_RELOADING, -1
+                end,
+                start_bolt=function(api)
+                    assert(api:getCachedScriptData().pending)
+                    return false
+                end
+            })");
+            f.ammo = {0, false};
+            auto a = f.api(); a.reloadState = initialState; a.boltTimestamp = 500;
+            int64_t committedBolt = 500;
+            auto commitAmmo = a.commit;
+            a.commit = [&, commitAmmo](lua::ScriptApi const& api) { commitAmmo(api); committedBolt = api.boltTimestamp; };
+            auto result = f.logic->startReload(a);
+            CHECK(result == expected);
+            CHECK(a.reloadState == initialState);
+            CHECK(a.ammo == gun::GunAmmo{1, true}); CHECK(f.ammo == a.ammo);
+            CHECK(a.boltTimestamp == 475); CHECK(committedBolt == 475);
+            CHECK_FALSE(f.logic->startBolt(a)); // proves the cache survived every outcome
+            CHECK(f.warnings.size() == (expected == Result::Error ? 1 : 0));
+            if (expected == Result::Error) {
+                CHECK(f.warnings.front().find("start_reload failed for fixture:gun") != std::string::npos);
+                if (tail.find("error(") == std::string::npos)
+                    CHECK(f.warnings.front().find("boolean result expected") != std::string::npos);
+            }
+
+            // LivingEntityReload/handleReload state is initialized before dispatch;
+            // only Refused resets it. Error must remain eligible for tick_reload.
+            auto state = initialState; int64_t startedAt = 1000;
+            if (result == Result::Refused) { state = gun::ReloadStateType::NotReloading; startedAt = -1; }
+            CHECK(gun::isReloading(state) == (expected != Result::Refused));
+            CHECK(startedAt == (expected == Result::Refused ? -1 : 1000));
+            if (gun::isReloading(state)) {
+                auto next = f.logic->tickReload(a);
+                CHECK(next.type == gun::ReloadStateType::NotReloading);
+                CHECK(f.ammo == gun::GunAmmo{5, true});
+            } else CHECK(f.ammo == gun::GunAmmo{1, true});
+            CHECK(f.logic->startReload(a) == expected);
+            CHECK(f.warnings.size() == (expected == Result::Error ? 1 : 0)); // warn once, not once per attempt
+        }
+    }
+}
+
+TEST_CASE("Reload start absent hook defaults true but present non-function or lookup error keeps started with warning") {
+    using Result = lua::ReloadStartResult;
+    for (auto const& [hook, expected] : std::vector<std::pair<std::string, Result>>{
+        {"", Result::Started}, {"start_reload=nil,", Result::Started},
+        {"start_reload=false,", Result::Error}, {"start_reload=1,", Result::Error},
+        {"start_reload='text',", Result::Error}, {"start_reload={},", Result::Error}}) {
+        CAPTURE(hook);
+        Fixture f("return {" + hook + R"(tick_reload=function(api)
+            api:putAmmoInMagazine(3); return NOT_RELOADING,-1 end})");
+        f.ammo = {}; auto a = f.api(); a.reloadState = gun::ReloadStateType::EmptyFeeding;
+        CHECK(f.logic->startReload(a) == expected);
+        CHECK(f.logic->startReload(a) == expected);
+        CHECK(f.warnings.size() == (expected == Result::Error ? 1 : 0));
+        if (expected == Result::Error) CHECK(f.warnings.front().find("function or nil expected") != std::string::npos);
+        CHECK(f.logic->tickReload(a).type == gun::ReloadStateType::NotReloading);
+        CHECK(f.ammo.magazine == 3);
+    }
+    Fixture lookup(R"(return setmetatable({}, {__index=function() error('lookup failed') end}))");
+    auto a = lookup.api();
+    CHECK(lookup.logic->startReload(a) == Result::Error);
+    CHECK(lookup.logic->startReload(a) == Result::Error);
+    REQUIRE(lookup.warnings.size() == 1);
+    CHECK(lookup.warnings[0].find("lookup failed") != std::string::npos);
+    Fixture noScript; noScript.data.script.reset(); a = noScript.api();
+    CHECK(noScript.logic->startReload(a) == Result::Started); CHECK(noScript.warnings.empty());
+}
+
+TEST_CASE("Reload tick runtime error still returns idle and preserves pre-error mutations without retry") {
+    Fixture f(R"(return {
+        start_reload=function(api) api:cacheScriptData({ticks=0}); return true end,
+        tick_reload=function(api)
+            local cache = api:getCachedScriptData(); cache.ticks = cache.ticks + 1
+            api:putAmmoInMagazine(1)
+            error('tick failed')
+        end,
+        start_bolt=function(api) assert(api:getCachedScriptData().ticks == 1); return false end
+    })");
+    f.ammo = {}; auto a = f.api(); a.reloadState = gun::ReloadStateType::EmptyFeeding;
+    REQUIRE(f.logic->startReload(a) == lua::ReloadStartResult::Started);
+    for (int tick = 0; tick < 3; ++tick) if (gun::isReloading(a.reloadState)) a.reloadState = f.logic->tickReload(a).type;
+    CHECK(a.reloadState == gun::ReloadStateType::NotReloading); CHECK(f.ammo.magazine == 1);
+    CHECK_FALSE(f.logic->startBolt(a)); // server stops calling tick_reload after the first idle result
+    REQUIRE(f.warnings.size() == 1); CHECK(f.warnings[0].find("tick_reload failed") != std::string::npos);
 }
 
 TEST_CASE("Figura LuaJ numeric coercion saturates long narrows int and defaults non-numbers") {

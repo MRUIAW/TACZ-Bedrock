@@ -19,6 +19,10 @@
 // no binary chunks.
 namespace tacz::lua {
 
+// Java initializes reload state before calling start_reload. Only an explicit
+// false resets it; an exception leaves it started, without becoming a success.
+enum class ReloadStartResult { Started, Refused, Error };
+
 class GunLogic {
 public:
     using LogFn = std::function<void(std::string const&)>;
@@ -29,8 +33,8 @@ public:
     GunLogic(GunLogic const&)            = delete;
     GunLogic& operator=(GunLogic const&) = delete;
 
-    // ModernKineticGunItem.startReload: false cancels the reload.
-    bool startReload(ScriptApi& api);
+    // Strict function/boolean checks; errors warn once but keep reload started.
+    ReloadStartResult startReload(ScriptApi& api);
     // ModernKineticGunItem.tickReload.
     gun::ReloadState tickReload(ScriptApi& api);
     // ModernKineticGunItem.interruptReload (no default behaviour).

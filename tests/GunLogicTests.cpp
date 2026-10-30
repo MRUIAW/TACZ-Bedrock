@@ -27,7 +27,7 @@ ReloadRun runReload(lua::GunLogic& logic, lua::ScriptApi api, bool empty) {
     ReloadRun run;
     api.reloadState  = empty ? ReloadStateType::EmptyFeeding : ReloadStateType::TacticalFeeding;
     api.reloadTimeMs = 0;
-    REQUIRE(logic.startReload(api));
+    REQUIRE(logic.startReload(api) != lua::ReloadStartResult::Refused);
     for (int64_t t = 0; t <= 10'000; t += 50) {
         api.reloadTimeMs = t;
         auto state       = logic.tickReload(api);
@@ -201,7 +201,7 @@ TEST_CASE("Sandbox: no file access, no bytecode, runaway scripts are stopped") {
     auto data   = pack::parseGunData(pack::parseJsonText(R"({"ammo": "tacz:a", "script": "t:spin"})"));
     pack::GunEntry gun{*pack::ResourceId::parse("t:spin_gun"), {}, data, "inline"};
     auto api    = apiFor(gun, {0, false});
-    CHECK_FALSE(logic.startReload(api)); // aborted by the instruction limit -> reload refused
+    CHECK(logic.startReload(api) == lua::ReloadStartResult::Error); // hook aborted; initialized reload remains started
     REQUIRE(warnings.size() == 1);
     CHECK(warnings[0].find("instructions") != std::string::npos);
 }

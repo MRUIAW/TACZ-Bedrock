@@ -250,8 +250,8 @@ TEST_CASE("Gun logic Java boolean parameters use LuaJ truthiness without relaxin
     lua::GunLogic logic(packs, [&](auto const& w) { warnings.push_back(w); });
     CHECK_FALSE(logic.startBolt(api)); CHECK(api.ammo.barrel);
     CHECK_FALSE(logic.tickBolt(api)); CHECK(api.ammo.barrel);
-    CHECK_FALSE(logic.startReload(api)); CHECK(api.ammo.barrel);
-    REQUIRE(warnings.size() == 2); // strict bolt checkboolean failures, not argument failures
+    CHECK(logic.startReload(api) == lua::ReloadStartResult::Error); CHECK(api.ammo.barrel);
+    REQUIRE(warnings.size() == 3); // all three strict checkboolean failures, not argument failures
     for (auto const& warning : warnings) CHECK(warning.find("boolean result expected") != std::string::npos);
 }
 
@@ -284,7 +284,7 @@ TEST_CASE("Synthetic empty clip-load reload preserves LuaJ zero-stock chamber tr
         api.extractAmmo = [&](int amount) { ++calls; int taken = std::min(stock, amount); stock -= taken; return taken; };
         std::vector<std::string> warnings;
         lua::GunLogic logic(packs, [&](auto const& w) { warnings.push_back(w); });
-        REQUIRE(logic.startReload(api));
+        REQUIRE(logic.startReload(api) == lua::ReloadStartResult::Started);
         api.reloadTimeMs = 2799;
         CHECK(logic.tickReload(api).type == gun::ReloadStateType::EmptyFeeding); CHECK_FALSE(api.ammo.barrel);
         api.reloadTimeMs = 2800;

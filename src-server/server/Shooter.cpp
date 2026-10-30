@@ -442,14 +442,18 @@ char const* handleReload(Player& player) {
     s.reloadValue      = {s.reloadState, 0};
 
     auto api = scriptApi(player, *item, *entry, s);
-    bool started = gunLogic().startReload(api);
+    auto started = gunLogic().startReload(api);
+    // Item-method mutations and cache writes commit during dispatch, even on
+    // errors. Copy the adjusted timestamp back on every outcome as before.
     s.boltTimestamp = api.boltTimestamp;
-    if (!started) {
+    if (started == lua::ReloadStartResult::Refused) {
         s.reloadState     = gun::ReloadStateType::NotReloading;
         s.reloadStartedMs = -1;
         s.reloadValue     = {};
         return "SCRIPT_REFUSED";
     }
+    // Error is not success, but Java's exception skips the reset above: keep
+    // the initialized state/timestamp so tick_reload can run on following ticks.
     logger().info(
         "[reload] {} {} reload of {} ({}{} rounds)",
         player.getRealName(),

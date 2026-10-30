@@ -174,7 +174,7 @@ TEST_CASE("Lua modules are loaded by ID from listed resolution, not by direct fi
         api.reloadState=empty ? gun::ReloadStateType::EmptyFeeding : gun::ReloadStateType::TacticalFeeding;
         int stock=stockBefore;
         api.extractAmmo=[&](int n){int taken=std::min(n,stock);stock-=taken;return taken;};
-        REQUIRE(logic.startReload(api));
+        REQUIRE(logic.startReload(api) == lua::ReloadStartResult::Started);
         auto before=api.ammo;
         api.reloadTimeMs=0; CHECK(logic.tickReload(api).type==api.reloadState);
         if (cancel) {

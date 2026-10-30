@@ -136,6 +136,7 @@ struct GunLogic::Impl {
 
         registerApi();
 
+        // Strict boolean-hook dispatch, shared by bolt and reload start.
         // Protect lookup too: __index may execute Lua or throw. Nil alone means
         // absent; checkFunction/checkboolean reject all other invalid types.
         boltDispatch = lua.safe_script(R"(
@@ -369,13 +370,16 @@ GunLogic::GunLogic(pack::GunPackRegistry const& packs, LogFn warn, gun::CycleTas
 
 GunLogic::~GunLogic() = default;
 
-bool GunLogic::startReload(ScriptApi& api) {
+ReloadStartResult GunLogic::startReload(ScriptApi& api) {
     api.logic = this;
-    auto fn   = mImpl->function(api, "start_reload");
-    if (!fn) return true;
-    auto result = mImpl->call(api, *fn, "start_reload");
-    // LuaJ checkboolean: anything but a boolean is an error, which cancels the reload.
-    return result.valid() && result.get_type() == sol::type::boolean && result.get<bool>();
+    auto table = api.data->script ? mImpl->script(*api.data->script) : std::nullopt;
+    if (!table) return ReloadStartResult::Started;
+    auto result = mImpl->call(api, mImpl->boltDispatch, "start_reload", *table, "start_reload");
+    // LivingEntityReload.java:72-83: a thrown checkboolean/runtime/lookup error
+    // skips the explicit-false reset. Preserve that state, not Lua truthiness.
+    if (!result.valid()) return ReloadStartResult::Error;
+    if (result.get_type() == sol::type::nil) return ReloadStartResult::Started; // absent hook defaults true
+    return result.get<bool>() ? ReloadStartResult::Started : ReloadStartResult::Refused;
 }
 
 gun::ReloadState GunLogic::tickReload(ScriptApi& api) {
