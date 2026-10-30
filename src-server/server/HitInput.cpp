@@ -42,7 +42,9 @@ LL_TYPE_INSTANCE_HOOK(ReceivedAuthInput, ll::memory::HookPriority::Normal, Serve
     static_cast<ReceiveSignature>(&ServerNetworkHandler::$handle), void, NetworkIdentifier const& source, PlayerAuthInputPacket const& packet) {
     // Packet dispatch, before native handle queues movement. Do not take the
     // shooter lock here; origin can publish lifecycle callbacks synchronously.
-    auto player = _getServerPlayer(source, packet.mSenderSubId);
+    // This override receives the secondary NetEventCallback subobject as this;
+    // adjust to ServerNetworkHandler before using its vtable (as LL does).
+    auto player = thisFor<NetEventCallback>()->_getServerPlayer(source, packet.mSenderSubId);
     if (player && ll::service::getLevel() && player->isAlive() && !player->isDead()) {
         auto const& pos = *packet.mPos;
         auto const& rot = *packet.mRot;

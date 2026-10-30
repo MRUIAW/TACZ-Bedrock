@@ -23,6 +23,14 @@ round, the minor number goes up by 1 for each finished feature or phase.
 
 ### Fixed
 
+- Live fix of unaccepted 0.4.14 (`f56310a`): BDS crashed on player join in
+  `ReceivedAuthInput::detour`. The auth-input override receives a secondary
+  `NetEventCallback` subobject pointer; use LL's `thisFor<NetEventCallback>()`
+  before `_getServerPlayer` to avoid dispatch through the wrong vtable. Version
+  stays 0.4.14; live acceptance remains pending. Repository hook audit found no
+  other secondary-base virtual hook incorrectly accessing derived `this`:
+  client inventory handlers' `NetEventCallback` is on the primary-base chain;
+  secondary app-focus hooks only update independent state and call `origin()`.
 - User-approved per-round aim reads the latest two **received** auth inputs before
   Bedrock queues their movement: midpoint after conversion to feet + Java pose eye
   height, latest pitch/yaw without clamping or position/rotation sanity fallback.
