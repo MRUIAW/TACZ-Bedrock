@@ -10,12 +10,13 @@
 #include "gun/ShootRules.h"
 #include "gun/BoltRules.h"
 #include "gun/AttachmentRules.h"
+#include "gun/ShootTiming.h"
 #include "pack/GunData.h"
 #include "pack/ResourceId.h"
 
 // The object gun logic scripts receive as `api`, after TACZ's ModernKineticGunScriptAPI.
 // It works on a copy of the gun's state; the caller writes `ammo` back to the item afterwards.
-// Reload and bolt are implemented; Lua shooting/heat follow later.
+// Delayed Lua closures own this view; adapters refresh/commit only the same hold.
 namespace tacz::lua {
 
 class GunLogic;
@@ -45,6 +46,25 @@ struct ScriptApi {
     std::function<int(int)> extractAmmo;
     // Whether the shooter carries any of the gun's ammo.
     std::function<bool()> inventoryHasAmmo;
+
+    // Refresh item/player views before each Lua API call, commit mutations after.
+    // Both closures own their original-item context, never a borrowed NBT pointer.
+    std::function<void(ScriptApi&)> refresh;
+    std::function<void(ScriptApi const&)> commit;
+    std::function<bool()> alive;
+    std::function<bool()> sameHold;
+    std::function<int64_t()> wallClock;
+    std::function<int64_t()> previousShot;
+    std::function<void(int64_t)> adjustShot;
+    // Called once per shootOnce to capture mode, bullets/speed and inaccuracy.
+    std::function<std::function<bool()>(ScriptApi&, bool)> prepareRound;
+
+    void refreshView() { if (refresh) refresh(*this); }
+    void commitView() const { if (commit) commit(*this); }
+    [[nodiscard]] int64_t getCurrentTimestamp() const { return wallClock ? wallClock() : nowMs; }
+    [[nodiscard]] int64_t getLastShootTimestamp() const { return previousShot ? previousShot() : -1; }
+    [[nodiscard]] int64_t getShootInterval() const { return std::max<int64_t>(gun::triggerIntervalMs(*data, fireMode) - 5, 0); }
+    void adjustShootInterval(int64_t alpha) { if (adjustShot) adjustShot(alpha); }
 
     // Set by GunLogic for the script data cache (ShooterDataHolder.scriptData).
     GunLogic* logic      = nullptr;

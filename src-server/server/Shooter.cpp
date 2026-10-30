@@ -32,6 +32,7 @@
 #include "mc/world/actor/Mob.h"
 #include "mc/world/actor/player/Player.h"
 #include "mc/world/level/Level.h"
+#include "mc/deps/nbt/CompoundTag.h"
 #include "mc/world/attribute/AttributeInstance.h"
 #include "mc/world/attribute/AttributeModifier.h"
 #include "mc/world/attribute/MutableAttributeWithContext.h"
@@ -80,14 +81,10 @@ struct ShooterState {
     gun::DrawCooldown draw;
     std::optional<int64_t> clockOffset; // server ms - client ms, set on the first trigger pull
     std::optional<int64_t> lastShot;    // client timestamp of the last accepted trigger pull
-
-    // Rounds of the current trigger pull still to fire (bursts).
-    int                           remaining = 0;
-    Clock::time_point             nextRound;
-    std::chrono::milliseconds     period{1};
-    pack::ResourceId              gunId;
-    std::optional<pack::FireMode> mode;
-    int                           slot = -1;
+    int64_t previousShot = -1;
+    int64_t initialWallBase = boltNowMs();
+    int64_t heatTimestamp = -1;
+    uint64_t selectionGeneration = 0;
 
     // Reload (LivingEntityReload / ShooterDataHolder.reloadTimestamp / reloadStateType).
     gun::ReloadStateType reloadState      = gun::ReloadStateType::NotReloading;
@@ -152,9 +149,36 @@ lua::GunLogic& gunLogic() {
     return *logic;
 }
 
-// The script API view of the player's held gun.
+Player* taskPlayer(int64_t key) {
+    auto level = ll::service::getLevel();
+    auto actor = level ? level->fetchEntity(ActorUniqueID{key}, false) : nullptr;
+    return actor && actor->isPlayer() ? static_cast<Player*>(actor) : nullptr;
+}
+
+struct HeldContext {
+    nbt::GunItemState item;
+    std::shared_ptr<CompoundTag> tag;
+    gun::HoldIdentity identity;
+};
+
+bool sameHold(int64_t key, HeldContext const& context) {
+    auto found = states.find(key);
+    auto player = taskPlayer(key);
+    if (!player || found == states.end()) return false;
+    auto item = nbt::readGun(player->getSelectedItem());
+    return item && context.identity == gun::HoldIdentity{found->second.selectionGeneration, player->getSelectedItemSlot(), item->gunId};
+}
+
+bool fireRound(int64_t key, std::shared_ptr<HeldContext> const& context,
+    pack::GunData const& data, std::optional<pack::FireMode> mode, float inaccuracy, bool consume);
+
+// Every retained closure owns its original item state and resolves the player by
+// key. No player reference, state reference or selected-item NBT pointer escapes.
 lua::ScriptApi scriptApi(Player& player, nbt::GunItemState const& item, pack::GunEntry const& entry, ShooterState const& s) {
     lua::ScriptApi api;
+    auto key = keyOf(player);
+    auto context = std::make_shared<HeldContext>(HeldContext{item, {}, {s.selectionGeneration, player.getSelectedItemSlot(), item.gunId}});
+    if (auto tag = player.getSelectedItem().mUserData.get()) context->tag = tag->clone();
     api.gunId          = item.gunId;
     api.data           = &entry.data;
     api.ammo           = {item.ammo, item.barrel};
@@ -171,11 +195,64 @@ lua::ScriptApi scriptApi(Player& player, nbt::GunItemState const& item, pack::Gu
     api.isBolting     = s.isBolting;
     api.boltTimestamp = s.boltTimestamp;
     api.boltClock     = boltNowMs;
-    auto const* tag = player.getSelectedItem().mUserData.get();
-    api.readNbt = [tag](auto const& path, auto const& key, int mode) { return nbt::readNbt(tag, path, key, mode); };
+    api.readNbt = [context](auto const& path, auto const& key, int mode) { return nbt::readNbt(context->tag.get(), path, key, mode); };
     auto ammoId        = entry.data.ammoId;
-    api.extractAmmo    = [&player, ammoId](int n) { return ammoId ? nbt::extractAmmo(player, *ammoId, n) : 0; };
-    api.inventoryHasAmmo = [&player, ammoId] { return ammoId && nbt::countAmmo(player, *ammoId) > 0; };
+    api.extractAmmo = [key, ammoId](int n) { auto p = taskPlayer(key); return p && ammoId ? nbt::extractAmmo(*p, *ammoId, n) : 0; };
+    api.inventoryHasAmmo = [key, ammoId] { auto p = taskPlayer(key); return p && ammoId && nbt::countAmmo(*p, *ammoId) > 0; };
+    api.alive = [key] { auto p = taskPlayer(key); return p && p->isAlive() && !p->isDead(); };
+    api.sameHold = [key, context] { return sameHold(key, *context); };
+    api.wallClock = boltNowMs;
+    api.previousShot = [key] {
+        auto found = states.find(key);
+        if (found == states.end()) return int64_t{-1};
+        auto const& state = found->second;
+        return gun::addTime(state.previousShot, gun::shotWallBase(state.clockOffset, boltNowMs(), serverNowMs(), state.initialWallBase));
+    };
+    api.adjustShot = [key](int64_t alpha) {
+        if (auto found = states.find(key); found != states.end())
+            found->second.lastShot = gun::addTime(found->second.lastShot.value_or(-1), alpha);
+    };
+    api.refresh = [key, context](lua::ScriptApi& a) {
+        auto p = taskPlayer(key);
+        if (p && sameHold(key, *context)) {
+            context->item = *nbt::readGun(p->getSelectedItem());
+            auto tag = p->getSelectedItem().mUserData.get();
+            context->tag = tag ? std::shared_ptr<CompoundTag>(tag->clone()) : nullptr;
+        }
+        a.ammo = {context->item.ammo, context->item.barrel};
+        a.fireMode = context->item.fireMode;
+        if (p) a.needCheckAmmo = !p->isCreative();
+        if (auto found = states.find(key); found != states.end()) {
+            auto const& state = found->second;
+            a.reloadState = state.reloadState;
+            a.reloadTimeMs = state.reloadStartedMs < 0 ? 0 : serverNowMs() - state.reloadStartedMs;
+            a.aimingProgress = state.aimingProgress;
+            a.isBolting = state.isBolting;
+            a.boltTimestamp = state.boltTimestamp;
+        }
+    };
+    api.commit = [key, context](lua::ScriptApi const& a) {
+        bool changed = a.ammo != gun::GunAmmo{context->item.ammo, context->item.barrel};
+        context->item.ammo = a.ammo.magazine;
+        context->item.barrel = a.ammo.barrel;
+        if (changed && sameHold(key, *context)) if (auto p = taskPlayer(key)) nbt::writeSelectedGun(*p, context->item);
+        if (auto found = states.find(key); found != states.end()) found->second.boltTimestamp = a.boltTimestamp;
+    };
+    api.prepareRound = [key, context](lua::ScriptApi& a, bool consume) -> std::function<bool()> {
+        auto p = taskPlayer(key);
+        if (!p) return {};
+        auto delta = p->getPosDelta();
+        auto type = gun::inaccuracyType(model::fullyAimed(a.aimingProgress), p->isSneaking(), glm::length(glm::dvec3{delta.x, delta.y, delta.z}));
+        float inaccuracy = gun::inaccuracy(*a.data, a.fireMode, type);
+        // Shared immutable registry object, as in Java (not a per-shot copy).
+        // reloadGunPacks is called only by mod load, before shooter enable;
+        // all tasks are destroyed on world end/disable. Runtime pack reload is
+        // deferred and must introduce snapshot ownership before changing this.
+        auto const* data = a.data;
+        return [key, context, data, mode = a.fireMode, inaccuracy, consume] {
+            return fireRound(key, context, *data, mode, inaccuracy, consume);
+        };
+    };
     return api;
 }
 
@@ -209,7 +286,10 @@ void observeSelection(Player& player, ShooterState& s) {
     gun::HandSelection next{item ? std::optional{item->gunId} : std::nullopt, player.getSelectedItemSlot()};
     {
         std::lock_guard lock(sprintMutex);
-        if (sprintLifeResets.erase(keyOf(player))) s.shootSprintIntent = {};
+        if (sprintLifeResets.erase(keyOf(player))) {
+            s.shootSprintIntent = {};
+            if (logic) logic->clearTasks(keyOf(player));
+        }
         if (s.sprintOwner != static_cast<Mob*>(&player)) {
             sprintBlockedOwners.erase(s.sprintOwner);
             s.sprintOwner = static_cast<Mob*>(&player);
@@ -218,10 +298,14 @@ void observeSelection(Player& player, ShooterState& s) {
     s.shootSprintIntent.observe({reinterpret_cast<uintptr_t>(&player), static_cast<int>(player.getDimensionId()),
         player.isAlive() && !player.isDead() && !player.isSpectator() && item.has_value()}, next != s.selection);
     if (next == s.selection) return;
+    ++s.selectionGeneration;
+    gunLogic().clearScriptData(keyOf(player));
+    gunLogic().cancelShots(keyOf(player));
+    s.heatTimestamp = -1; // initialData, then LivingEntityDrawGun.draw wall time
+    s.heatTimestamp = boltNowMs();
     stopReload(player, s, "weapon switched");
     s.isBolting = false; // ShooterDataHolder.initialData, not an extra death cancel
     s.boltTimestamp = -1;
-    s.remaining = 0;
     s.lastShot.reset();
     s.isAiming = false;
     s.aimingProgress = 0;
@@ -241,24 +325,21 @@ bool drawing(ShooterState const& s, pack::GunEntry const& entry) {
 
 // One round of the trigger pull: ammo, then the bullets. False ends the pull (TACZ's cycle
 // task returns false when the shooter died, switched weapon or ran dry).
-bool fireRound(Player& player, ShooterState& s) {
-    if (!player.isAlive() || player.isDead() || player.getSelectedItemSlot() != s.slot) return false;
+bool fireRound(int64_t key, std::shared_ptr<HeldContext> const& context,
+    pack::GunData const& data, std::optional<pack::FireMode> mode, float inaccuracy, bool consume) {
+    auto p = taskPlayer(key);
+    if (!p || !p->isAlive() || p->isDead() || !sameHold(key, *context)) return false;
+    auto& player = *p;
     auto item = nbt::readGun(player.getSelectedItem());
-    if (!item || item->gunId != s.gunId) return false;
-    auto const* entry = gunEntry(item->gunId);
-    if (!entry) return false;
-    auto const& data = entry->data;
+    if (!item || !gunEntry(item->gunId)) return false;
 
     gun::GunAmmo ammo{item->ammo, item->barrel};
-    if (!gun::reduceAmmoOnce(*data.bolt, ammo)) return false;
+    if (consume && !gun::reduceAmmoOnce(*data.bolt, ammo)) return false;
     item->ammo   = ammo.magazine;
     item->barrel = ammo.barrel;
-    nbt::writeSelectedGun(player, *item);
-
-    auto  delta      = player.getPosDelta();
-    auto  type       = gun::inaccuracyType(model::fullyAimed(s.aimingProgress), player.isSneaking(), glm::length(glm::dvec3{delta.x, delta.y, delta.z}));
-    float inaccuracy = gun::inaccuracy(data, s.mode, type);
-    bullet::fire(player,item->gunId, data, s.mode, inaccuracy);
+    if (consume) nbt::writeSelectedGun(player, *item);
+    context->item = *item;
+    bullet::fire(player,item->gunId, data, mode, inaccuracy);
     return true;
 }
 
@@ -274,7 +355,7 @@ char const* handleShoot(Player& player, int64_t timestamp) {
     auto&           s = stateOf(player);
     observeSelection(player, s);
     if (drawing(s, *entry)) return "IS_DRAWING";
-    if (s.remaining > 0) return "COOL_DOWN";
+    if (gunLogic().pendingShots(keyOf(player))) return "COOL_DOWN";
     if (gun::serverCooldownMs(data, item->fireMode, timestamp, s.lastShot) > 0) return "COOL_DOWN";
 
     // TACZ SERVER_SHOOT_NETWORK_V: the client clock must stay within -300 / +300 ms + 2 ticks of
@@ -305,26 +386,17 @@ char const* handleShoot(Player& player, int64_t timestamp) {
         nbt::writeSelectedGun(player, *item);
     }
 
-    s.lastShot         = timestamp;
-    s.gunId            = item->gunId;
-    s.mode             = item->fireMode;
-    s.slot             = player.getSelectedItemSlot();
-    int cycles         = s.mode == pack::FireMode::Burst ? std::max(data.burst.count, 1) : 1;
-    s.period           = std::chrono::milliseconds(s.mode == pack::FireMode::Burst ? gun::burstShootIntervalMs(data) : 1);
-    s.remaining        = cycles;
-    // CycleTaskHelper runs the first round right away; the rest follow on server ticks.
-    if (fireRound(player, s)) {
-        // Bounded observation only: actual authoritative look used for this shot, not a
-        // client recoil/rotation override. Compare triggerTs with [recoil-shot] in tests.
-        if (s.recoilLookSamples++ < 8) {
-            auto const& rotation = player.getRotation();
-            logger().info("[recoil-server-look] {} triggerTs={} rotation=({:.6f},{:.6f}) aim={:.3f} rotationSource=server-player (observe; compare client traces, no forced server recoil)",
-                player.getRealName(), timestamp, rotation.x, rotation.z, s.aimingProgress);
-        }
-        --s.remaining;
-        s.nextRound = Clock::now() + s.period;
-    } else {
-        s.remaining = 0;
+    s.previousShot = s.lastShot.value_or(-1);
+    s.heatTimestamp = boltNowMs();
+    s.lastShot = timestamp;
+    auto api = scriptApi(player, *item, *entry, s);
+    gunLogic().shoot(api);
+    api.commitView();
+    // Bounded trigger observation, not a client rotation override.
+    if (s.recoilLookSamples++ < 8) {
+        auto const& rotation = player.getRotation();
+        logger().info("[recoil-server-look] {} triggerTs={} rotation=({:.6f},{:.6f}) aim={:.3f} rotationSource=server-player (observe; compare client traces, no forced server recoil)",
+            player.getRealName(), timestamp, rotation.x, rotation.z, s.aimingProgress);
     }
     return nullptr;
 }
@@ -357,7 +429,7 @@ char const* handleReload(Player& player) {
     if (gun::syncedShootCooldownMs(true, &data, item->fireMode, serverNowMs(), s.clockOffset, s.lastShot) != 0) {
         return "COOL_DOWN";
     }
-    if (s.remaining > 0) return "COOL_DOWN";
+    if (gunLogic().pendingShots(keyOf(player))) return "COOL_DOWN";
     if (gun::boltBlocksAction(s.isBolting)) return "IS_BOLTING";
     if (!canReload(player, *item, *entry)) return "CANNOT_RELOAD";
 
@@ -395,7 +467,6 @@ void stopReload(Player& player, ShooterState& s, char const* why) {
     s.reloadState     = gun::ReloadStateType::NotReloading;
     s.reloadStartedMs = -1;
     s.reloadValue     = {};
-    gunLogic().clearScriptData(keyOf(player));
     logger().info("[reload] {} reload stopped: {}", player.getRealName(), why);
 }
 
@@ -506,6 +577,15 @@ void tickBolt(Player& player, ShooterState& s) {
     if (!s.isBolting) logger().info("[bolt] {} finished", player.getRealName());
 }
 
+void tickHeat(Player& player, ShooterState& s) {
+    auto item = nbt::readGun(player.getSelectedItem());
+    auto entry = item ? gunEntry(item->gunId) : nullptr;
+    if (!entry || !entry->data.script) return; // no hook and default cooling is deferred
+    auto api = scriptApi(player, *item, *entry, s);
+    gunLogic().tickHeat(api, s.heatTimestamp);
+    api.commitView();
+}
+
 // All native value arguments here are fully defined SDK types, never an opaque container.
 static_assert(sizeof(AttributeModificationContext) == 8);
 static_assert(sizeof(MutableAttributeWithContext) == 16);
@@ -611,11 +691,10 @@ void tick(Level& level) {
         observeSelection(player, stateOf(player));
         return true;
     });
-    auto            now = Clock::now();
     for (auto& [id, s] : states) {
         Actor* actor = level.fetchEntity(ActorUniqueID{id}, false);
         if (!actor || !actor->isPlayer()) {
-            s.remaining = 0;
+            if (logic) logic->clearTasks(id);
             s.shootSprintIntent = {};
             { std::lock_guard sprintLock(sprintMutex); sprintBlockedOwners.erase(s.sprintOwner); }
             s.sprintOwner = nullptr;
@@ -624,16 +703,13 @@ void tick(Level& level) {
         auto& player = *static_cast<Player*>(actor);
         tickAim(player, s);
         tickSprint(player, s); // after ADS/reload/held-trigger have corrected native sprint state
-        while (s.remaining > 0 && now >= s.nextRound) {
-            if (!fireRound(player, s)) {
-                s.remaining = 0;
-                break;
-            }
-            --s.remaining;
-            s.nextRound += s.period;
-        }
+        if (!player.isAlive() || player.isDead()) gunLogic().clearTasks(id);
+        // Accepted 0.4.11 divergence: once here, NOT Forge's START + END.
+        // See SHOOT-0.4.11.md and the 20 TPS phase-contract regression test.
+        else gunLogic().tickTasks(id);
         tickReload(player, s);
         tickBolt(player, s); // LivingEntityMixin:223-236, after reload/aim/sprint, before publication
+        tickHeat(player, s); // dispatch even without heat data; default cooling deferred
     }
     // After every player's aim/sprint/burst/reload simulation, not from producers.
     level.forEachPlayer([&](Player& player) {
@@ -760,7 +836,7 @@ void enable() {
         }
         states.erase(key);
         { std::lock_guard syncLock(syncQueueMutex); pendingFullSync.erase(key); }
-        if (logic) logic->clearScriptData(key);
+        if (logic) logic->removeShooter(key);
     });
     listeners[2] = bus.emplaceListener<ll::event::ServerStoppingEvent>([](ll::event::ServerStoppingEvent&) {
         std::lock_guard lock(mutex);

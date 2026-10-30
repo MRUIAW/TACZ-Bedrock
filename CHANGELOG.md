@@ -8,6 +8,63 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 Versioning rule for this project: the patch number goes up by 1 for each small item or test
 round, the minor number goes up by 1 for each finished feature or phase.
 
+## [0.4.11] - 2026-10-30
+
+### Accepted 0.4.10 — user-tested
+
+- Local LeviLamina BDS + 0.4.10 client, driven by LeviHeadlessInput. TACZ Kar98:
+  empty clip load 4+1 at 2.81 s, finish 3.01 s (params 2.78/3); tactical
+  2+1 → 3+1 → 4+1; interrupted tactical stops after the current round at 2+1.
+  Empty clip reload ignores interruption, as its Java script does.
+- ClassicR Kar98: empty clip at 2.84 s, chamber 3.59 s (4+1), finish 3.79 s;
+  tactical one-by-one and interrupted tactical 2+1 passed. Empty reload interrupted
+  at 1.5 s ends at 2.38 s still empty (script's 0.8 s ending_empty branch).
+- Bolt cycling unchanged on both Kar98s. M16A4, SPAS-12 and FN Evolys reload,
+  bolt and fire-mode switch normal; state-machine getAttachment without errors.
+  No script errors on either side; user confirmed acceptance.
+
+### Added
+
+- Lua shoot dispatch with default shootOnce; independent concurrent shot tasks,
+  immediate first cycle, optional ammo consumption and call-time burst/bullet/
+  inaccuracy snapshots. Reuses the authoritative per-round bullet path.
+- safeAsyncTask and shoot timing APIs with FiguraMC LuaJ numeric/boolean argument
+  coercion; strict boolean callback returns. Java float-second compensation and
+  delayed-branch quirks retained. Maximum 256 tasks per player; lifecycle cleanup.
+- tick_heat dispatch after bolt and before publication, including guns without
+  heat data. Missing hook defaults to no-op; heat APIs/cooling remain deferred.
+- Parameterized manual helpers in tools/e2e (Temp originals untouched), synthetic
+  scheduling/dispatch/ordering/hold/cache/heat-flow tests and docs/SHOOT-0.4.11.md.
+
+### Fixed
+
+- Clear shared script cache unconditionally on selection changes, as Java draw
+  initialization does. Bolt/reload/shoot scripts cannot see the previous gun's
+  cache after switching. Remove stopReload's non-Java cache clear (including
+  missing gun data); cancellation retains cache. Draw resets heatTimestamp to -1
+  then wall time; each accepted pull refreshes it.
+- Previous-shot getter follows executable Java (previous raw timestamp + wall
+  base), not misleading reset-to-minus-one Javadoc. First shot after draw sees
+  base - 1; subsequent calls see the previous accepted/adjusted timestamp.
+
+### Known differences
+
+- Task pumping intentionally remains once per player/server tick, without a new
+  native hook. Java pumps at both START and END (unevenly spaced checkpoints):
+  burst rounds can advance at END, and repeated delay subtraction makes async
+  callbacks expire earlier. At steady 20 TPS, allow roughly one tick (50 ms)
+  extra for an already-queued burst round, and about 150 ms for a requested
+  1-second one-cycle delay; delay-dependent skew is not universally bounded by
+  one tick. The phase-contract test pins an example at 300 vs 210 ms.
+- Protected script failures warn once and stop the call/task, rather than
+  propagating. Async item identity uses selection generation/slot/gun ID, not
+  native stack IDs: switching away and back cancels firing. Async tasks survive
+  switches, with detached original-item state and shared player timing/cache.
+- Pending shot tasks still block shoot/reload. Client prediction is unchanged
+  (Java also predicts only one data-defined burst per pull). Heat, calcSpread,
+  real melee, TB23 inventory-direct shooting and third-person events remain
+  deferred. 0.4.11 awaits live acceptance.
+
 ## [0.4.10] - 2026-10-30
 
 ### Accepted 0.4.9 — user-tested

@@ -1,21 +1,41 @@
 #include "lua/GunLogic.h"
 
 #include <algorithm>
+#include <chrono>
 #include <cmath>
 #include <map>
 #include <optional>
 #include <set>
 #include <string>
 #include <unordered_map>
+#include <type_traits>
 #include <utility>
 
 #define SOL_ALL_SAFETIES_ON 1
 #include <sol/sol.hpp>
 #include "lua/BooleanCoercion.h"
+#include "lua/NumericCoercion.h"
 
 namespace tacz::lua {
 
 namespace {
+
+template <class R, class... Args>
+auto live(R (ScriptApi::*fn)(Args...)) {
+    return [fn](ScriptApi& a, Args... args) -> R {
+        a.refreshView();
+        if constexpr (std::is_void_v<R>) { (a.*fn)(args...); a.commitView(); }
+        else { auto result = (a.*fn)(args...); a.commitView(); return result; }
+    };
+}
+template <class R, class... Args>
+auto live(R (ScriptApi::*fn)(Args...) const) {
+    return [fn](ScriptApi& a, Args... args) -> R {
+        a.refreshView();
+        auto result = (a.*fn)(args...);
+        return result;
+    };
+}
 
 // A runaway script (an endless loop in a pack) must not freeze the server tick.
 constexpr int InstructionLimit = 10'000'000;
@@ -65,13 +85,22 @@ struct GunLogic::Impl {
     int                          instructionBudget = 0; // per VM, including independent test VMs
     sol::state                   lua;
     sol::protected_function      boltDispatch;
+    sol::protected_function      voidDispatch;
+    sol::protected_function      asyncDispatch;
 
     std::unordered_map<std::string, std::optional<sol::table>> scripts;      // by module name
     std::map<pack::ResourceId, sol::table>                     scriptParams; // GunData.script_param
     std::unordered_map<int64_t, sol::object>                   scriptData;   // by shooter
     std::set<std::string>                                      warned;
+    gun::CycleTasks::Clock clock;
+    std::unordered_map<int64_t, std::unique_ptr<gun::CycleTasks>> tasks;
 
-    Impl(pack::GunPackRegistry const& p, LogFn w) : packs(p), warn(std::move(w)) { initGlobals(); }
+    Impl(pack::GunPackRegistry const& p, LogFn w, gun::CycleTasks::Clock c)
+    : packs(p), warn(std::move(w)), clock(std::move(c)) {
+        if (!clock) clock = [] { return std::chrono::duration_cast<std::chrono::milliseconds>(
+            std::chrono::system_clock::now().time_since_epoch()).count(); };
+        initGlobals();
+    }
 
     void warnOnce(std::string const& key, std::string const& message) {
         if (warned.insert(key).second) warn(message);
@@ -121,6 +150,25 @@ struct GunLogic::Impl {
             end
         )", sol::script_pass_on_error).get<sol::protected_function>();
 
+        voidDispatch = lua.safe_script(R"(
+            local type, error = type, error
+            return function(api, module, name, timestamp)
+                local fn = module[name]
+                if fn == nil then return false end
+                if type(fn) ~= 'function' then error(name .. ': function or nil expected') end
+                if name == 'tick_heat' then fn(api, timestamp) else fn(api) end
+                return true
+            end
+        )", sol::script_pass_on_error).get<sol::protected_function>();
+        asyncDispatch = lua.safe_script(R"(
+            local type, error = type, error
+            return function(fn)
+                local result = fn()
+                if type(result) ~= 'boolean' then error('safeAsyncTask: boolean result expected') end
+                return result
+            end
+        )", sol::script_pass_on_error).get<sol::protected_function>();
+
         sol::table preload = package["preload"];
         for (auto const& [id, source] : packs.dataScripts()) {
             std::string name = moduleName(id);
@@ -142,49 +190,71 @@ struct GunLogic::Impl {
             "GunScriptApi",
             sol::no_constructor,
             "getReloadTime",
-            [](ScriptApi& a) { return std::max<int64_t>(a.reloadTimeMs, 0); },
+            [](ScriptApi& a) { a.refreshView(); return std::max<int64_t>(a.reloadTimeMs, 0); },
             "getReloadStateType",
-            [](ScriptApi& a) { return static_cast<int>(a.reloadState); },
+            [](ScriptApi& a) { a.refreshView(); return static_cast<int>(a.reloadState); },
             "getNeededAmmoAmount",
-            &ScriptApi::getNeededAmmoAmount,
+            live(&ScriptApi::getNeededAmmoAmount),
             "getAmmoAmount",
-            &ScriptApi::getAmmoAmount,
+            live(&ScriptApi::getAmmoAmount),
             "getAmmoCountInMagazine",
-            &ScriptApi::getAmmoAmount,
+            live(&ScriptApi::getAmmoAmount),
             "getMaxAmmoCount",
-            &ScriptApi::getMaxAmmoCount,
+            live(&ScriptApi::getMaxAmmoCount),
             "getMagExtentLevel",
-            &ScriptApi::getMagExtentLevel,
+            live(&ScriptApi::getMagExtentLevel),
             "hasAmmoInBarrel",
-            &ScriptApi::hasAmmoInBarrel,
+            live(&ScriptApi::hasAmmoInBarrel),
             "setAmmoInBarrel",
-            [](ScriptApi& a, sol::object value) { a.setAmmoInBarrel(luaJBoolean(value)); },
+            [](ScriptApi& a, sol::object value) { a.refreshView(); a.setAmmoInBarrel(luaJBoolean(value)); a.commitView(); },
             "putAmmoInMagazine",
-            &ScriptApi::putAmmoInMagazine,
+            live(&ScriptApi::putAmmoInMagazine),
             "removeAmmoFromMagazine",
-            &ScriptApi::removeAmmoFromMagazine,
+            live(&ScriptApi::removeAmmoFromMagazine),
             "consumeAmmoFromPlayer",
-            &ScriptApi::consumeAmmoFromPlayer,
+            live(&ScriptApi::consumeAmmoFromPlayer),
             "hasAmmoToConsume",
-            &ScriptApi::hasAmmoToConsume,
+            live(&ScriptApi::hasAmmoToConsume),
             "isReloadingNeedConsumeAmmo",
-            [](ScriptApi& a) { return a.needCheckAmmo; },
+            [](ScriptApi& a) { a.refreshView(); return a.needCheckAmmo; },
             "isShootingNeedConsumeAmmo",
-            [](ScriptApi& a) { return a.consumesAmmo; },
+            [](ScriptApi& a) { a.refreshView(); return a.consumesAmmo; },
             "useInventoryAmmo",
-            &ScriptApi::useInventoryAmmo,
+            live(&ScriptApi::useInventoryAmmo),
             "getFireMode",
-            &ScriptApi::getFireMode,
+            live(&ScriptApi::getFireMode),
             "getAimingProgress",
-            [](ScriptApi& a) { return a.aimingProgress; },
+            [](ScriptApi& a) { a.refreshView(); return a.aimingProgress; },
             "getCurrentTimestamp",
-            [](ScriptApi& a) { return a.nowMs; },
+            &ScriptApi::getCurrentTimestamp,
+            "getShootInterval",
+            live(&ScriptApi::getShootInterval),
+            "getLastShootTimestamp",
+            &ScriptApi::getLastShootTimestamp,
+            "adjustShootInterval",
+            [](ScriptApi& a, sol::object alpha) { a.adjustShootInterval(luaJLong(alpha)); },
+            "shootOnce",
+            [this](ScriptApi& a, sol::object consume) { shootOnce(a, luaJBoolean(consume)); },
+            "safeAsyncTask",
+            [this](ScriptApi& a, sol::object fn, sol::object delay, sol::object period, sol::object cycles) {
+                if (fn.get_type() != sol::type::function) throw sol::error("safeAsyncTask: function expected");
+                auto callback = fn.as<sol::protected_function>();
+                auto owned = std::make_shared<ScriptApi>(a);
+                schedule(a, [this, owned, callback] {
+                    if (owned->alive && !owned->alive()) return false;
+                    owned->refreshView();
+                    instructionBudget = InstructionLimit;
+                    auto result = asyncDispatch(callback);
+                    if (!result.valid()) { report(*owned, "safe_async_task", sol::error(result).what()); return false; }
+                    return result.get<bool>();
+                }, luaJLong(delay), luaJLong(period), luaJInt(cycles), gun::CycleTasks::Kind::Async);
+            },
             "getBoltTime",
-            &ScriptApi::getBoltTime,
+            live(&ScriptApi::getBoltTime),
             "adjustBoltTime",
-            &ScriptApi::adjustBoltTime,
+            live(&ScriptApi::adjustBoltTime),
             "getAttachment",
-            &ScriptApi::getAttachment,
+            live(&ScriptApi::getAttachment),
             "getScriptParams",
             [this](ScriptApi& a, sol::this_state) -> sol::table { return paramsFor(a); },
             "cacheScriptData",
@@ -240,7 +310,9 @@ struct GunLogic::Impl {
     template <class... Args>
     sol::protected_function_result call(ScriptApi& a, sol::protected_function const& fn, char const* name, Args&&... args) {
         instructionBudget = InstructionLimit;
-        auto result       = fn(std::ref(a), std::forward<Args>(args)...);
+        auto owned = std::make_shared<ScriptApi>(a);
+        auto result = fn(owned, std::forward<Args>(args)...);
+        a = *owned;
         if (!result.valid()) {
             sol::error err = result;
             warnOnce(
@@ -259,10 +331,41 @@ struct GunLogic::Impl {
         if (result.get_type() == sol::type::nil) return start || defaultTickBolt(a);
         return result.get<bool>();
     }
+
+    void report(ScriptApi const& a, char const* name, std::string const& error) {
+        warnOnce(std::string(name) + ":" + a.gunId.toString(), "Script " +
+            (a.data->script ? a.data->script->toString() : "<default>") + " " + name + " failed for " + a.gunId.toString() + ": " + error);
+    }
+    gun::CycleTasks& scheduler(int64_t key) {
+        auto& ptr = tasks[key];
+        if (!ptr) ptr = std::make_unique<gun::CycleTasks>(clock);
+        return *ptr;
+    }
+    void schedule(ScriptApi& a, gun::CycleTasks::Task task, int64_t delay, int64_t period, int cycles, gun::CycleTasks::Kind kind) {
+        if (!scheduler(a.shooterKey).add(std::move(task), delay, period, cycles, kind))
+            report(a, "task_limit", "256 scheduled tasks per player exceeded");
+    }
+    void shootOnce(ScriptApi& a, bool consume) {
+        a.refreshView();
+        // Java checks life/hold inside the immediate first cycle, not here.
+        auto mode = a.fireMode;
+        auto cycles = mode == pack::FireMode::Burst ? a.data->burst.count : 1;
+        auto period = mode == pack::FireMode::Burst ? gun::burstShootIntervalMs(*a.data) : 1;
+        auto body = a.prepareRound ? a.prepareRound(a, consume) : gun::CycleTasks::Task{};
+        if (!body) return;
+        schedule(a, std::move(body), 0, period, cycles, gun::CycleTasks::Kind::Shot);
+        a.refreshView(); // immediate cycle's ammo is visible to the next script statement
+    }
+    void dispatchVoid(ScriptApi& a, char const* name, int64_t timestamp, bool shoot) {
+        auto table = a.data->script ? script(*a.data->script) : std::nullopt;
+        if (!table) { if (shoot) shootOnce(a, a.consumesAmmo); return; }
+        auto result = call(a, voidDispatch, name, *table, name, timestamp);
+        if (result.valid() && !result.get<bool>() && shoot) shootOnce(a, a.consumesAmmo);
+    }
 };
 
-GunLogic::GunLogic(pack::GunPackRegistry const& packs, LogFn warn)
-: mImpl(std::make_unique<Impl>(packs, std::move(warn))) {}
+GunLogic::GunLogic(pack::GunPackRegistry const& packs, LogFn warn, gun::CycleTasks::Clock clock)
+: mImpl(std::make_unique<Impl>(packs, std::move(warn), std::move(clock))) {}
 
 GunLogic::~GunLogic() = default;
 
@@ -307,6 +410,29 @@ bool GunLogic::startBolt(ScriptApi& api) {
 bool GunLogic::tickBolt(ScriptApi& api) {
     api.logic = this;
     return mImpl->bolt(api, "tick_bolt", false);
+}
+
+void GunLogic::shoot(ScriptApi& api) { api.logic = this; mImpl->dispatchVoid(api, "shoot", 0, true); }
+void GunLogic::tickHeat(ScriptApi& api, int64_t timestamp) { api.logic = this; mImpl->dispatchVoid(api, "tick_heat", timestamp, false); }
+void GunLogic::tickTasks(int64_t key) {
+    auto found = mImpl->tasks.find(key);
+    if (found != mImpl->tasks.end()) found->second->tick();
+}
+void GunLogic::clearTasks(int64_t key) {
+    auto found = mImpl->tasks.find(key);
+    if (found != mImpl->tasks.end()) found->second->clear();
+}
+void GunLogic::removeShooter(int64_t key) {
+    mImpl->tasks.erase(key);
+    mImpl->scriptData.erase(key);
+}
+void GunLogic::cancelShots(int64_t key) {
+    auto found = mImpl->tasks.find(key);
+    if (found != mImpl->tasks.end()) found->second->cancelShots();
+}
+bool GunLogic::pendingShots(int64_t key) const {
+    auto found = mImpl->tasks.find(key);
+    return found != mImpl->tasks.end() && found->second->pendingShots();
 }
 
 } // namespace tacz::lua

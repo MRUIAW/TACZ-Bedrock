@@ -6,6 +6,7 @@
 #include <string>
 
 #include "gun/Reload.h"
+#include "gun/CycleTasks.h"
 #include "lua/ScriptApi.h"
 #include "pack/GunPackLoader.h"
 
@@ -22,7 +23,7 @@ class GunLogic {
 public:
     using LogFn = std::function<void(std::string const&)>;
 
-    GunLogic(pack::GunPackRegistry const& packs, LogFn warn);
+    GunLogic(pack::GunPackRegistry const& packs, LogFn warn, gun::CycleTasks::Clock clock = {});
     ~GunLogic();
 
     GunLogic(GunLogic const&)            = delete;
@@ -39,6 +40,14 @@ public:
     // Errors (including non-functions/non-booleans) warn once per gun/hook and stop.
     bool startBolt(ScriptApi& api);
     bool tickBolt(ScriptApi& api);
+
+    void shoot(ScriptApi& api);
+    void tickHeat(ScriptApi& api, int64_t heatTimestamp);
+    void tickTasks(int64_t shooterKey);
+    void clearTasks(int64_t shooterKey);
+    void removeShooter(int64_t shooterKey);
+    void cancelShots(int64_t shooterKey);
+    [[nodiscard]] bool pendingShots(int64_t shooterKey) const;
 
     // ShooterDataHolder.scriptData: dropped when the shooter's gun state resets.
     void clearScriptData(int64_t shooterKey);
