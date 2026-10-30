@@ -4,6 +4,7 @@
 #include <memory>
 #include <mutex>
 #include <optional>
+#include <type_traits>
 #include <vector>
 
 #include "ll/api/io/Logger.h"
@@ -86,6 +87,7 @@ void cleanupTick(ClientLevel& level) {
 
 // LL's ClientLevelTickEvent publishes BEFORE origin(). Java uses END, so use
 // the same native tick target but run sound cleanup AFTER origin(), not per frame.
+static_assert(std::is_same_v<decltype(&ClientLevel::$_subTick), void (ClientLevel::*)()>);
 LL_TYPE_INSTANCE_HOOK(SoundCleanupTickHook, ll::memory::HookPriority::Normal, ClientLevel,
     &ClientLevel::$_subTick, void) {
     origin();
