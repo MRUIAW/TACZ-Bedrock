@@ -50,6 +50,7 @@
 #include "nbt/GunItem.h"
 #include "net/GunPackets.h"
 #include "server/BulletSystem.h"
+#include "server/HitDiagnostic.h"
 
 namespace tacz::server::shooter {
 namespace {
@@ -159,6 +160,7 @@ struct HeldContext {
     nbt::GunItemState item;
     std::shared_ptr<CompoundTag> tag;
     gun::HoldIdentity identity;
+    debug::hit::Tag diagnostic;
 };
 
 bool sameHold(int64_t key, HeldContext const& context) {
@@ -174,10 +176,10 @@ bool fireRound(int64_t key, std::shared_ptr<HeldContext> const& context,
 
 // Every retained closure owns its original item state and resolves the player by
 // key. No player reference, state reference or selected-item NBT pointer escapes.
-lua::ScriptApi scriptApi(Player& player, nbt::GunItemState const& item, pack::GunEntry const& entry, ShooterState const& s) {
+lua::ScriptApi scriptApi(Player& player, nbt::GunItemState const& item, pack::GunEntry const& entry, ShooterState const& s, debug::hit::Tag diagnostic = {}) {
     lua::ScriptApi api;
     auto key = keyOf(player);
-    auto context = std::make_shared<HeldContext>(HeldContext{item, {}, {s.selectionGeneration, player.getSelectedItemSlot(), item.gunId}});
+    auto context = std::make_shared<HeldContext>(HeldContext{item, {}, {s.selectionGeneration, player.getSelectedItemSlot(), item.gunId}, diagnostic});
     if (auto tag = player.getSelectedItem().mUserData.get()) context->tag = tag->clone();
     api.gunId          = item.gunId;
     api.data           = &entry.data;
@@ -339,7 +341,7 @@ bool fireRound(int64_t key, std::shared_ptr<HeldContext> const& context,
     item->barrel = ammo.barrel;
     if (consume) nbt::writeSelectedGun(player, *item);
     context->item = *item;
-    bullet::fire(player,item->gunId, data, mode, inaccuracy);
+    bullet::fire(player,item->gunId, data, mode, inaccuracy, context->diagnostic);
     return true;
 }
 
@@ -389,7 +391,7 @@ char const* handleShoot(Player& player, int64_t timestamp) {
     s.previousShot = s.lastShot.value_or(-1);
     s.heatTimestamp = boltNowMs();
     s.lastShot = timestamp;
-    auto api = scriptApi(player, *item, *entry, s);
+    auto api = scriptApi(player, *item, *entry, s, hitdiag::trigger(player, timestamp));
     gunLogic().shoot(api);
     api.commitView();
     // Bounded trigger observation, not a client rotation override.

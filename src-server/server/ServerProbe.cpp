@@ -31,6 +31,7 @@
 #include "nbt/GunItem.h"
 #include "nbt/PackItem.h"
 #include "net/DebugPackets.h"
+#include "server/HitDiagnostic.h"
 
 namespace tacz::server::probe {
 namespace {
@@ -60,6 +61,7 @@ struct BulletDebugParams {
     int   moveMode;
     float speedScale;
 };
+struct HitDiagnosticParams { int shots; };
 
 struct AmmoParams {
     int count;
@@ -218,6 +220,20 @@ void registerCommands() {
             if (auto* player = originPlayer(origin)) player->sendMessage(msg);
             output.success(msg);
         });
+    // Read-only hit diagnostics; independent server/client budgets.
+    for (auto side : {std::string("server"), std::string("client")}) {
+        command.overload<HitDiagnosticParams>().text("hitdiag").text(side).required("shots")
+            .execute([side](CommandOrigin const& origin, CommandOutput& output, HitDiagnosticParams const& params) {
+                auto* player = originPlayer(origin);
+                if (!player) return output.error("Player only (diagnostic is scoped to the issuing admin)");
+                if (params.shots < 0 || params.shots > static_cast<int>(debug::hit::ShotLimit))
+                    return output.error("shots: 0 stops; 1..16 arms next accepted triggers, 64 lines, 400 ticks");
+                if (side == "server") hitdiag::arm(*player, params.shots);
+                else net::HitDiagnosticPacket{static_cast<unsigned>(params.shots)}.sendTo(*player);
+                auto message = "[TACZ] hitdiag " + side + " shots=" + std::to_string(params.shots) + " (64 lines; read-only)";
+                player->sendMessage(message); output.success(message);
+            });
+    }
     // /tacz bdebug <moveMode> <speedScale> : bullet entity diagnostics
     //   moveMode 0 = Actor::moveTo, 1 = Actor::teleport; speedScale < 1 slows bullets down to watch them.
     command.overload<BulletDebugParams>()

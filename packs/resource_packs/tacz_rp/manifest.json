@@ -4,14 +4,14 @@
     "name": "TACZ Bedrock",
     "description": "Client assets for TACZ Bedrock. Loaded automatically by the LeviLamina mod.",
     "uuid": "6f31b787-038a-4dc3-9d62-137d84c25b3a",
-    "version": [0, 4, 12],
+    "version": [0, 4, 13],
     "min_engine_version": [1, 21, 80]
   },
   "modules": [
     {
       "type": "resources",
       "uuid": "47ca9271-ca10-4421-a6fa-ac9938fe1a34",
-      "version": [0, 4, 12]
+      "version": [0, 4, 13]
     }
   ]
 }

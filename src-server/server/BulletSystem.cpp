@@ -47,6 +47,7 @@
 #include "mod/TaczMod.h"
 #include "net/DebugPackets.h"
 #include "net/HitFeedbackPacket.h"
+#include "server/HitDiagnostic.h"
 
 namespace tacz::server::bullet {
 namespace {
@@ -67,6 +68,7 @@ struct Bullet {
     int               igniteSeconds = 0;
     int               serial = 0;
     pack::ResourceId  gunId;
+    debug::hit::Tag diagnostic;
 };
 
 std::mutex          mutex;
@@ -159,7 +161,8 @@ std::vector<EntityHit> findEntityHits(
     Actor const& bulletActor,
     Actor const* shooter,
     glm::dvec3   from,
-    glm::dvec3   to
+    glm::dvec3   to,
+    Bullet const& bullet
 ) {
     std::vector<EntityHit> hits;
     // TACZ: bullet box expanded along the motion, inflated by 1.
@@ -176,6 +179,7 @@ std::vector<EntityHit> findEntityHits(
             candidate->getVehicle() != nullptr,
         };
         auto pos = gun::clip(gun::fixedHitbox(target), from, to);
+        hitdiag::candidate(bullet.diagnostic, bullet.serial, bullet.motion.age, *candidate, target, from, to);
         if (!pos) continue;
         double eyeY = candidate->getHeadPos().y;
         hits.push_back({candidate, *pos, glm::length(*pos - from), gun::isHeadshot(pos->y, eyeY)});
@@ -260,8 +264,9 @@ bool tick(Level& level, Bullet& b, std::string& reason) {
     );
     bool hitBlock = blockHit.mType == HitResultType::Tile;
     auto end      = hitBlock ? toGlm(blockHit.mPos) : to;
+    hitdiag::segment(b.diagnostic, b.serial, b.motion.age, from, end, to, hitBlock);
 
-    for (auto const& hit : findEntityHits(region, *actor, shooter, from, end)) {
+    for (auto const& hit : findEntityHits(region, *actor, shooter, from, end, b)) {
         hitEntity(b, *actor, shooter, hit);
         if (--b.pierce < 1) {
             b.motion.pos = hit.pos;
@@ -308,7 +313,7 @@ void tickAll(Level& level) {
 
 } // namespace
 
-void fire(Player& shooter,pack::ResourceId const& gunId, pack::GunData const& gun, std::optional<pack::FireMode> mode, float inaccuracy) {
+void fire(Player& shooter,pack::ResourceId const& gunId, pack::GunData const& gun, std::optional<pack::FireMode> mode, float inaccuracy, debug::hit::Tag diagnostic) {
     static std::mt19937 rng{std::random_device{}()};
 
     auto   origin    = toGlm(shooter.getHeadPos());
@@ -350,6 +355,8 @@ void fire(Player& shooter,pack::ResourceId const& gunId, pack::GunData const& gu
         b.igniteSeconds = gun.bullet.igniteEntityTime;
         b.serial        = nextSerial++;
         b.gunId         = gunId;
+        b.diagnostic    = diagnostic;
+        hitdiag::spawn(shooter, diagnostic, b.serial, i, origin, direction, velocity);
         bullets.push_back(std::move(b));
         logger().info(
             "[bullet #{}] fired at {:.2f} blocks/tick (x{:.2f}), inaccuracy {:.2f}, life {} ticks, damage {:.1f} at the muzzle",
@@ -366,12 +373,14 @@ void fire(Player& shooter,pack::ResourceId const& gunId, pack::GunData const& gu
 void enable() {
     auto& bus    = ll::event::EventBus::getInstance();
     listeners[0] = bus.emplaceListener<ll::event::ServerLevelTickEvent>([](ll::event::ServerLevelTickEvent& event) {
+        hitdiag::tick(event.level());
         tickAll(event.level());
     });
     // The world is going away: its entities, and with them our handles, are no longer valid.
     listeners[1] = bus.emplaceListener<ll::event::ServerStoppingEvent>([](ll::event::ServerStoppingEvent&) {
         std::lock_guard lock(mutex);
         bullets.clear();
+        hitdiag::clear();
     });
 }
 
@@ -383,6 +392,7 @@ void disable() {
     }
     std::lock_guard lock(mutex);
     bullets.clear();
+    hitdiag::clear();
 }
 
 } // namespace tacz::server::bullet

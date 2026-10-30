@@ -37,6 +37,7 @@
 #include "mc/world/level/Level.h"
 
 #include "client/sound/GunSound.h"
+#include "client/HitDiagnostic.h"
 #include "client/animation/GunAnimation.h"
 #include "client/animation/ViewTurnInertia.h"
 #include "client/gameplay/ClientAim.h"
@@ -313,6 +314,7 @@ bool shoot(HeldGun const& gun, int64_t now, bool chained) {
     shotTimestamp      = systemNowMs();
     lastShot           = shotAt;
     acquireStateLock(gun::LockCondition::Shoot); // once per packet, not burst presentation round
+    hitdiag::shot(shotAt);
     net::ShootPacket{shotAt}.sendToServer();
     recoil::shot(data.recoil, gun.state.gunId, shotAt);
     anim::shoot();
@@ -574,6 +576,7 @@ void endWorld(IClientInstance const* client) {
     // Do not look up the primary client here: it can already have been detached from the
     // global service when exit callbacks arrive. Request-leave runs before that teardown.
     sound::stopAllTracked(); // SoundPlayManager:315-322, before world token closes
+    hitdiag::clear();
     worldSession.close();
     clearSyncedData();
     turn::clear();
@@ -663,6 +666,7 @@ void enable() {
         endWorld(&event.self());
     });
     listeners[3] = bus.emplaceListener<ll::event::ClientLevelTickEvent>([](ll::event::ClientLevelTickEvent&) {
+        hitdiag::tick();
         aim::tick();
         tickStateLock(); // LocalPlayerMixin.java:109-113; real client tick, never frame cadence
         if (worldSession.current()) clientTickCount.fetch_add(1, std::memory_order_release);
@@ -712,6 +716,7 @@ void disable() {
     }
     triggerDown  = false;
     sound::stopAllTracked(); // disable is full sound teardown, not tmpSoundInstance cancellation
+    hitdiag::clear();
     worldSession.close();
     clearSyncedData();
     turn::clear();

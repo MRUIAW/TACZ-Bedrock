@@ -8,6 +8,44 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 Versioning rule for this project: the patch number goes up by 1 for each small item or test
 round, the minor number goes up by 1 for each finished feature or phase.
 
+## [0.4.13] - 2026-10-31
+
+### Accepted 0.4.12 — user-tested
+
+- Local LeviLamina BDS (0.4.12 server) + 0.4.12 client, automation and hands-on,
+  2026-10-30/31; user accepted. Colt Python rapid fire, AK47 AUTO and M16A4 BURST
+  overlap up to four shoot sounds; user confirmed overlapping tails with unchanged
+  non-positional playback.
+- Python, AK47, M16A4 and Kar98 fire/bolt/reload normal. Python still warns once
+  on reload and loads 0→6 without a false `+1`; AK47 tactical 14+1→30+1.
+- No client warnings/errors or per-shot logs; world leave/rejoin without crashes.
+- Client private memory: 2940 MB in world → 2962 MB after four guns → 2987 MB
+  after six more full-auto guns (about 4 MB/gun including models/textures/animations).
+
+### Added
+
+- Read-only, off-by-default `/tacz hitdiag server|client <shots>` admin commands:
+  1..16 accepted triggers, 64 diagnostic lines per side per arming, 400-tick expiry;
+  0 stops. Server observation is scoped to the issuing player and level; client
+  arming travels only to that player and is scoped to its local world session.
+- Per-pellet origin/rotation/motion and first/subsequent segment timing; candidate
+  raw/native-motion/measured-displacement boxes, segment distances and clip results.
+  Two bounded fixed-phase position snapshots distinguish missing history from zero.
+  Client logs native crosshair pick, eye and view at the local shot site.
+- Synthetic budget/history/midpoint/segment-distance tests; Java/LL source findings,
+  exact log schemas and live comparison procedure in `docs/HIT-0.4.13.md`.
+
+### Notes
+
+- No hit, spawn, spread/RNG, movement, collision or damage behaviour changes; no new
+  native hooks. Existing diagnostics remain. Line exhaustion can truncate pellets
+  or candidates; native picking has its own reach and update timing. Observed
+  previous positions and Java-origin estimates do not establish native phase parity.
+- 0.4.13 live acceptance pending; this release diagnoses rather than fixes strafing
+  misses. Stage 5 now records bullet holes and client bullet-simulation dependencies.
+- Server/client Release builds passed; 347 tests / 936,656 assertions passed.
+  Client Release configuration left active; no push, deployment or game launch.
+
 ## [0.4.12] - 2026-10-30
 
 ### Accepted 0.4.11 — user-tested

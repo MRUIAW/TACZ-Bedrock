@@ -11,6 +11,21 @@
 // client-hosted world both sides live in one process and share one handler table.
 namespace tacz::net {
 
+// Admin command -> issuing client only; observations never travel back as aim.
+class HitDiagnosticPacket final : public ll::network::PacketBase<HitDiagnosticPacket> {
+public:
+    unsigned shots = 0;
+    HitDiagnosticPacket() = default;
+    explicit HitDiagnosticPacket(unsigned count) : shots(count) {}
+    void write(BinaryStream& stream) const override { stream.writeUnsignedVarInt(shots, nullptr, nullptr); }
+    Bedrock::Result<void> read(ReadOnlyBinaryStream& stream) override {
+        auto count = stream.getUnsignedVarInt();
+        if (!count) return nonstd::make_unexpected(count.error());
+        if (*count > 16) shots = 0; else shots = *count;
+        return {};
+    }
+};
+
 // Server -> issuing player: /tacz anim. Separate from the technical probe acknowledgement.
 class AnimationDebugPacket final : public ll::network::PacketBase<AnimationDebugPacket> {
 public:

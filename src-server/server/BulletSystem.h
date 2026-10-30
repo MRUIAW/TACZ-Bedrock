@@ -3,6 +3,7 @@
 #include <optional>
 
 #include "pack/GunData.h"
+#include "debug/HitDiagnostic.h"
 
 class Player;
 
@@ -18,6 +19,6 @@ void disable();
 
 // Fires one round (bullet_amount pellets) from the shooter's eyes along their view direction,
 // each pellet with TACZ's spread for `inaccuracy`.
-void fire(Player& shooter,pack::ResourceId const& gunId, pack::GunData const& gun, std::optional<pack::FireMode> mode, float inaccuracy);
+void fire(Player& shooter,pack::ResourceId const& gunId, pack::GunData const& gun, std::optional<pack::FireMode> mode, float inaccuracy, debug::hit::Tag diagnostic = {});
 
 } // namespace tacz::server::bullet
