@@ -127,14 +127,15 @@ phase analysis remains in `HIT-0.4.13.md`.
 
 The shooter-velocity live fix below supersedes the original unchanged-inheritance
 policy: inheritance is now deliberately zero pending a Java-compatible adapter.
-Movement inaccuracy remains native stored motion; spread/RNG are unchanged.
+Movement inaccuracy now uses the user-chosen received-position difference below;
+spread/RNG are unchanged.
 Java player ping-rewind/ITargetEntity and native interpolation differences remain
 outside scope. Latest received input can still be 0–1 input tick older
 than the client's local shot pose (a shot can occur before the next movement
 send), as with Java's asynchronous shoot/movement packets; it is not zero-latency
 aim or a guarantee under network loss/stalls.
 
-## Shooter-velocity live fix: approved interim, A/B investigation stopped
+## Shooter-velocity live fixes: zero inheritance, B receipt-input decision
 
 This is a live fix of **unaccepted 0.4.14**, with no version bump. The user reports
 the received-input change aligned server/client fire-time direction (0.00 degrees
@@ -193,12 +194,12 @@ This supports post-drag motion, but cannot prove whether native server writes ar
 simulation, packet copying or reconciliation. Dividing out drag still gives real
 locomotion, not Java's normally-zero horizontal stored velocity.
 
-**Open question A:** keep the approved zero interim, or authorize a separately
-reviewed Java shadow simulation? A jump/gravity-only approximation would miss
+**A remains the approved zero interim from `751b261`.** A separately reviewed
+Java shadow simulation was not authorized. A jump/gravity-only approximation would miss
 collisions, fluids, effects, riding and impulse paths; using native Bedrock motion
 would restore the rejected walking/flight deflection. Neither was implemented.
 
-### B: movement inaccuracy — not implemented, sampling parity unresolved
+### B: movement inaccuracy — option 2 chosen and implemented
 
 `J/resource/pojo/data/gun/InaccuracyType.java:75–80` tests the length of
 `HitboxHelper.getPlayerVelocity`, threshold >0.05. `J/util/HitboxHelper.java:25–62`
@@ -224,30 +225,63 @@ has applied, or invocation cadence relative to movement catch-up/shoot dispatch.
 `ServerPlayerMovementComponent.h:25–27,44–46` exposes tick credits and queued auth
 updates, not their execution phase. No new hook is installed on that assumption.
 
-**Open question B:** authorize (1) a per-player post-`normalTick` position cache,
-pending native phase/cadence evidence, or (2) latest two received auth positions?
-Option 1 is a server-tick sampling candidate, not proven Java-phase parity;
-option 2 samples packet receipt, which can be multiple/zero inputs per server
-tick, includes unapplied movement and differs from Java's cached END samples.
-A global level-END cache is also a different checkpoint. Until a choice/evidence,
-`Shooter.cpp::prepareRound` keeps native `getPosDelta().length()` unchanged; it can
-still classify gravity-only stationary motion as MOVE when not aimed/sneaking.
+**User decision:** use option 2, the latest received raw auth position minus the
+previous received position. The pure `gun::authInputInaccuracy` in
+`src/gun/ShooterInaccuracy.h` uses zero with fewer than two samples, the existing
+strict >0.05 threshold, and unchanged aim / sneak / move / stand precedence.
+`Shooter.cpp::prepareRound` obtains one owned `hitinput::snapshot` at its existing
+preparation point. No native-motion fallback, threshold adjustment, tick division,
+client-tick filtering, pose/platform special case or new cache/hook is added.
+The existing ring lifecycle clears cover missing records on fresh join, dimension
+change, death/respawn and world end. Diagnostic count is 0, 1 or 2 for that snapshot.
+
+**Accepted sampling difference:** Java's cache is updated at server player-tick
+END; our ring is updated at packet receipt, before native movement application.
+Zero/several inputs can arrive during one server tick, so this is not claimed as
+identical Java sampling. Raw receipt order remains authoritative, even for repeated
+or descending client ticks; no time normalization is applied. An input gap does
+not manufacture a tick sample. Post-`normalTick` or global level-END sampling was
+not selected. Java's config-off cache behavior above is reference context; no new
+latency-fix config toggle is introduced for this user-chosen path.
+
+**Evaluation relative to firing:** `J/item/ModernKineticGunScriptAPI.java:128–130`
+selects `InaccuracyType`/spread inside `shootOnce`, **before** registering the burst
+cycle (`:151`). The final value is captured and reused at `doBulletSpread:191–192`
+for all bullets/pellets of that cycle; a later script `shootOnce` selects again.
+Our existing `GunLogic.cpp::shootOnce:349–357` invokes `prepareRound` before cycle
+registration. That relation is preserved: the owned movement, count, type and
+spread are captured together, not resampled inside later burst callbacks.
+Per-bullet aim still resolves the latest auth input independently, as before.
+
+**Uncalled native alternative:** `Shooter.cpp::unusedNativePosDeltaInaccuracyMovement`
+is compiled with `[[maybe_unused]]` and never called. Its comment states that
+native motion is not Java's per-tick position difference, ground gravity residue
+`(0,-0.0784,0)` exceeds 0.05 and falsely selects MOVE at rest, and raising the
+threshold to 0.0785 would only mask flat-ground standing. A player carried by a
+future moving platform, vehicle or mob could then be judged STAND despite moving:
+native motion is **expected** not to include the carrier's motion, **not verified
+live**. The alternative is retained as an option for possible future moving-platform
+mods; neither it nor a 0.0785 threshold is enabled. Full-motion projectile
+inheritance remains separately uncalled and the actually inherited vector is zero.
 
 ### Actual launch/input diagnostics
 
 Every opt-in `phase=spawn` now appends:
 
 ```text
-inherited={} inaccuracyMovement={} inaccuracySpeed={:.6f} inaccuracy={:.6f} inaccuracySource=native-pos-delta
+inherited={} inaccuracyMovement={} inaccuracySpeed={:.6f} inaccuracy={:.6f} inaccuracySource=auth-input-difference inaccuracyType={} inaccuracySamples={} nativeInaccuracySpeed={:.6f}
 ```
 
 `inherited` is the vector **actually added** after spread, now `(0,0,0)`.
 `inaccuracyMovement` is the exact vector used by `prepareRound`, copied with the
 selected inaccuracy through the retained round closure to the spawn diagnostic;
 `inaccuracySpeed` is its 3D length and `inaccuracy` the selected final spread value.
-It is not resampled at spawn. The older `posDelta` field remains a spawn-time
-native observation and may differ if the round executes later. Movement input
-is observed, not added to the projectile. The existing opt-in budgets and protocol
+It is not resampled at spawn. `inaccuracyType` explicitly prints STAND/MOVE/SNEAK/AIM
+(the label function also supports LIE); `inaccuracySamples` is the captured count
+0/1/2. The older `posDelta` field remains a spawn-time native observation, with
+its length now logged as `nativeInaccuracySpeed`; these can differ from the
+preparation-time input if the round executes later. Movement input is observed,
+not added to the projectile. The existing opt-in budgets and protocol
 are unchanged; no normal-play diagnostic logging is added.
 
 ## Exact new diagnostic fields and interpretation
@@ -344,17 +378,23 @@ round at about 15 blocks, plus standing/walking/sprinting controls. Check each
 spawn has `inherited=(0.000000,0.000000,0.000000)` despite nonzero `posDelta` and
 that velocity follows the spread direction without a movement-correlated bend.
 Allow the configured RNG spread; zero inheritance does not mean zero inaccuracy.
-Check `inaccuracySpeed=length(inaccuracyMovement)` and source `native-pos-delta`;
-that input has **not** been fixed to Java's cached displacement. Repeat a burst or
-delayed shot and confirm the logged input belongs to its prepared round, not an
-unrelated spawn-time sample. Jump/fall/knockback likewise inherit zero for now.
+Check `inaccuracySpeed=length(inaccuracyMovement)` and source `auth-input-difference`.
+With two identical standing samples, expect zero / STAND, versus native speed
+about 0.0784 on flat ground. The user's AK47 hip-fire case should select STAND
+inaccuracy 4.5 instead of MOVE 5.0 (data/mode dependent, not a gun special case).
+A horizontal 0.2 step or Y-only 0.2 jump should give speed 0.2 / MOVE; aim and sneak
+still take precedence. With 0/1 samples, expect zero / STAND unless aimed/sneaking.
+Repeat a burst and confirm movement/count/type/spread remain those prepared by
+that `shootOnce`, even when newer per-bullet aim records arrive; a later
+`shootOnce` prepares afresh. Jump/fall/knockback still inherit zero for now.
 Retest death/respawn, dimension transfer and leave/rejoin; no new hook or cache
-was added. Stop diagnostics with 0 and send full paired logs/hit counts. A/B
-decisions and overall 0.4.14 live acceptance remain open.
+was added. Stop diagnostics with 0 and send full paired logs/hit counts. Further A
+inheritance work and overall 0.4.14 live acceptance remain open; B's phase
+difference is explicitly user-approved.
 
 ## Offline validation
 
-Server and client Release builds passed; **354 test cases / 936,867 assertions**
+Server and client Release builds passed; **361 test cases / 936,929 assertions**
 passed. Client Release configuration remains active. Expected native-hook macro
 warnings remain; no build errors. Edited files validated as UTF-8 without BOM;
 whitespace check passed. No push, deployment or game launch.
@@ -365,7 +405,10 @@ stationary measured box, unique-id replacement/missing history, bounds, and
 per-round delayed-provider refresh. The live-fix tests additionally exercise the
 production zero-inheritance policy with walk/sprint/flight/jump/fall/impulse
 fixtures, non-axis-aligned aim, seeded spread/RNG preservation and unchanged
-bullet gravity/drag. They do not establish native sampling parity for A/B.
+bullet gravity/drag. `tests/ShooterInaccuracyTests.cpp` additionally covers stationary
+and horizontal/Y-only auth displacement, 0/1/2 samples and clears, threshold and
+aim/sneak precedence, receipt order/gaps, captured cycle values and explicit type
+labels. Synthetic tests do not establish native sampling parity.
 Build commands:
 
 ```powershell

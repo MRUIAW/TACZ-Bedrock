@@ -342,7 +342,7 @@ void tickAll(Level& level) {
 } // namespace
 
 void fire(Player& shooter,pack::ResourceId const& gunId, pack::GunData const& gun, std::optional<pack::FireMode> mode,
-    float inaccuracy, glm::dvec3 inaccuracyMovement, debug::hit::Tag diagnostic) {
+    gun::RoundInaccuracy const& inaccuracy, debug::hit::Tag diagnostic) {
     static std::mt19937 rng{std::random_device{}()};
 
     // Resolve afresh per round, not once per trigger/task. Raw auth input has
@@ -360,7 +360,7 @@ void fire(Player& shooter,pack::ResourceId const& gunId, pack::GunData const& gu
     auto inherited = gun::pendingShooterInheritance();
 
     for (int i = 0; i < pellets; ++i) {
-        auto velocity = gun::spreadVelocity(direction, speed, inaccuracy, rng) + inherited;
+        auto velocity = gun::spreadVelocity(direction, speed, inaccuracy.value, rng) + inherited;
         auto motion   = gun::BulletMotion::launchWithVelocity(gun.bullet, origin, velocity);
         ActorUniqueID id{};
         Actor*        actor = CommandUtils::spawnEntityAt(
@@ -391,14 +391,14 @@ void fire(Player& shooter,pack::ResourceId const& gunId, pack::GunData const& gu
         b.gunId         = gunId;
         b.diagnostic    = diagnostic;
         hitdiag::spawn(shooter, diagnostic, b.serial, i, origin, direction, velocity, input,
-            inherited, inaccuracyMovement, inaccuracy);
+            inherited, inaccuracy);
         bullets.push_back(std::move(b));
         logger().info(
             "[bullet #{}] fired at {:.2f} blocks/tick (x{:.2f}), inaccuracy {:.2f}, life {} ticks, damage {:.1f} at the muzzle",
             bullets.back().serial,
             glm::length(motion.vel),
             debug::bulletSpeedScale.load(),
-            inaccuracy,
+            inaccuracy.value,
             motion.life,
             damage.atDistance(0)
         );

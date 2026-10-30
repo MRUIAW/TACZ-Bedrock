@@ -43,6 +43,7 @@
 #include "gun/DrawRules.h"
 #include "gun/ShootRules.h"
 #include "gun/ShooterCooldowns.h"
+#include "gun/ShooterInaccuracy.h"
 #include "gun/Sprint.h"
 #include "model/Aiming.h"
 #include "lua/GunLogic.h"
@@ -62,6 +63,18 @@ ll::io::Logger& logger() { return TaczMod::getInstance().getSelf().getLogger(); 
 
 int64_t serverNowMs() {
     return std::chrono::duration_cast<std::chrono::milliseconds>(Clock::now().time_since_epoch()).count();
+}
+
+// Not called: uses Bedrock native motion, not Java's per-tick position difference.
+// Ground motion includes gravity residue (0,-0.0784,0), so Java's 0.05 threshold
+// judges a stationary player MOVE. Raising it to 0.0785 would fix flat-ground
+// standing, but could judge a carried player STAND while actually moving (future
+// moving-platform mod, vehicle, or a mob stood on): native motion is expected not
+// to include platform motion, NOT verified live. Kept as an option for possible
+// future moving-platform mods; compiled, never used by gameplay or diagnostics.
+[[maybe_unused]] glm::dvec3 unusedNativePosDeltaInaccuracyMovement(Player& player) {
+    auto delta = player.getPosDelta();
+    return {delta.x, delta.y, delta.z};
 }
 
 int64_t boltNowMs() {
@@ -173,7 +186,7 @@ bool sameHold(int64_t key, HeldContext const& context) {
 }
 
 bool fireRound(int64_t key, std::shared_ptr<HeldContext> const& context,
-    pack::GunData const& data, std::optional<pack::FireMode> mode, float inaccuracy, glm::dvec3 inaccuracyMovement, bool consume);
+    pack::GunData const& data, std::optional<pack::FireMode> mode, gun::RoundInaccuracy const& inaccuracy, bool consume);
 
 // Every retained closure owns its original item state and resolves the player by
 // key. No player reference, state reference or selected-item NBT pointer escapes.
@@ -244,19 +257,17 @@ lua::ScriptApi scriptApi(Player& player, nbt::GunItemState const& item, pack::Gu
     api.prepareRound = [key, context](lua::ScriptApi& a, bool consume) -> std::function<bool()> {
         auto p = taskPlayer(key);
         if (!p) return {};
-        auto delta = p->getPosDelta();
-        // Step 2B remains undecided: preserve the native-motion input, but carry
-        // this exact sample through the round closure for truthful diagnostics.
-        glm::dvec3 inaccuracyMovement{delta.x, delta.y, delta.z};
-        auto type = gun::inaccuracyType(model::fullyAimed(a.aimingProgress), p->isSneaking(), glm::length(inaccuracyMovement));
-        float inaccuracy = gun::inaccuracy(*a.data, a.fireMode, type);
+        // ModernKineticGunScriptAPI:128-151: select before creating the cycle,
+        // retain its result through burst callbacks; a later shootOnce prepares again.
+        auto inaccuracy = gun::authInputInaccuracy(hitinput::snapshot(*p), *a.data, a.fireMode,
+            model::fullyAimed(a.aimingProgress), p->isSneaking());
         // Shared immutable registry object, as in Java (not a per-shot copy).
         // reloadGunPacks is called only by mod load, before shooter enable;
         // all tasks are destroyed on world end/disable. Runtime pack reload is
         // deferred and must introduce snapshot ownership before changing this.
         auto const* data = a.data;
-        return [key, context, data, mode = a.fireMode, inaccuracy, inaccuracyMovement, consume] {
-            return fireRound(key, context, *data, mode, inaccuracy, inaccuracyMovement, consume);
+        return [key, context, data, mode = a.fireMode, inaccuracy, consume] {
+            return fireRound(key, context, *data, mode, inaccuracy, consume);
         };
     };
     return api;
@@ -337,7 +348,7 @@ bool drawing(ShooterState const& s, pack::GunEntry const& entry) {
 // One round of the trigger pull: ammo, then the bullets. False ends the pull (TACZ's cycle
 // task returns false when the shooter died, switched weapon or ran dry).
 bool fireRound(int64_t key, std::shared_ptr<HeldContext> const& context,
-    pack::GunData const& data, std::optional<pack::FireMode> mode, float inaccuracy, glm::dvec3 inaccuracyMovement, bool consume) {
+    pack::GunData const& data, std::optional<pack::FireMode> mode, gun::RoundInaccuracy const& inaccuracy, bool consume) {
     auto p = taskPlayer(key);
     if (!p || !p->isAlive() || p->isDead() || !sameHold(key, *context)) return false;
     auto& player = *p;
@@ -350,7 +361,7 @@ bool fireRound(int64_t key, std::shared_ptr<HeldContext> const& context,
     item->barrel = ammo.barrel;
     if (consume) nbt::writeSelectedGun(player, *item);
     context->item = *item;
-    bullet::fire(player,item->gunId, data, mode, inaccuracy, inaccuracyMovement, context->diagnostic);
+    bullet::fire(player,item->gunId, data, mode, inaccuracy, context->diagnostic);
     return true;
 }
 

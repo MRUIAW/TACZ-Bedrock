@@ -23,6 +23,12 @@ round, the minor number goes up by 1 for each finished feature or phase.
 
 ### Fixed
 
+- Movement-inaccuracy live fix: user chose the latest two received auth positions'
+  difference at the existing `prepareRound` point, zero with fewer than two records.
+  Standing ground gravity residue no longer selects MOVE; threshold 0.05 and aim /
+  sneak / move / stand order are unchanged. The native-motion alternative remains
+  compiled, named and uncalled, with its 0.0785/platform caveat explicitly marked
+  unverified live. Projectile inheritance remains zero as in `751b261`.
 - Shooter-velocity live fix (no version bump): retain the full-real-Bedrock-motion
   inheritance calculation compiled in a named `[[maybe_unused]]` function, but
   never call it. The user-approved interim adds zero inherited velocity, removing
@@ -55,6 +61,9 @@ round, the minor number goes up by 1 for each finished feature or phase.
 - Opt-in spawn lines report the inherited vector actually added, and the exact
   captured inaccuracy movement vector, its speed and selected spread value. The
   sample travels with each prepared round, not a fresh spawn-time motion read.
+- Inaccuracy source is now `auth-input-difference`; spawn diagnostics explicitly
+  report STAND/MOVE/SNEAK/AIM/LIE type, captured sample count (0/1/2), and spawn-time
+  native-motion speed for comparison. No new hooks or diagnostic budget changes.
 - `docs/HIT-0.4.14.md`: Java citations, queue/locks, phase relation, exact added
   fields, pending live evidence and test checklist. Synthetic tests cover input
   receipt/lifecycle, origin, unclamped rotation, measured boxes and delayed rounds.
@@ -65,20 +74,21 @@ round, the minor number goes up by 1 for each finished feature or phase.
   support auth `mPos = feet +1.62` for the sampled poses. This is observed evidence,
   not a guarantee for all native scheduling/poses. The separate input-store lock
   assumes no thread equality; no shooter lock is taken in the receive hook.
-- Java inheritance adapter (A) and cached-displacement inaccuracy (B) are **not
-  implemented**: native impulse-state equivalence and player-tick-END sampling
-  parity are unproven. `ServerHitboxLatencyFix` defaults true in Java; off from a
-  fresh cache gives zero movement input, not native velocity. Options/questions
-  and exact citations are in `docs/HIT-0.4.14.md`; no approximation was chosen.
+- Java inheritance adapter (A) remains unimplemented. B now uses the user-approved
+  receipt-phase difference: Java samples at server player-tick END, while zero or
+  several packet arrivals may occur in one server tick here. Java's `shootOnce`
+  selects inaccuracy before registering its cycle; our existing preparation/capture
+  relation is preserved, including reuse within one burst. No identical sampling
+  claim or extra Java-config toggle is introduced. Details: `docs/HIT-0.4.14.md`.
 - User reports 0.00-degree fire-time yaw difference across 48 shots after auth-input
   alignment; 03:49 airborne movement still gave 7/16 hits at about 15 blocks with
   approximately one-degree native-motion inheritance deflection. Full acceptance
   remains pending; the zero-inheritance interim is awaiting the next live run.
-- Movement inaccuracy, spread/RNG, bullet scheduling, damage and the
+- Spread/RNG implementation, bullet scheduling, damage and the
   16-trigger/64-line/400-tick budgets remain unchanged. The thread
   line consumes one of the 64 lines. Matching client/server versions are required
   by the extended shoot packet. 0.4.14 live acceptance pending.
-- Server/client Release builds passed; **354 tests / 936,867 assertions** passed.
+- Server/client Release builds passed; **361 tests / 936,929 assertions** passed.
   Client Release configuration left active. UTF-8 without BOM and whitespace
   checks passed; no push, deployment or game launch.
 
