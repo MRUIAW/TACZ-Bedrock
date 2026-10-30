@@ -1,4 +1,5 @@
 #include "server/Shooter.h"
+#include "server/HitInput.h"
 
 #include <array>
 #include <chrono>
@@ -282,7 +283,12 @@ void observeSelection(Player& player, ShooterState& s) {
     auto dimension = static_cast<int>(player.getDimensionId());
     // LL 26.51.9 has no typed player dimension-change event. Observation is also
     // used by actions, but publication always waits for the next shooter tick.
-    if (s.observedDimension && *s.observedDimension != dimension) queueFullSync(player, "dimension");
+    if (s.observedDimension && *s.observedDimension != dimension) {
+        // Scope bind discards old-dimension input, but preserves any fresh input
+        // already captured in the new dimension before this observation.
+        (void)hitinput::snapshot(player);
+        queueFullSync(player, "dimension");
+    }
     s.observedDimension = dimension;
     auto item = nbt::readGun(player.getSelectedItem());
     gun::HandSelection next{item ? std::optional{item->gunId} : std::nullopt, player.getSelectedItemSlot()};
@@ -346,7 +352,7 @@ bool fireRound(int64_t key, std::shared_ptr<HeldContext> const& context,
 }
 
 // LivingEntityShoot.shoot. Returns a reason when the trigger pull is refused.
-char const* handleShoot(Player& player, int64_t timestamp) {
+char const* handleShoot(Player& player, int64_t timestamp, uint64_t packetClientTick) {
     auto item = nbt::readGun(player.getSelectedItem());
     if (!item) return "NOT_GUN";
     auto const* entry = gunEntry(item->gunId);
@@ -391,7 +397,7 @@ char const* handleShoot(Player& player, int64_t timestamp) {
     s.previousShot = s.lastShot.value_or(-1);
     s.heatTimestamp = boltNowMs();
     s.lastShot = timestamp;
-    auto api = scriptApi(player, *item, *entry, s, hitdiag::trigger(player, timestamp));
+    auto api = scriptApi(player, *item, *entry, s, hitdiag::trigger(player, timestamp, packetClientTick));
     gunLogic().shoot(api);
     api.commitView();
     // Bounded trigger observation, not a client rotation override.
@@ -758,7 +764,8 @@ public:
     void handlePacket(NetworkIdentifier const& netId, NetEventCallback&, net::ShootPacket const& packet) const {
         auto* player = senderOf(netId, packet.mSenderSubId);
         if (!player) return;
-        if (char const* refused = handleShoot(*player, packet.timestamp)) {
+        hitdiag::shootHandler(*player);
+        if (char const* refused = handleShoot(*player, packet.timestamp, packet.inputTick)) {
             // Cooldown refusals are routine at high fire rates; everything else is worth a line.
             if (std::string_view(refused) != "COOL_DOWN") logger().info("[shoot] {} refused: {}", player->getRealName(), refused);
         }

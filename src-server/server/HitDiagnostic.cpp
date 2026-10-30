@@ -1,6 +1,8 @@
 #include "server/HitDiagnostic.h"
 
 #include <mutex>
+#include <thread>
+#include <sstream>
 #include <fmt/format.h>
 #include "ll/api/io/Logger.h"
 #include "mc/deps/ecs/gamerefs_entity/GameRefsEntity.h"
@@ -20,6 +22,13 @@ debug::hit::PositionHistory history;
 Level const* scope = nullptr; // identity only; cleared on server stop/disable
 int64_t owner = 0;
 uint64_t tickIndex = 0, armedAt = 0;
+std::thread::id enableThread;
+std::thread::id authThread, levelThread, shootThread;
+bool threadLogged = false;
+std::string threadId(std::thread::id id) {
+    if (id == std::thread::id{}) return "unknown";
+    std::ostringstream out; out << id; return out.str();
+}
 std::string vec(glm::dvec3 p) { return fmt::format("({:.6f},{:.6f},{:.6f})", p.x, p.y, p.z); }
 glm::dvec3 fromNative(Vec3 const& p) { return {p.x, p.y, p.z}; }
 std::string box(gun::Box const& b) { return vec(b.min) + ":" + vec(b.max); }
@@ -30,10 +39,25 @@ void log(debug::hit::Tag tag, std::string const& line) {
 }
 }
 
+void enableThreadEvidence() {
+    std::lock_guard lock(mutex);
+    enableThread = std::this_thread::get_id();
+}
+void receivedInput(Player const& player) {
+    std::lock_guard lock(mutex);
+    if (scope && owner == player.getOrCreateUniqueID().rawID)
+        authThread = std::this_thread::get_id();
+}
+void shootHandler(Player const& player) {
+    std::lock_guard lock(mutex);
+    if (scope && owner == player.getOrCreateUniqueID().rawID)
+        shootThread = std::this_thread::get_id();
+}
 void arm(Player& player, unsigned shots) {
     std::lock_guard lock(mutex);
     budget.arm(shots); history.clear(); scope = shots ? &player.getLevel() : nullptr;
-    owner = player.mLegacyUniqueID->rawID; armedAt = tickIndex;
+    owner = player.getOrCreateUniqueID().rawID; armedAt = tickIndex;
+    authThread = levelThread = shootThread = {}; threadLogged = false;
 }
 void clear() {
     std::lock_guard lock(mutex);
@@ -42,6 +66,7 @@ void clear() {
 void tick(Level& level) {
     std::lock_guard lock(mutex);
     ++tickIndex;
+    if (scope) levelThread = std::this_thread::get_id();
     if (!scope) return;
     if (scope != &level || tickIndex - armedAt >= debug::hit::TickLimit || !budget.available()) {
         budget.arm(0); scope = nullptr; history.clear(); return;
@@ -51,31 +76,54 @@ void tick(Level& level) {
     debug::hit::PositionHistory::Samples positions;
     auto sample = [&](Actor& actor) {
         if (positions.size() < 4096 && actor.hasCategory(ActorCategory::Mob))
-            positions.emplace(actor.mLegacyUniqueID->rawID, fromNative(actor.getPosition()));
+            positions.emplace(actor.getOrCreateUniqueID().rawID, fromNative(actor.getPosition()));
     };
     level.forEachPlayer([&](Player& player) { sample(player); return true; });
     for (auto const& entity : level.getEntities()) if (auto actor = entity.tryUnwrap()) sample(*actor);
     history.sample(tickIndex, std::move(positions));
 }
-debug::hit::Tag trigger(Player& player, int64_t timestamp) {
+debug::hit::Tag trigger(Player& player, int64_t timestamp, uint64_t packetClientTick) {
     std::lock_guard lock(mutex);
-    if (scope != &player.getLevel() || owner != player.mLegacyUniqueID->rawID) return {};
-    return budget.trigger(tickIndex, timestamp).value_or(debug::hit::Tag{});
+    if (scope != &player.getLevel() || owner != player.getOrCreateUniqueID().rawID) return {};
+    auto tag = budget.trigger(tickIndex, timestamp).value_or(debug::hit::Tag{});
+    tag.packetClientTick = packetClientTick;
+    return tag;
 }
 void spawn(Player& shooter, debug::hit::Tag tag, int serial, int pellet, glm::dvec3 origin,
-    glm::dvec3 direction, glm::dvec3 velocity) {
+    glm::dvec3 direction, glm::dvec3 velocity, gun::AuthInputRing const& input) {
     if (!tag.generation) return;
     std::lock_guard lock(mutex);
     if (!scope || !budget.accepts(tag)) return;
+    if (!threadLogged) {
+        // One budgeted line per arming. Unknown means shoot before an armed
+        // auth/tick observation; rearm and wait two ticks before the control shot.
+        log(tag, fmt::format("phase=threads enableThread={} authThread={} levelTickThread={} shootHandlerThread={} authEqualsLevel={} shootEqualsLevel={} enableEqualsLevel={}",
+            threadId(enableThread), threadId(authThread), threadId(levelThread), threadId(shootThread),
+            authThread == std::thread::id{} || levelThread == std::thread::id{} ? "unknown" : authThread == levelThread ? "true" : "false",
+            shootThread == std::thread::id{} || levelThread == std::thread::id{} ? "unknown" : shootThread == levelThread ? "true" : "false",
+            enableThread == std::thread::id{} || levelThread == std::thread::id{} ? "unknown" : enableThread == levelThread ? "true" : "false"));
+        threadLogged = true;
+    }
     auto current = fromNative(shooter.getPosition());
-    auto previous = history.previousPosition(shooter.mLegacyUniqueID->rawID, tickIndex);
+    auto previous = history.previousPosition(shooter.getOrCreateUniqueID().rawID, tickIndex);
     auto nativePrevious = fromNative(*shooter.mBuiltInComponents->mStateVectorComponent->mPosPrev);
     auto const& rotation = shooter.getRotation();
-    log(tag, fmt::format("phase=spawn bullet={} pellet={} shooter={} pos={} previousKnown={} previous={} nativePrevious={} origin={} javaOriginEstimate={} rotation=({:.6f},{:.6f}) direction={} posDelta={} velocity={}",
-        serial, pellet, shooter.mLegacyUniqueID->rawID, vec(current), previous.has_value(),
+    auto feet = fromNative(shooter.getFeetPos());
+    double eyeHeight = gun::javaEyeHeight(shooter.isSneaking(), shooter.isSwimming(), shooter.isGliding(), shooter.isCrawling());
+    log(tag, fmt::format("phase=spawn bullet={} pellet={} shooter={} pos={} previousKnown={} previous={} nativePrevious={} origin={} javaOriginEstimate={} rotation=({:.6f},{:.6f}) direction={} posDelta={} velocity={} packetClientTick={} authKnown={} authClientTick={} authReceiptTick={} authPos={} authRot={} authHeadYaw={} authPreviousPos={} feetPos={} javaEyeHeight={} authFeet={} authPreviousClientTick={} authPreviousReceiptTick={}",
+        serial, pellet, shooter.getOrCreateUniqueID().rawID, vec(current), previous.has_value(),
         previous ? vec(*previous) : "unknown", vec(nativePrevious), vec(origin),
-        previous ? vec(debug::hit::midpointEye(origin, current, *previous)) : "unknown", rotation.x, rotation.z,
-        vec(direction), vec(fromNative(shooter.getPosDelta())), vec(velocity)));
+        vec(origin), rotation.x, rotation.z,
+        vec(direction), vec(fromNative(shooter.getPosDelta())), vec(velocity), tag.packetClientTick, input.latest.has_value(),
+        input.latest ? std::to_string(input.latest->clientTick) : "unknown",
+        input.latest ? std::to_string(input.latest->receiptTick) : "unknown",
+        input.latest ? vec(input.latest->pos) : "unknown",
+        input.latest ? fmt::format("({:.6f},{:.6f})", input.latest->rot.x, input.latest->rot.y) : "unknown",
+        input.latest ? fmt::format("{:.6f}", input.latest->headYaw) : "unknown",
+        input.previous ? vec(input.previous->pos) : "unknown", vec(feet), eyeHeight,
+        input.latest ? vec(gun::authInputFeet(input.latest->pos)) : "unknown",
+        input.previous ? std::to_string(input.previous->clientTick) : "unknown",
+        input.previous ? std::to_string(input.previous->receiptTick) : "unknown"));
 }
 void segment(debug::hit::Tag tag, int serial, int age, glm::dvec3 from, glm::dvec3 end,
     glm::dvec3 uncutEnd, bool blockHit) {
@@ -90,21 +138,25 @@ void candidate(debug::hit::Tag tag, int serial, int age, Actor& actor, gun::Hitb
     if (!tag.generation) return;
     std::lock_guard lock(mutex);
     if (!scope || !budget.accepts(tag)) return;
-    auto fixed = gun::fixedHitbox(target);
+    auto gameplay = gun::fixedHitbox(target);
+    auto stored = target;
+    stored.velocity = fromNative(actor.getPosDelta());
+    auto fixed = gun::fixedHitbox(stored);
     auto current = fromNative(actor.getPosition());
-    auto previous = history.previousPosition(actor.mLegacyUniqueID->rawID, tickIndex);
+    auto previous = history.previousPosition(actor.getOrCreateUniqueID().rawID, tickIndex);
     auto measured = target;
     if (previous) measured.velocity = current - *previous;
     auto measuredFixed = gun::fixedHitbox(measured);
-    log(tag, fmt::format("phase=candidate bullet={} age={} target={} runtime={} type={} pos={} previousKnown={} previous={} nativePrevious={} raw={} posDelta={} measured={} fixedDelta={} fixedMeasured={} distanceRaw={:.6f} distanceDelta={:.6f} distanceMeasured={} hitRaw={} hitDelta={} hitMeasured={} player={} crouching={} riding={}",
-        serial, age, actor.mLegacyUniqueID->rawID, actor.getRuntimeID().rawID, actor.getTypeName(), vec(current),
+    log(tag, fmt::format("phase=candidate bullet={} age={} target={} runtime={} type={} pos={} previousKnown={} previous={} nativePrevious={} raw={} posDelta={} measured={} fixedDelta={} fixedMeasured={} distanceRaw={:.6f} distanceDelta={:.6f} distanceMeasured={} hitRaw={} hitDelta={} hitMeasured={} player={} crouching={} riding={} gameplayVelocity={} fixedGameplay={} distanceGameplay={:.6f} hitGameplay={}",
+        serial, age, actor.getOrCreateUniqueID().rawID, actor.getRuntimeID().rawID, actor.getTypeName(), vec(current),
         previous.has_value(), previous ? vec(*previous) : "unknown", vec(fromNative(*actor.mBuiltInComponents->mStateVectorComponent->mPosPrev)),
-        box(target.box), vec(target.velocity), previous ? vec(measured.velocity) : "unknown", box(fixed),
+        box(target.box), vec(stored.velocity), previous ? vec(measured.velocity) : "unknown", box(fixed),
         previous ? box(measuredFixed) : "unknown", debug::hit::segmentBoxDistance(target.box, from, end),
         debug::hit::segmentBoxDistance(fixed, from, end),
         previous ? fmt::format("{:.6f}", debug::hit::segmentBoxDistance(measuredFixed, from, end)) : "unknown",
         gun::clip(target.box, from, end).has_value(), gun::clip(fixed, from, end).has_value(),
         previous ? (gun::clip(measuredFixed, from, end) ? "true" : "false") : "unknown",
-        target.isPlayer, target.isCrouching, target.isRiding));
+        target.isPlayer, target.isCrouching, target.isRiding, vec(target.velocity), box(gameplay),
+        debug::hit::segmentBoxDistance(gameplay, from, end), gun::clip(gameplay, from, end).has_value()));
 }
 } // namespace tacz::server::hitdiag

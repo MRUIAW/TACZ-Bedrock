@@ -19,6 +19,7 @@
 
 #include "mc/deps/core/math/Vec2.h"
 #include "mc/deps/core/math/Vec3.h"
+#include "mc/deps/ecs/gamerefs_entity/GameRefsEntity.h"
 #include "mc/deps/shared_types/legacy/actor/ActorDamageCause.h"
 #include "mc/legacy/ActorUniqueID.h"
 #include "mc/server/commands/CommandUtils.h"
@@ -48,6 +49,7 @@
 #include "net/DebugPackets.h"
 #include "net/HitFeedbackPacket.h"
 #include "server/HitDiagnostic.h"
+#include "server/HitInput.h"
 
 namespace tacz::server::bullet {
 namespace {
@@ -74,6 +76,8 @@ struct Bullet {
 std::mutex          mutex;
 std::vector<Bullet> bullets;
 int                 nextSerial = 1;
+gun::DisplacementHistory targetHistory;
+Level const* historyLevel = nullptr;
 
 std::array<ll::event::ListenerPtr, 2> listeners;
 
@@ -173,7 +177,7 @@ std::vector<EntityHit> findEntityHits(
         AABB const&       aabb = candidate->getAABB();
         gun::HitboxTarget target{
             {toGlm(aabb.min), toGlm(aabb.max)},
-            toGlm(candidate->getPosDelta()),
+            targetHistory.velocity(candidate->getOrCreateUniqueID().rawID, toGlm(candidate->getPosition()), candidate->getDimensionId()),
             candidate->isPlayer(),
             candidate->isSneaking(),
             candidate->getVehicle() != nullptr,
@@ -294,6 +298,18 @@ bool tick(Level& level, Bullet& b, std::string& reason) {
 
 void tickAll(Level& level) {
     std::lock_guard lock(mutex);
+    if (historyLevel != &level) { targetHistory.clear(); historyLevel = &level; }
+    // Snapshot this PRE checkpoint before damage can move/kill a target; keep
+    // the PRIOR checkpoint available until all bullets have been tested.
+    gun::DisplacementHistory::Samples positions;
+    auto sample = [&](Actor& actor) {
+        if (positions.size() < gun::DisplacementHistory::Limit && actor.hasCategory(ActorCategory::Mob)
+            && actor.isAlive() && !actor.isDead())
+            positions.emplace(actor.getOrCreateUniqueID().rawID,
+                gun::DisplacementHistory::Position{toGlm(actor.getPosition()), actor.getDimensionId()});
+    };
+    level.forEachPlayer([&](Player& player) { sample(player); return true; });
+    for (auto const& entity : level.getEntities()) if (auto actor = entity.tryUnwrap()) sample(*actor);
     for (auto it = bullets.begin(); it != bullets.end();) {
         std::string reason;
         if (tick(level, *it, reason)) {
@@ -309,6 +325,9 @@ void tickAll(Level& level) {
         );
         it = bullets.erase(it);
     }
+    // Whole-map replacement drops despawned actors at the next checkpoint;
+    // getOrCreateUniqueID avoids sharing the unassigned legacy sentinel (-1).
+    targetHistory.sample(std::move(positions));
 }
 
 } // namespace
@@ -316,8 +335,14 @@ void tickAll(Level& level) {
 void fire(Player& shooter,pack::ResourceId const& gunId, pack::GunData const& gun, std::optional<pack::FireMode> mode, float inaccuracy, debug::hit::Tag diagnostic) {
     static std::mt19937 rng{std::random_device{}()};
 
-    auto   origin    = toGlm(shooter.getHeadPos());
-    auto   direction = toGlm(shooter.getViewVector());
+    // Resolve afresh per round, not once per trigger/task. Raw auth input has
+    // already arrived but Bedrock has not necessarily applied its queued motion.
+    auto input = hitinput::snapshot(shooter);
+    auto rotation = shooter.getRotation();
+    double eyeHeight = gun::javaEyeHeight(shooter.isSneaking(), shooter.isSwimming(), shooter.isGliding(), shooter.isCrawling());
+    auto aim = gun::roundAim(input, toGlm(shooter.getFeetPos()), {rotation.x, rotation.z}, eyeHeight);
+    auto   origin    = aim.origin;
+    auto   direction = aim.direction;
     double speed     = gun::bulletSpeedPerTick(gun, mode) * debug::bulletSpeedScale.load();
     auto   damage    = gun::BulletDamage::from(gun, mode);
     int    pellets   = std::max(gun.bullet.bulletAmount, 1);
@@ -356,7 +381,7 @@ void fire(Player& shooter,pack::ResourceId const& gunId, pack::GunData const& gu
         b.serial        = nextSerial++;
         b.gunId         = gunId;
         b.diagnostic    = diagnostic;
-        hitdiag::spawn(shooter, diagnostic, b.serial, i, origin, direction, velocity);
+        hitdiag::spawn(shooter, diagnostic, b.serial, i, origin, direction, velocity, input);
         bullets.push_back(std::move(b));
         logger().info(
             "[bullet #{}] fired at {:.2f} blocks/tick (x{:.2f}), inaccuracy {:.2f}, life {} ticks, damage {:.1f} at the muzzle",
@@ -380,6 +405,7 @@ void enable() {
     listeners[1] = bus.emplaceListener<ll::event::ServerStoppingEvent>([](ll::event::ServerStoppingEvent&) {
         std::lock_guard lock(mutex);
         bullets.clear();
+        targetHistory.clear(); historyLevel = nullptr;
         hitdiag::clear();
     });
 }
@@ -392,6 +418,7 @@ void disable() {
     }
     std::lock_guard lock(mutex);
     bullets.clear();
+    targetHistory.clear(); historyLevel = nullptr;
     hitdiag::clear();
 }
 

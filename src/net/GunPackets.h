@@ -56,16 +56,23 @@ public:
 class ShootPacket final : public ll::network::PacketBase<ShootPacket> {
 public:
     int64_t timestamp = 0;
+    uint64_t inputTick = 0; // last SENT auth input; diagnostic only
 
     ShootPacket() = default;
-    explicit ShootPacket(int64_t ts) : timestamp(ts) {}
+    explicit ShootPacket(int64_t ts, uint64_t tick = 0) : timestamp(ts), inputTick(tick) {}
 
-    void write(BinaryStream& stream) const override { stream.writeSignedInt64(timestamp, nullptr, nullptr); }
+    void write(BinaryStream& stream) const override {
+        stream.writeSignedInt64(timestamp, nullptr, nullptr);
+        stream.writeUnsignedInt64(inputTick, nullptr, nullptr);
+    }
 
     Bedrock::Result<void> read(ReadOnlyBinaryStream& stream) override {
         auto ts = stream.getSignedInt64();
         if (!ts) return nonstd::make_unexpected(ts.error());
         timestamp = *ts;
+        auto tick = stream.getUnsignedInt64();
+        if (!tick) return nonstd::make_unexpected(tick.error());
+        inputTick = *tick;
         return {};
     }
 };

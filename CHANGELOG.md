@@ -8,6 +8,55 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 Versioning rule for this project: the patch number goes up by 1 for each small item or test
 round, the minor number goes up by 1 for each finished feature or phase.
 
+## [0.4.14] - 2026-10-31
+
+### 0.4.13 diagnostics — live-tested, not gameplay acceptance
+
+- User's paired 01:59 strafe-and-turn logs: the client picked the stationary zombie
+  about four blocks away on 16/16 shots; the server hit 7/16. Matched client/server
+  yaw: #379 61.35/65.54, #383 38.15/50.29, #393 0.71/3.21. Server origin lagged
+  the client eye by about 0.3 blocks; missed segments passed 0.06–0.66 blocks away.
+- Stationary zombie measured displacement was zero while stored `getPosDelta()`
+  was `(0,-0.0784,0)`, incorrectly raising/stretching the corrected box. Standing
+  player position was feet +1.62, but `getHeadPos()` was 0.1 lower (head attachment).
+  The opt-in diagnostics worked live; the user did not accept a gameplay change.
+
+### Fixed
+
+- User-approved per-round aim reads the latest two **received** auth inputs before
+  Bedrock queues their movement: midpoint after conversion to feet + Java pose eye
+  height, latest pitch/yaw without clamping or position/rotation sanity fallback.
+  Burst/delayed rounds resolve fresh input; no-record fallback uses current server
+  feet/rotation. Packet-anchor assumption is isolated in `gun::authInputFeet`.
+- All existing target fixed-box tests use measured prior-PRE displacement, not
+  stored physics motion. Unique-id history is capped at 4096 actors, replaced each
+  checkpoint (dropping despawns), dimension-checked and cleared at world end;
+  missing history uses zero. Input rings clear on life/world/dimension changes.
+
+### Added
+
+- Budgeted once-per-server-arming thread comparison (`phase=threads`), raw latest
+  two auth positions, native player/feet positions, derived auth feet/eye height,
+  auth client/receipt ticks and shoot-packet client tick. Candidate lines identify
+  the actual measured gameplay box; client arming/stopping gives chat feedback.
+- `docs/HIT-0.4.14.md`: Java citations, queue/locks, phase relation, exact added
+  fields, pending live evidence and test checklist. Synthetic tests cover input
+  receipt/lifecycle, origin, unclamped rotation, measured boxes and delayed rounds.
+
+### Notes
+
+- Native auth dispatch thread and auth `mPos = feet +1.62` are **pending live
+  evidence** (`authThread`/`levelTickThread`/`shootHandlerThread`/`enableThread`,
+  `authPos`/`authPreviousPos`/`pos`/`feetPos`/`origin`). No native-thread equality
+  is assumed by the separate input-store lock. No shooter lock in the receive hook.
+- Inherited shooter velocity, movement inaccuracy, spread/RNG, bullet scheduling,
+  damage and the 16-trigger/64-line/400-tick budgets remain unchanged. The thread
+  line consumes one of the 64 lines. Matching client/server versions are required
+  by the extended shoot packet. 0.4.14 live acceptance pending.
+- Server/client Release builds passed; **352 tests / 936,722 assertions** passed.
+  Client Release configuration left active. UTF-8 without BOM and whitespace
+  checks passed; no push, deployment or game launch.
+
 ## [0.4.13] - 2026-10-31
 
 ### Accepted 0.4.12 — user-tested
@@ -41,8 +90,9 @@ round, the minor number goes up by 1 for each finished feature or phase.
   native hooks. Existing diagnostics remain. Line exhaustion can truncate pellets
   or candidates; native picking has its own reach and update timing. Observed
   previous positions and Java-origin estimates do not establish native phase parity.
-- 0.4.13 live acceptance pending; this release diagnoses rather than fixes strafing
-  misses. Stage 5 now records bullet holes and client bullet-simulation dependencies.
+- 0.4.13 diagnostics live-tested (results recorded in 0.4.14 above); no gameplay
+  acceptance claimed. This release diagnoses rather than fixes strafing misses.
+  Stage 5 records bullet holes and client bullet-simulation dependencies.
 - Server/client Release builds passed; 347 tests / 936,656 assertions passed.
   Client Release configuration left active; no push, deployment or game launch.
 

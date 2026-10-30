@@ -24,6 +24,7 @@
 #include "mc/deps/core/math/Vec2.h"
 #include "client/gameplay/ClientShooter.h"
 #include "client/gameplay/ClientRecoil.h"
+#include "client/HitInput.h"
 #include "model/Aiming.h"
 #include "model/SprintInput.h"
 #include "gun/Sprint.h"
@@ -192,6 +193,7 @@ LL_TYPE_INSTANCE_HOOK(AimSprintPacket,ll::memory::HookPriority::Normal,LoopbackP
         }
     }
     origin(packet); // mutable, fully constructed native packet; no copy/const-cast
+    hitinput::sent(*this, packet); // observe existing send hook; no new native hook
 }
 LL_TYPE_INSTANCE_HOOK(AimSprintState, ll::memory::HookPriority::Normal, LocalPlayer,
     &LocalPlayer::$setSprinting, void, bool value) {

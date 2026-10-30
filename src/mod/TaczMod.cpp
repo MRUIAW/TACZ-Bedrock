@@ -5,6 +5,7 @@
 #include "server/BulletSystem.h"
 #include "server/ServerProbe.h"
 #include "server/Shooter.h"
+#include "server/HitInput.h"
 #include "nbt/PackItem.h"
 #include "nbt/StackLimitProbe.h"
 #ifdef TACZ_CLIENT
@@ -49,6 +50,7 @@ bool TaczMod::enable() {
     nbt::enablePackItems();
     nbt::enableStackLimitProbe();
     server::probe::enable();
+    server::hitinput::enable();
     server::bullet::enable();
     server::shooter::enable();
 #ifdef TACZ_CLIENT
@@ -71,6 +73,7 @@ bool TaczMod::disable() {
     client::probe::disable();
 #endif
     server::shooter::disable();
+    server::hitinput::disable();
     server::bullet::disable();
     server::probe::disable();
     return true;

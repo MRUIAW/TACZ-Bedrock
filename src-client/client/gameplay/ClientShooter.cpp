@@ -38,6 +38,7 @@
 
 #include "client/sound/GunSound.h"
 #include "client/HitDiagnostic.h"
+#include "client/HitInput.h"
 #include "client/animation/GunAnimation.h"
 #include "client/animation/ViewTurnInertia.h"
 #include "client/gameplay/ClientAim.h"
@@ -314,8 +315,9 @@ bool shoot(HeldGun const& gun, int64_t now, bool chained) {
     shotTimestamp      = systemNowMs();
     lastShot           = shotAt;
     acquireStateLock(gun::LockCondition::Shoot); // once per packet, not burst presentation round
-    hitdiag::shot(shotAt);
-    net::ShootPacket{shotAt}.sendToServer();
+    auto inputTick = hitinput::lastSentTick();
+    hitdiag::shot(shotAt, inputTick);
+    net::ShootPacket{shotAt, inputTick}.sendToServer();
     recoil::shot(data.recoil, gun.state.gunId, shotAt);
     anim::shoot();
 
@@ -577,6 +579,7 @@ void endWorld(IClientInstance const* client) {
     // global service when exit callbacks arrive. Request-leave runs before that teardown.
     sound::stopAllTracked(); // SoundPlayManager:315-322, before world token closes
     hitdiag::clear();
+    hitinput::clear();
     worldSession.close();
     clearSyncedData();
     turn::clear();
@@ -717,6 +720,7 @@ void disable() {
     triggerDown  = false;
     sound::stopAllTracked(); // disable is full sound teardown, not tmpSoundInstance cancellation
     hitdiag::clear();
+    hitinput::clear();
     worldSession.close();
     clearSyncedData();
     turn::clear();

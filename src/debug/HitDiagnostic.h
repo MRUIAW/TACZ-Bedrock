@@ -21,6 +21,7 @@ struct Tag {
     unsigned shot = 0;
     uint64_t tick = 0;
     int64_t timestamp = 0;
+    uint64_t packetClientTick = 0; // diagnostic only, never a gameplay selector
 };
 
 class Budget {
