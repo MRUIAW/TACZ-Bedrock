@@ -10,6 +10,7 @@
 #include "nbt/StackLimitProbe.h"
 #ifdef TACZ_CLIENT
 #include "client/ClientProbe.h"
+#include "client/BulletExperiment.h"
 #include "client/gameplay/ClientShooter.h"
 #include "client/render/GunRenderer.h"
 #include "client/render/SkinTextureSource.h"
@@ -56,6 +57,7 @@ bool TaczMod::enable() {
 #ifdef TACZ_CLIENT
     client::probe::enable();
     client::shooter::enable();
+    client::bullet::enable();
     client::render::enable();
     client::hud::enable();
 #endif
@@ -70,6 +72,7 @@ bool TaczMod::disable() {
     client::hud::disable();
     client::render::disable();
     client::shooter::disable();
+    client::bullet::disable();
     client::probe::disable();
 #endif
     server::shooter::disable();

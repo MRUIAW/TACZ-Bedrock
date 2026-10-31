@@ -32,6 +32,7 @@
 #include "nbt/PackItem.h"
 #include "net/DebugPackets.h"
 #include "server/HitDiagnostic.h"
+#include "server/BulletSystem.h"
 
 namespace tacz::server::probe {
 namespace {
@@ -62,6 +63,7 @@ struct BulletDebugParams {
     float speedScale;
 };
 struct HitDiagnosticParams { int shots; };
+struct BulletSyncParams { std::string mode; };
 
 struct AmmoParams {
     int count;
@@ -234,6 +236,27 @@ void registerCommands() {
                 player->sendMessage(message); output.success(message);
             });
     }
+    command.overload<BulletSyncParams>().text("bullet").text("sync").required("mode")
+        .execute([](CommandOrigin const& origin, CommandOutput& output, BulletSyncParams const& params) {
+            if (params.mode != "tick" && params.mode != "every5") return output.error("sync: tick or every5");
+            bullet::setEvery5(params.mode == "every5");
+            if (auto* player = originPlayer(origin)) player->sendMessage("[TACZ] " + bullet::experimentStatus());
+            output.success("Bullet server placement: " + params.mode + " (hits still checked every tick)");
+        });
+    command.overload().text("bullet").text("status")
+        .execute([](CommandOrigin const& origin, CommandOutput& output) {
+            auto status = bullet::experimentStatus();
+            if (auto* player = originPlayer(origin)) player->sendMessage("[TACZ] " + status);
+            output.success(status);
+        });
+    command.overload<HitDiagnosticParams>().text("bullet").text("diag").required("shots")
+        .execute([](CommandOrigin const& origin, CommandOutput& output, HitDiagnosticParams const& params) {
+            auto* player = originPlayer(origin); if (!player) return output.error("Player only");
+            if (params.shots < 0 || params.shots > 16) return output.error("0 stops; 1..16 next pellets; 400 ticks/bullet");
+            bullet::armDiagnostic(*player, params.shots);
+            player->sendMessage("[TACZ] bullet server diagnostic armed: " + std::to_string(params.shots));
+            output.success("Bullet server diagnostic armed: " + std::to_string(params.shots));
+        });
     // /tacz bdebug <moveMode> <speedScale> : bullet entity diagnostics
     //   moveMode 0 = Actor::moveTo, 1 = Actor::teleport; speedScale < 1 slows bullets down to watch them.
     command.overload<BulletDebugParams>()

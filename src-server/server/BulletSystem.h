@@ -1,6 +1,7 @@
 #pragma once
 
 #include <optional>
+#include <string>
 
 #include "pack/GunData.h"
 #include "debug/HitDiagnostic.h"
@@ -12,11 +13,14 @@ class Player;
 // moves every server tick with TACZ's motion model. Per tick the path is ray-traced against
 // blocks and entities; entity hits deal TACZ damage (distance falloff, headshot, armour
 // ignore, pierce). Accepted damage sends hit/kill feedback to the shooter.
-// Not yet: player latency rewind, explosions, water drag.
+// Not yet: player latency rewind, explosions.
 namespace tacz::server::bullet {
 
 void enable();
 void disable();
+void setEvery5(bool enabled);
+std::string experimentStatus();
+void armDiagnostic(Player& player, unsigned bullets);
 
 // Fires one round (bullet_amount pellets) from the shooter's eyes along their view direction,
 // each pellet with TACZ's spread for `inaccuracy.value`.

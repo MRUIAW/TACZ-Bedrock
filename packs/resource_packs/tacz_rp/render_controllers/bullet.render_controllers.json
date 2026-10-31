@@ -1,0 +1,11 @@
+{
+  "format_version": "1.8.0",
+  "render_controllers": {
+    "controller.render.tacz.bullet_experiment": {
+      "geometry": "Geometry.default",
+      "materials": [{ "*": "Material.default" }],
+      "textures": ["Texture.default"],
+      "part_visibility": [{ "body": "query.variant == 0 && query.distance_from_camera <= 80.0" }]
+    }
+  }
+}

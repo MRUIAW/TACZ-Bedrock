@@ -6,7 +6,7 @@
       "materials": { "default": "entity_alphatest" },
       "textures": { "default": "textures/entity/tacz_bullet" },
       "geometry": { "default": "geometry.tacz.bullet" },
-      "render_controllers": ["controller.render.default"]
+      "render_controllers": ["controller.render.tacz.bullet_experiment"]
     }
   }
 }

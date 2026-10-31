@@ -1,4 +1,5 @@
 #include "client/sound/GunSound.h"
+#include "client/BulletExperiment.h"
 
 #include <map>
 #include <memory>
@@ -92,6 +93,7 @@ LL_TYPE_INSTANCE_HOOK(SoundCleanupTickHook, ll::memory::HookPriority::Normal, Cl
     &ClientLevel::$_subTick, void) {
     origin();
     cleanupTick(*this);
+    bullet::tick(*this); // shared POST-subTick checkpoint; no extra native tick hook
 }
 bool hooked = false;
 
@@ -161,7 +163,7 @@ void clear() {
 
 void enable() {
     hooked = SoundCleanupTickHook::hook() == 0;
-    if (!hooked) logger().warn("Cannot hook client END tick; periodic sound cleanup unavailable");
+    if (!hooked) logger().warn("Cannot hook client END tick; periodic sound cleanup and bullet experiment unavailable");
 }
 void disable() {
     if (hooked) SoundCleanupTickHook::unhook();

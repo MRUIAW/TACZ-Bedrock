@@ -8,6 +8,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 Versioning rule for this project: the patch number goes up by 1 for each small item or test
 round, the minor number goes up by 1 for each finished feature or phase.
 
+## [0.4.15] - 2026-10-31
+
+### Experimental — awaiting live acceptance
+
+- Runtime-selectable native bullet placement (`tick` / `every5`) and client control
+  (`off` / `drive` / `drive-filter`), retaining server-only collision and damage.
+  Supported absolute/delta/motion/hint receive hooks measure/filter native updates;
+  position corrections snap like Java's inherited `Entity.lerpTo()`.
+- Spawn/removal protocol scoped to same-dimension viewers within 80 blocks at spawn,
+  shared air/water stepping (water friction 0.4, gravity ×0.6), native current/previous
+  position writes, and a switchable tiny yellow marker. No projectile count cap.
+- Bounded opt-in paired diagnostics expose native overwrites, packet kinds/filtering,
+  correction sizes and placement schedules. World/dimension/leave cleanup and pure
+  synthetic tests added. Native interpolation/tracking remain live-test questions;
+  see `docs/BULLET-0.4.15.md` for commands, limitations and the complete test matrix.
+- Not production tracers, ammo entity models, bullet holes, prediction or a final
+  architecture selection. Water changes authoritative trajectories; dry-air drag
+  now also preserves Java's float subtraction before promotion to double.
+
 ## [0.4.14] - 2026-10-31
 
 ### Accepted 0.4.14 — user-tested, 2026-10-31

@@ -1,4 +1,5 @@
 #include "client/gameplay/ClientShooter.h"
+#include "client/BulletExperiment.h"
 
 #include <array>
 #include <algorithm>
@@ -579,6 +580,7 @@ void endWorld(IClientInstance const* client) {
     // global service when exit callbacks arrive. Request-leave runs before that teardown.
     sound::stopAllTracked(); // SoundPlayManager:315-322, before world token closes
     hitdiag::clear();
+    bullet::clear();
     hitinput::clear();
     worldSession.close();
     clearSyncedData();

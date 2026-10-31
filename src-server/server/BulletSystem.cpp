@@ -50,6 +50,10 @@
 #include "net/HitFeedbackPacket.h"
 #include "server/HitDiagnostic.h"
 #include "server/HitInput.h"
+#include "gun/BulletExperiment.h"
+#include "native/BulletWater.h"
+#include "net/BulletPacket.h"
+#include "mc/legacy/ActorRuntimeID.h"
 
 namespace tacz::server::bullet {
 namespace {
@@ -71,6 +75,11 @@ struct Bullet {
     int               serial = 0;
     pack::ResourceId  gunId;
     debug::hit::Tag diagnostic;
+    uint64_t runtime = 0;
+    int dimension = 0;
+    std::vector<ActorUniqueID> viewers;
+    bool experimentDiagnostic = false, placed = false, water = false;
+    unsigned observedTicks = 0, placements = 0;
 };
 
 std::mutex          mutex;
@@ -80,6 +89,10 @@ gun::DisplacementHistory targetHistory;
 Level const* historyLevel = nullptr;
 
 std::array<ll::event::ListenerPtr, 2> listeners;
+gun::bullet::SyncMode syncMode = gun::bullet::SyncMode::Tick;
+uint64_t experimentTick = 0;
+struct DiagnosticArm { gun::bullet::DiagnosticBudget budget; };
+std::unordered_map<int64_t, DiagnosticArm> experimentArms;
 
 Vec3       toVec3(glm::dvec3 v) { return {static_cast<float>(v.x), static_cast<float>(v.y), static_cast<float>(v.z)}; }
 glm::dvec3 toGlm(Vec3 const& v) { return {v.x, v.y, v.z}; }
@@ -99,6 +112,40 @@ void place(Actor& actor, gun::BulletMotion const& motion) {
         actor.teleport(toVec3(motion.pos), actor.getDimensionId(), Vec2{rot.x, rot.y});
     } else {
         actor.moveTo(toVec3(motion.pos), Vec2{rot.x, rot.y});
+    }
+}
+
+void placeBullet(Actor& actor, Bullet& b, bool final = false) {
+    if (!gun::bullet::placeDue(syncMode, b.motion.age, final)) return;
+    place(actor, b.motion); b.placed = true; ++b.placements;
+}
+void removeActor(Actor& actor, Bullet& b) {
+    placeBullet(actor, b, true); // final authoritative endpoint, even between scheduled placements
+    actor.remove();
+}
+void sendRemoval(Level& level, Bullet const& b) {
+    gun::bullet::Message m;
+    m.kind = gun::bullet::Kind::Remove; m.serial = b.serial; m.runtime = b.runtime;
+    m.unique = b.entity.rawID; m.dimension = b.dimension; m.motion = b.motion;
+    for (auto id : b.viewers) if (auto* viewer = level.fetchEntity(id, false); viewer && viewer->isPlayer())
+        net::BulletPacket{m}.sendTo(*static_cast<Player*>(viewer));
+}
+void experimentSummary(Bullet& b, char const* reason) {
+    if (!b.experimentDiagnostic) return;
+    logger().info("[bullet-exp-server-summary] serial={} ticks={} placements={} endpoint=({:.6f},{:.6f},{:.6f}) reason={}",
+        b.serial,b.observedTicks,b.placements,b.motion.pos.x,b.motion.pos.y,b.motion.pos.z,reason);
+    b.experimentDiagnostic = false;
+}
+void experimentLog(Bullet& b, Actor const* actor, bool alive) {
+    if (!b.experimentDiagnostic) return;
+    if (b.observedTicks <= 400) {
+        auto p = actor ? toGlm(actor->getPosition()) : b.motion.pos;
+        logger().info("[bullet-exp-server] serial={} age={} tick={} sim=({:.6f},{:.6f},{:.6f}) actor=({:.6f},{:.6f},{:.6f}) placed={} sync={} moveMode={} water={} alive={}",
+            b.serial,b.motion.age,experimentTick,b.motion.pos.x,b.motion.pos.y,b.motion.pos.z,p.x,p.y,p.z,b.placed,
+            syncMode == gun::bullet::SyncMode::Every5 ? "every5" : "tick",debug::bulletMoveMode.load(),b.water,alive);
+    }
+    if (!alive || b.observedTicks >= 400) {
+        experimentSummary(b,alive ? "diagnostic-window" : "removed");
     }
 }
 
@@ -246,6 +293,7 @@ void hitEntity(Bullet& b, Actor& bulletActor, Actor* shooter, EntityHit const& h
 
 // Advances one bullet by a tick. Returns false when it should be removed.
 bool tick(Level& level, Bullet& b, std::string& reason) {
+    ++b.observedTicks; b.placed = false; b.water = false;
     Actor* actor = level.fetchEntity(b.entity, false);
     if (!actor) {
         reason = "entity gone";
@@ -257,7 +305,7 @@ bool tick(Level& level, Bullet& b, std::string& reason) {
     auto   to      = b.motion.next();
     if (!region.hasChunksAt(BlockPos{toVec3(to)}, 0, false)) {
         reason = "unloaded chunk";
-        actor->remove();
+        removeActor(*actor, b);
         return false;
     }
     // Blocks first (collision shape, fluids ignored: TACZ ClipContext COLLIDER / NONE); entities
@@ -283,30 +331,31 @@ bool tick(Level& level, Bullet& b, std::string& reason) {
         hitEntity(b, *actor, shooter, hit);
         if (--b.pierce < 1) {
             b.motion.pos = hit.pos;
-            place(*actor, b.motion);
             reason = "stopped in " + hit.actor->getTypeName();
-            actor->remove();
+            removeActor(*actor, b);
             return false;
         }
     }
     if (hitBlock) {
         b.motion.pos = end;
-        place(*actor, b.motion);
         reason = fmt::format("hit block ({}, {}, {})", blockHit.mBlock.x, blockHit.mBlock.y, blockHit.mBlock.z);
-        actor->remove();
+        removeActor(*actor, b);
         return false;
     }
-    bool alive = b.motion.step();
-    place(*actor, b.motion);
+    b.water = native::bulletInWater(region, b.motion.pos);
+    bool alive = b.motion.step(b.water);
+    if (alive) placeBullet(*actor, b);
     if (!alive) {
         reason = "expired";
-        actor->remove();
+        removeActor(*actor, b);
     }
     return alive;
 }
 
 void tickAll(Level& level) {
     std::lock_guard lock(mutex);
+    ++experimentTick;
+    std::erase_if(experimentArms, [](auto const& entry) { return experimentTick >= entry.second.budget.until; });
     if (historyLevel != &level) { targetHistory.clear(); historyLevel = &level; }
     // Snapshot this PRE checkpoint before damage can move/kill a target; keep
     // the PRIOR checkpoint available until all bullets have been tested.
@@ -321,7 +370,9 @@ void tickAll(Level& level) {
     for (auto const& entity : level.getEntities()) if (auto actor = entity.tryUnwrap()) sample(*actor);
     for (auto it = bullets.begin(); it != bullets.end();) {
         std::string reason;
-        if (tick(level, *it, reason)) {
+        bool alive = tick(level, *it, reason);
+        if (it->experimentDiagnostic) experimentLog(*it, level.fetchEntity(it->entity, true), alive);
+        if (alive) {
             ++it;
             continue;
         }
@@ -332,6 +383,7 @@ void tickAll(Level& level) {
             it->motion.age,
             glm::length(it->motion.pos - it->origin)
         );
+        sendRemoval(level, *it);
         it = bullets.erase(it);
     }
     // Whole-map replacement drops despawned actors at the next checkpoint;
@@ -340,6 +392,22 @@ void tickAll(Level& level) {
 }
 
 } // namespace
+
+void setEvery5(bool enabled) {
+    std::lock_guard lock(mutex);
+    syncMode = enabled ? gun::bullet::SyncMode::Every5 : gun::bullet::SyncMode::Tick;
+}
+std::string experimentStatus() {
+    std::lock_guard lock(mutex);
+    return fmt::format("server sync={} moveMode={} speedScale={} active={}",
+        syncMode == gun::bullet::SyncMode::Every5 ? "every5" : "tick",debug::bulletMoveMode.load(),
+        debug::bulletSpeedScale.load(),bullets.size());
+}
+void armDiagnostic(Player& player, unsigned count) {
+    std::lock_guard lock(mutex);
+    for (auto& b : bullets) if (b.shooter == player.getOrCreateUniqueID()) experimentSummary(b,"rearm");
+    experimentArms[player.getOrCreateUniqueID().rawID].budget.arm(count, experimentTick);
+}
 
 void fire(Player& shooter,pack::ResourceId const& gunId, pack::GunData const& gun, std::optional<pack::FireMode> mode,
     gun::RoundInaccuracy const& inaccuracy, debug::hit::Tag diagnostic) {
@@ -390,6 +458,25 @@ void fire(Player& shooter,pack::ResourceId const& gunId, pack::GunData const& gu
         b.serial        = nextSerial++;
         b.gunId         = gunId;
         b.diagnostic    = diagnostic;
+        b.runtime       = actor->getRuntimeID().rawID;
+        b.dimension     = actor->getDimensionId();
+        b.placements    = 1;
+        if (auto arm = experimentArms.find(b.shooter.rawID); arm != experimentArms.end())
+            b.experimentDiagnostic = arm->second.budget.take(experimentTick);
+        gun::bullet::Message spawn;
+        spawn.serial = b.serial; spawn.runtime = b.runtime; spawn.unique = b.entity.rawID;
+        spawn.dimension = b.dimension; spawn.motion = motion;
+        shooter.getLevel().forEachPlayer([&](Player& viewer) {
+            if (viewer.getDimensionId() == actor->getDimensionId()
+                && glm::length(toGlm(viewer.getPosition()) - motion.pos) <= 80.0) {
+                b.viewers.push_back(viewer.getOrCreateUniqueID());
+                net::BulletPacket{spawn}.sendTo(viewer);
+            }
+            return true;
+        });
+        if (b.experimentDiagnostic)
+            logger().info("[bullet-exp-server] serial={} age=0 phase=spawn runtime={} placed=true viewers={} sim=({:.6f},{:.6f},{:.6f})",
+                b.serial,b.runtime,b.viewers.size(),motion.pos.x,motion.pos.y,motion.pos.z);
         hitdiag::spawn(shooter, diagnostic, b.serial, i, origin, direction, velocity, input,
             inherited, inaccuracy);
         bullets.push_back(std::move(b));
@@ -414,7 +501,9 @@ void enable() {
     // The world is going away: its entities, and with them our handles, are no longer valid.
     listeners[1] = bus.emplaceListener<ll::event::ServerStoppingEvent>([](ll::event::ServerStoppingEvent&) {
         std::lock_guard lock(mutex);
+        for (auto& b : bullets) experimentSummary(b,"server-stop");
         bullets.clear();
+        experimentArms.clear();
         targetHistory.clear(); historyLevel = nullptr;
         hitdiag::clear();
     });
@@ -427,7 +516,9 @@ void disable() {
         listener = nullptr;
     }
     std::lock_guard lock(mutex);
+    for (auto& b : bullets) experimentSummary(b,"disable");
     bullets.clear();
+    experimentArms.clear();
     targetHistory.clear(); historyLevel = nullptr;
     hitdiag::clear();
 }

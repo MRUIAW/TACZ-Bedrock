@@ -10,7 +10,7 @@
 
 // Bullet motion as in TACZ's EntityKineticBullet: speed is in blocks per second and becomes
 // speed / 20 blocks per tick; each tick the bullet moves by its velocity, then the velocity
-// is scaled by (1 - friction) and loses `gravity` on y. Water drag is not modelled yet.
+// is scaled by (1 - friction) and loses `gravity` on y. Water is sampled at tick start.
 namespace tacz::gun {
 
 // User-approved interim, NOT Java velocity emulation. Keep inheritance zero until
@@ -48,11 +48,14 @@ struct BulletMotion {
 
     // Commits one tick: move, then drag and gravity. Returns false once the bullet expires
     // (TACZ discards when tickCount >= life - 1, after moving).
-    bool step() {
+    bool step(bool inWater = false) {
         ++age;
         pos = next();
-        vel *= 1.0 - friction;
-        vel.y -= gravity;
+        // Java uses float locals for both substitutions before promoting to double.
+        float drag = inWater ? 0.4F : friction;
+        float acceleration = inWater ? gravity * 0.6F : gravity;
+        vel *= 1.0F - drag; // Java evaluates (1 - friction) as float, then promotes for Vec3.scale.
+        vel.y -= acceleration;
         return age < life - 1;
     }
 
