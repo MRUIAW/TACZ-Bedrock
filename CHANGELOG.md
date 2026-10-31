@@ -10,6 +10,20 @@ round, the minor number goes up by 1 for each finished feature or phase.
 
 ## [0.4.15] - 2026-10-31
 
+### Live fix — native interpolator ownership and correction ages
+
+- The 10:35 live run confirmed Delta-only movement and near-zero per-tick dry-air
+  physics error, but native interpolation pulled driven actors back without new packets.
+  Drive modes now replace the existing interpolator's position/rotation/head-yaw targets
+  and zero all three step counts after the client step/correction; absent components
+  are reported once per armed bullet, never fabricated.
+- Placement-age metadata now identifies the age of each native position, rather than
+  guessing from its arrival tick. Every5 placement and drive-filter share the same
+  position-age predicate; corrections apply before/after the owning step in the same
+  client tick, then the native override wins. Diagnostics expose the source age,
+  correction phase and interpolator before/used state. Matching server/client builds
+  are required. Still an unaccepted 0.4.15 experiment; water/retest remain pending.
+
 ### Experimental — awaiting live acceptance
 
 - Runtime-selectable native bullet placement (`tick` / `every5`) and client control

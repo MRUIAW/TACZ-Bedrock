@@ -20,4 +20,19 @@ public:
         stream.mReadPointer = stream.mView.size(); return {};
     }
 };
+class BulletPlacementPacket final : public ll::network::PacketBase<BulletPlacementPacket> {
+public:
+    std::optional<gun::bullet::Placement> placement;
+    BulletPlacementPacket() = default;
+    explicit BulletPlacementPacket(gun::bullet::Placement const& value) : placement(value) {}
+    void write(BinaryStream& stream) const override {
+        if (placement) { auto bytes = gun::bullet::encodePlacement(*placement); stream.write(bytes.data(),bytes.size()); }
+    }
+    Bedrock::Result<void> read(ReadOnlyBinaryStream& stream) override {
+        placement.reset();
+        if (!stream.mHasOverflowed && stream.mReadPointer <= stream.mView.size())
+            placement = gun::bullet::decodePlacement(stream.mView.substr(static_cast<size_t>(stream.mReadPointer)));
+        stream.mReadPointer = stream.mView.size(); return {};
+    }
+};
 } // namespace tacz::net

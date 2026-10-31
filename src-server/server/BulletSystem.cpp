@@ -117,6 +117,14 @@ void place(Actor& actor, gun::BulletMotion const& motion) {
 
 void placeBullet(Actor& actor, Bullet& b, bool final = false) {
     if (!gun::bullet::placeDue(syncMode, b.motion.age, final)) return;
+    gun::bullet::Placement stamp;
+    stamp.serial = b.serial; stamp.runtime = b.runtime; stamp.unique = b.entity.rawID; stamp.dimension = b.dimension;
+    stamp.age = final ? static_cast<int>(b.observedTicks) : b.motion.age;
+    stamp.pos = glm::vec3(b.motion.pos);
+    // Ordered metadata precedes any native movement caused by this placement.
+    // Never infer a position's age from the receiving client's tick phase.
+    for (auto id : b.viewers) if (auto* viewer = actor.getLevel().fetchEntity(id,false); viewer && viewer->isPlayer())
+        net::BulletPlacementPacket{stamp}.sendTo(*static_cast<Player*>(viewer));
     place(actor, b.motion); b.placed = true; ++b.placements;
 }
 void removeActor(Actor& actor, Bullet& b) {

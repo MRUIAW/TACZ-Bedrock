@@ -20,6 +20,8 @@
 #include "mc/network/packet/SetActorMotionPacket.h"
 #include "mc/network/packet/MotionPredictionHintsPacket.h"
 #include "mc/world/actor/ActorDataIDs.h"
+#include "mc/deps/ecs/gamerefs_entity/EntityContext.h"
+#include "mc/entity/components/MovementInterpolatorComponent.h"
 #include "client/gameplay/ClientShooter.h"
 #include "gun/BulletExperiment.h"
 #include "mod/TaczMod.h"
@@ -36,6 +38,8 @@ std::mutex mutex;
 gun::bullet::States states;
 struct Envelope { uint64_t world; gun::bullet::Message message; };
 std::vector<Envelope> inbox;
+struct PlacementEnvelope { uint64_t world; gun::bullet::Placement placement; };
+std::vector<PlacementEnvelope> placementInbox;
 gun::bullet::DiagnosticBudget budget;
 std::atomic<Mode> driveMode{Mode::Off};
 std::atomic<bool> marker{true};
@@ -49,8 +53,8 @@ Vec3 toNative(glm::dvec3 p) { return {static_cast<float>(p.x),static_cast<float>
 char const* modeName(Mode mode) { return mode == Mode::Off ? "off" : mode == Mode::Drive ? "drive" : "drive-filter"; }
 void summary(gun::bullet::State& b, char const* reason) {
     if (!b.diagnostic) return;
-    logger().info("[bullet-exp-client-summary] serial={} ticks={} overwrites={} unexplained={} received={} filtered={} absolute={} delta={} motion={} hints={} maxSnap={:.6f} reason={}",
-        b.spawn.serial,b.ticks,b.overwrites,b.unexplained,b.received,b.filtered,b.absolute,b.delta,b.nativeMotion,b.hints,b.maxSnap,reason);
+    logger().info("[bullet-exp-client-summary] serial={} ticks={} overwrites={} unexplained={} received={} filtered={} absolute={} delta={} motion={} hints={} maxSnap={:.6f} unaged={} reason={}",
+        b.spawn.serial,b.ticks,b.overwrites,b.unexplained,b.received,b.filtered,b.absolute,b.delta,b.nativeMotion,b.hints,b.maxSnap,b.unaged,reason);
     b.diagnostic = false;
 }
 void clearLocked(char const* reason) {
@@ -63,6 +67,22 @@ public:
         auto world = shooter::worldToken(); if (!world || !packet.message) return;
         std::lock_guard lock(mutex);
         inbox.push_back({world,*packet.message}); // no native/world service access from packet thread
+    }
+};
+bool addPlacement(gun::bullet::Placement const& m, uint64_t world) {
+    if (scopeWorld != world || !dimension || *dimension != m.dimension) return false;
+    auto it = states.entries.find(m.serial);
+    if (it == states.entries.end() || it->second.spawn.runtime != m.runtime || it->second.spawn.unique != m.unique) return false;
+    it->second.placement(m.age,m.pos); return true;
+}
+class PlacementHandler final : public ll::network::PacketHandlerBase<PlacementHandler,net::BulletPlacementPacket> {
+public:
+    void handlePacket(NetworkIdentifier const&,NetEventCallback&,net::BulletPlacementPacket const& packet) const {
+        auto world = shooter::worldToken(); if (!world || !packet.placement) return;
+        std::lock_guard lock(mutex);
+        // Pure metadata can be installed before the following native receive hook,
+        // without looking up any native actor or service on the packet thread.
+        if (!addPlacement(*packet.placement,world)) placementInbox.push_back({world,*packet.placement});
     }
 };
 Actor* resolve(ClientLevel& level, gun::bullet::State const& b) {
@@ -78,11 +98,6 @@ bool movement(uint64_t runtime, int kind, glm::dvec3 position, std::array<bool,3
     if (scopeWorld != shooter::worldToken()) return false;
     auto* b = states.runtime(runtime); if (!b) return false;
     auto receipt = b->receive(driveMode.load(),kind,position,axes);
-    if (receipt.snap && b->diagnostic && b->ticks < 400 && b->correctionLines < 64) {
-        ++b->correctionLines;
-        logger().info("[bullet-exp-client-correction] serial={} age={} packet={} snap={:.6f} target=({:.6f},{:.6f},{:.6f})",
-            b->spawn.serial,b->motion.age,kind == 0 ? "absolute" : "delta",*receipt.snap,b->lastServer.x,b->lastServer.y,b->lastServer.z);
-    }
     return receipt.filtered;
 }
 using AbsoluteSignature = void (LegacyClientNetworkHandler::*)(NetworkIdentifier const&,MoveActorAbsolutePacket const&);
@@ -172,7 +187,7 @@ void registerCommands() {
 }
 }
 void clear() {
-    std::lock_guard lock(mutex); clearLocked("world-exit"); inbox.clear(); driveMode = Mode::Off;
+    std::lock_guard lock(mutex); clearLocked("world-exit"); inbox.clear(); placementInbox.clear(); driveMode = Mode::Off;
 }
 void tick(ClientLevel& level) {
     auto world = shooter::worldToken(); if (!world) return;
@@ -198,15 +213,27 @@ void tick(ClientLevel& level) {
         }
     }
     inbox.clear();
+    for (auto const& envelope : placementInbox) if (envelope.world == world) addPlacement(envelope.placement,world);
+    placementInbox.clear(); // unknown/late serials never create state
     for (auto it = states.entries.begin(); it != states.entries.end();) {
         auto& b = it->second;
         auto* actor = resolve(level,b);
         glm::dvec3 before = actor ? fromNative(actor->getPosition()) : glm::dvec3{};
         auto expected = b.lastWritten;
-        bool overwritten = actor && b.wrote && glm::length(before - expected) > .0001;
-        if (overwritten) { ++b.overwrites; if (!b.acceptedTick) ++b.unexplained; }
-        bool water = actor && native::bulletInWater(actor->getDimensionBlockSource(),b.motion.pos);
-        bool alive = b.step(water);
+        bool overwritten = actor && b.observeBefore(before);
+        auto interpolator = actor ? actor->getEntityContext().tryGetComponent<MovementInterpolatorComponent>()
+                                  : optional_ref<MovementInterpolatorComponent>{};
+        glm::dvec3 interpBefore = interpolator ? fromNative(*interpolator->mPos) : glm::dvec3{};
+        std::array<int,3> stepsBefore{};
+        if (interpolator) stepsBefore = {interpolator->mPositionSteps,interpolator->mRotationSteps,interpolator->mHeadYawSteps};
+        if (actor && !interpolator && b.diagnostic && !b.interpolatorMissingLogged) {
+            logger().info("[bullet-exp-client] serial={} phase=interpolator-missing (continuing without component creation)",b.spawn.serial);
+            b.interpolatorMissingLogged = true;
+        }
+        bool water = false;
+        bool alive = b.tick([&](glm::dvec3 position) {
+            water = actor && native::bulletInWater(actor->getDimensionBlockSource(),position); return water;
+        });
         bool driving = driveMode.load() != Mode::Off;
         glm::dvec3 half{};
         if (actor) {
@@ -219,16 +246,31 @@ void tick(ClientLevel& level) {
             if (driving) {
                 actor->_setPos(toNative(b.motion.pos)); // refreshes native spatial/AABB state
                 actor->mBuiltInComponents->mStateVectorComponent->mPosPrev = toNative(b.previous);
+                if (interpolator) {
+                    auto rot = b.motion.rotation();
+                    gun::bullet::overrideInterpolator(*interpolator,toNative(b.motion.pos),Vec2{rot.x,rot.y});
+                }
                 b.lastWritten = fromNative(actor->getPosition());
                 half = fromNative(actor->getInterpolatedPosition(.5f));
             }
         }
         b.wrote = driving && actor;
         if (b.diagnostic) {
-            logger().info("[bullet-exp-client] serial={} age={} tick={} mode={} sim=({:.6f},{:.6f},{:.6f}) before=({:.6f},{:.6f},{:.6f}) lastWrite=({:.6f},{:.6f},{:.6f}) previous=({:.6f},{:.6f},{:.6f}) interpHalf=({:.6f},{:.6f},{:.6f}) actorMissing={} wrote={} overwritten={} received={} filtered={} snap={:.6f} water={}",
+            for (auto const& c : b.applied) if (b.correctionLines < 64) {
+                ++b.correctionLines;
+                logger().info("[bullet-exp-client-correction] serial={} age={} positionAge={} packet={} phase={} snap={:.6f} target=({:.6f},{:.6f},{:.6f})",
+                    b.spawn.serial,b.motion.age,c.correction.age,c.correction.kind == 0 ? "absolute" : "delta",
+                    c.afterStep ? "after-step" : "before-step",c.snap,c.correction.pos.x,c.correction.pos.y,c.correction.pos.z);
+            }
+            auto used = interpolator ? fromNative(*interpolator->mPos) : glm::dvec3{};
+            auto phase = b.applied.empty() ? "none" : b.applied.back().afterStep ? "after-step" : "before-step";
+            logger().info("[bullet-exp-client] serial={} age={} tick={} mode={} sim=({:.6f},{:.6f},{:.6f}) before=({:.6f},{:.6f},{:.6f}) lastWrite=({:.6f},{:.6f},{:.6f}) previous=({:.6f},{:.6f},{:.6f}) interpHalf=({:.6f},{:.6f},{:.6f}) actorMissing={} wrote={} overwritten={} received={} filtered={} snap={:.6f} water={} interpolatorPresent={} interpTargetBefore=({:.6f},{:.6f},{:.6f}) interpStepsBefore=({},{},{}) interpTargetUsed=({:.6f},{:.6f},{:.6f}) interpStepsUsed=({},{},{}) positionAge={} snapPhase={} unaged={}",
                 b.spawn.serial,b.motion.age,ticks,modeName(driveMode.load()),b.motion.pos.x,b.motion.pos.y,b.motion.pos.z,
                 before.x,before.y,before.z,expected.x,expected.y,expected.z,b.previous.x,b.previous.y,b.previous.z,half.x,half.y,half.z,
-                !actor,b.wrote,overwritten,b.arrivedTick,b.filteredTick,b.tickSnap,water);
+                !actor,b.wrote,overwritten,b.arrivedTick,b.filteredTick,b.tickSnap,water,static_cast<bool>(interpolator),
+                interpBefore.x,interpBefore.y,interpBefore.z,stepsBefore[0],stepsBefore[1],stepsBefore[2],used.x,used.y,used.z,
+                interpolator ? int(interpolator->mPositionSteps) : -1,interpolator ? int(interpolator->mRotationSteps) : -1,
+                interpolator ? int(interpolator->mHeadYawSteps) : -1,b.lastPacketAge,phase,b.unaged);
             if (b.ticks >= 400) summary(b,"diagnostic-window");
         }
         b.arrivedTick = b.filteredTick = b.acceptedTick = 0; b.tickSnap = 0;

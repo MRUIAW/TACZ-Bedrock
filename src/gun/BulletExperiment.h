@@ -8,17 +8,20 @@
 #include <string>
 #include <string_view>
 #include <unordered_map>
+#include <utility>
+#include <vector>
 #include "gun/BulletPhysics.h"
 
 // Pure protocol/state/schedules for the 0.4.15 experiment. No entity or visual count cap.
 namespace tacz::gun::bullet {
 enum class SyncMode { Tick, Every5 };
 enum class DriveMode { Off, Drive, Filter };
+inline bool correctionAge(int positionAge) { return positionAge > 0 && positionAge % 5 == 0; }
 inline bool placeDue(SyncMode mode, int age, bool final = false) {
-    return final || age == 0 || mode == SyncMode::Tick || age % 5 == 0;
+    return final || age == 0 || mode == SyncMode::Tick || correctionAge(age);
 }
-inline bool acceptMovement(DriveMode mode, int age) {
-    return mode != DriveMode::Filter || (age > 0 && age % 5 == 0);
+inline bool acceptMovement(DriveMode mode, int positionAge) {
+    return mode != DriveMode::Filter || correctionAge(positionAge);
 }
 inline glm::dvec3 interpolate(glm::dvec3 previous, glm::dvec3 current, double alpha) {
     return previous + (current - previous) * alpha;
@@ -75,27 +78,104 @@ inline std::optional<Message> decode(std::string_view bytes) {
     m.waterRules = water != 0;
     return m;
 }
+// Metadata only: native MoveActor packets remain the source of corrections.
+// Send BEFORE placing so a receiver need not infer position age from arrival time.
+struct Placement {
+    uint64_t serial = 0, runtime = 0;
+    int64_t unique = 0;
+    int32_t dimension = 0, age = 0;
+    glm::vec3 pos{}; // exact float target used by the native actor/packet
+};
+inline constexpr size_t PlacementWireSize = 45;
+inline std::string encodePlacement(Placement const& m) {
+    std::string out;
+    auto put = [&]<class T>(T value) {
+        for (auto b : std::bit_cast<std::array<unsigned char,sizeof(T)>>(value)) out.push_back(static_cast<char>(b));
+    };
+    put(uint8_t{1}); put(m.serial); put(m.runtime); put(m.unique); put(m.dimension); put(m.age);
+    for (int i = 0; i < 3; ++i) put(m.pos[i]);
+    return out;
+}
+inline std::optional<Placement> decodePlacement(std::string_view bytes) {
+    if (bytes.size() != PlacementWireSize) return {};
+    size_t cursor = 0;
+    auto get = [&]<class T>() {
+        std::array<unsigned char,sizeof(T)> data{};
+        for (auto& b : data) b = static_cast<unsigned char>(bytes[cursor++]);
+        return std::bit_cast<T>(data);
+    };
+    if (get.operator()<uint8_t>() != 1) return {};
+    Placement m;
+    m.serial = get.operator()<uint64_t>(); m.runtime = get.operator()<uint64_t>(); m.unique = get.operator()<int64_t>();
+    m.dimension = get.operator()<int32_t>(); m.age = get.operator()<int32_t>();
+    for (int i = 0; i < 3; ++i) m.pos[i] = get.operator()<float>();
+    if (!m.serial || !m.runtime || m.age < 0) return {};
+    for (int i = 0; i < 3; ++i) if (!std::isfinite(m.pos[i])) return {};
+    return m;
+}
+// Uses the real SDK component in production and a plain component in synthetic tests.
+template <class Component, class Position, class Rotation>
+void overrideInterpolator(Component& component, Position const& pos, Rotation const& rot) {
+    component.mPos = pos; component.mRot = rot; component.mHeadYaw = rot.y;
+    component.mPositionSteps = 0; component.mRotationSteps = 0; component.mHeadYawSteps = 0;
+    // Do not change native completion/vehicle ownership flags.
+}
 struct State {
-    struct Receipt { bool filtered; std::optional<double> snap; };
+    struct Receipt { bool filtered; std::optional<int> positionAge; };
+    struct Correction { int age, kind; glm::dvec3 pos; };
+    struct Applied { Correction correction; double snap; bool afterStep; };
     Message spawn;
     BulletMotion motion;
     glm::dvec3 previous{}, lastServer{}, lastWritten{};
     bool wrote = false, diagnostic = false;
+    bool interpolatorMissingLogged = false;
     unsigned ticks = 0, overwrites = 0, unexplained = 0, received = 0, filtered = 0;
     unsigned absolute = 0, delta = 0, hints = 0, nativeMotion = 0;
+    unsigned unaged = 0;
+    int lastPacketAge = -1;
     unsigned correctionLines = 0;
     unsigned arrivedTick = 0, filteredTick = 0, acceptedTick = 0;
     double maxSnap = 0, tickSnap = 0;
-    explicit State(Message const& m) : spawn(m), motion(m.motion), previous(m.motion.pos), lastServer(m.motion.pos) {}
+    std::vector<std::pair<int,glm::vec3>> placements;
+    std::vector<Correction> pending;
+    std::vector<Applied> applied;
+    explicit State(Message const& m) : spawn(m), motion(m.motion), previous(m.motion.pos), lastServer(m.motion.pos) {
+        placements.emplace_back(0,glm::vec3(m.motion.pos));
+    }
+    void placement(int age, glm::vec3 pos) { placements.emplace_back(age,pos); }
+    std::optional<int> ageOf(glm::dvec3 pos) const {
+        auto native = glm::vec3(pos);
+        for (auto it = placements.rbegin(); it != placements.rend(); ++it) if (it->second == native) return it->first;
+        return {};
+    }
     double snap(glm::dvec3 position) {
         auto distance = glm::length(position - motion.pos);
         motion.pos = position; // Java Entity.lerpTo: snap current only; keep velocity and previous.
         maxSnap = std::max(maxSnap, distance); tickSnap = std::max(tickSnap, distance);
         return distance;
     }
-    bool step(bool water) {
+    template <class WaterAt> bool tick(WaterAt&& waterAt) {
+        applied.clear();
+        // Packets can arrive on either side of the step that owns their position.
+        // Never fast-forward age/velocity or add a second physics step.
+        size_t after = 0;
+        while (after < pending.size() && pending[after].age <= motion.age) {
+            auto const& c = pending[after++]; applied.push_back({c,snap(c.pos),false});
+        }
         previous = motion.pos; ++ticks;
-        return motion.step(spawn.waterRules && water);
+        bool water = waterAt(motion.pos);
+        bool alive = motion.step(spawn.waterRules && water);
+        for (; after < pending.size(); ++after) {
+            auto const& c = pending[after]; applied.push_back({c,snap(c.pos),true});
+        }
+        pending.clear();
+        return alive;
+    }
+    bool step(bool water) { return tick([water](glm::dvec3) { return water; }); }
+    bool observeBefore(glm::dvec3 pos) {
+        bool changed = wrote && glm::length(pos-lastWritten) > .0001;
+        if (changed) { ++overwrites; if (!acceptedTick) ++unexplained; }
+        return changed;
     }
     Receipt receive(DriveMode mode, int kind, glm::dvec3 position, std::array<bool,3> axes) {
         ++received; ++arrivedTick;
@@ -103,11 +183,17 @@ struct State {
         else if (kind == 2) ++nativeMotion; else ++hints;
         // All received axes, not just accepted ones, advance the transport baseline.
         for (int i = 0; i < 3; ++i) if (axes[i]) lastServer[i] = position[i];
-        bool reject = !acceptMovement(mode,motion.age);
-        if (reject) { ++filtered; ++filteredTick; return {true,{}}; }
+        bool hasPosition = axes[0] || axes[1] || axes[2];
+        auto positionAge = ageOf(lastServer); // rotation/motion-only packets retain the last received position's age
+        lastPacketAge = positionAge.value_or(-1);
+        if (!positionAge) ++unaged; // no guessed local-age fallback
+        bool reject = mode == DriveMode::Filter && (!positionAge || !acceptMovement(mode,*positionAge));
+        if (reject) { ++filtered; ++filteredTick; return {true,positionAge}; }
         ++acceptedTick;
-        if (axes[0] || axes[1] || axes[2]) return {false,snap(lastServer)};
-        return {false,{}}; // hints/motion do not change our Java velocity or position
+        // Non-filter modes must still honor an authoritative native correction if
+        // metadata is missing. Age -1 retains Java's before-step snap, never a guessed age.
+        if (hasPosition) pending.push_back({positionAge.value_or(-1),kind,lastServer});
+        return {false,positionAge}; // hints/motion never change our Java velocity
     }
 };
 class States {
