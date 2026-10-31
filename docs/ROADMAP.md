@@ -1,6 +1,6 @@
 # TACZ-Bedrock 路线图
 
-> 当前版本 **0.4.15**（2026-10-31，every5 + 客户端驱动已设为生产默认，待最终实机回归验收）· 分支 `feat/milestone-1` · 目标：Minecraft Bedrock 1.26.51.01 + LeviLamina 26.51.9
+> 当前版本 **0.4.15**（2026-10-31，every5 + 客户端驱动已设为生产默认，待最终实机回归验收）· 分支 `dev` · 目标：Minecraft Bedrock 1.26.51.01 + LeviLamina 26.51.9
 >
 > 本文件每个版本更新一次。逐版的详细改动见 [`CHANGELOG.md`](../CHANGELOG.md)，各项调查与设计见 `docs/` 下的专题文档。
 
