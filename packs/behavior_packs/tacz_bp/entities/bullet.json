@@ -13,7 +13,7 @@
       }
     },
     "components": {
-      "minecraft:variant": { "value": 0 },
+      "minecraft:variant": { "value": 1 },
       "minecraft:physics": { "has_gravity": false, "has_collision": false },
       "minecraft:collision_box": { "width": 0.0625, "height": 0.0625 },
       "minecraft:pushable": { "is_pushable": false, "is_pushable_by_piston": false },

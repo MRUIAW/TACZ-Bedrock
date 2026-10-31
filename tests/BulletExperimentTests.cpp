@@ -10,7 +10,7 @@ bullet::Message sample(uint64_t serial = 1) {
     return m;
 }
 }
-TEST_CASE("Bullet experiment spawn/removal codec is exact, finite and bounded") {
+TEST_CASE("Bullet spawn/removal codec is exact, finite and bounded") {
     for (auto kind : {bullet::Kind::Spawn,bullet::Kind::Remove}) {
         auto m = sample(); m.kind = kind;
         auto bytes = bullet::encode(m); CHECK(bytes.size() == bullet::WireSize);
@@ -51,17 +51,8 @@ TEST_CASE("Client and server share move then air/water drag and gravity") {
 }
 TEST_CASE("Every five server placements include spawn and any removal endpoint") {
     for (int age = 0; age <= 23; ++age) {
-        CHECK(bullet::placeDue(bullet::SyncMode::Tick,age));
-        CHECK(bullet::placeDue(bullet::SyncMode::Every5,age) == (age % 5 == 0));
-        CHECK(bullet::placeDue(bullet::SyncMode::Every5,age,true));
-    }
-}
-TEST_CASE("Movement filter uses authoritative position age, never packet count or arrival age") {
-    for (int age = 0; age < 20; ++age) {
-        CHECK(bullet::acceptMovement(bullet::DriveMode::Off,age));
-        CHECK(bullet::acceptMovement(bullet::DriveMode::Drive,age));
-        for (int packet = 0; packet < 3; ++packet)
-            CHECK(bullet::acceptMovement(bullet::DriveMode::Filter,age) == (age > 0 && age % 5 == 0));
+        CHECK(bullet::placeDue(age) == (age % 5 == 0));
+        CHECK(bullet::placeDue(age,true));
     }
 }
 TEST_CASE("Java bullet corrections snap current state without blending or changing velocity/previous") {
@@ -76,17 +67,21 @@ TEST_CASE("Java bullet corrections snap current state without blending or changi
     CHECK(bullet::interpolate(client.previous,client.motion.pos,1) == target);
     CHECK(bullet::interpolate(client.previous,client.motion.pos,.5) == (oldPrevious+target)*.5);
 }
-TEST_CASE("Filtered partial-axis packets still update the last received baseline") {
+TEST_CASE("Native partial-axis position corrections retain their baseline without filtering") {
     auto m = sample(); bullet::State client(m);
     client.step(false); auto before = client.motion.pos, velocity = client.motion.vel;
     client.placement(1,glm::vec3(12,m.motion.pos.y,m.motion.pos.z));
-    auto rejected = client.receive(bullet::DriveMode::Filter,1,{12,0,0},{true,false,false});
-    CHECK(rejected.filtered); CHECK(rejected.positionAge == 1);
+    client.receive(1,{12,0,0},{true,false,false});
+    CHECK(client.lastPacketAge == 1);
     CHECK(client.motion.pos == before); CHECK(client.lastServer.x == 12);
+    REQUIRE(client.pending.size() == 1);
+    client.step(false); // native correction was accepted, never filtered
+    CHECK(client.applied.size() == 1);
+    velocity = client.motion.vel;
     client.motion.age = 4;
     client.placement(5,glm::vec3(12,80,m.motion.pos.z));
-    auto accepted = client.receive(bullet::DriveMode::Filter,1,{0,80,0},{false,true,false});
-    CHECK_FALSE(accepted.filtered); CHECK(accepted.positionAge == 5);
+    client.receive(1,{0,80,0},{false,true,false});
+    CHECK(client.lastPacketAge == 5);
     auto nextVelocity = velocity * static_cast<double>(1.F-client.motion.friction);
     nextVelocity.y -= client.motion.gravity;
     client.step(false);
@@ -94,12 +89,11 @@ TEST_CASE("Filtered partial-axis packets still update the last received baseline
     CHECK(client.motion.vel == nextVelocity);
     auto position = client.motion.pos;
     client.placement(6,{99,99,99}); // future metadata must not re-age a position-less packet
-    CHECK_FALSE(client.receive(bullet::DriveMode::Filter,3,{9,9,9},{}).filtered);
-    CHECK_FALSE(client.receive(bullet::DriveMode::Filter,2,{9,9,9},{}).filtered);
+    client.receive(1,{9,9,9},{}); // rotation-only Delta has no new positional correction
+    CHECK(client.lastPacketAge == 5);
     CHECK(client.pending.empty());
     CHECK(client.motion.pos == position); CHECK(client.motion.vel == nextVelocity);
-    CHECK(client.received == 4); CHECK(client.filtered == 1);
-    CHECK(client.delta == 2); CHECK(client.hints == 1); CHECK(client.nativeMotion == 1);
+    CHECK(client.received == 3); CHECK(client.delta == 3);
 }
 namespace {
 struct Interpolator {
@@ -128,17 +122,17 @@ TEST_CASE("Placement age metadata round trips exact native targets and rejects m
     m.age = 5; m.pos.x = std::numeric_limits<float>::infinity();
     CHECK_FALSE(bullet::decodePlacement(bullet::encodePlacement(m)));
 }
-TEST_CASE("Server placement ages equal kept native correction ages independent of client phase") {
-    for (int positionAge = 1; positionAge <= 30; ++positionAge) {
-        CHECK(bullet::placeDue(bullet::SyncMode::Every5,positionAge)
-            == bullet::acceptMovement(bullet::DriveMode::Filter,positionAge));
+TEST_CASE("Every5 placement metadata identifies correction age independently of the client phase") {
+    for (int positionAge = 5; positionAge <= 30; positionAge += 5) {
+        REQUIRE(bullet::placeDue(positionAge));
         for (int arrivalAge : {positionAge-1,positionAge,positionAge+1}) {
             auto m = sample(); bullet::State client(m); client.motion.age = arrivalAge;
             glm::vec3 nativeTarget{float(positionAge),float(-positionAge),3.F};
             client.placement(positionAge,nativeTarget);
-            auto received = client.receive(bullet::DriveMode::Filter,1,glm::dvec3(nativeTarget),{true,true,true});
-            CHECK(received.positionAge == positionAge);
-            CHECK(received.filtered == !bullet::placeDue(bullet::SyncMode::Every5,positionAge));
+            client.receive(1,glm::dvec3(nativeTarget),{true,true,true});
+            CHECK(client.lastPacketAge == positionAge);
+            REQUIRE(client.pending.size() == 1);
+            CHECK(client.pending[0].age == positionAge);
         }
     }
 }
@@ -150,8 +144,8 @@ TEST_CASE("Age five correction before or after the owning step snaps then overri
         bullet::State client(m);
         for (int n = 0; n < localAge; ++n) client.step(false);
         client.placement(5,target);
-        auto receipt = client.receive(bullet::DriveMode::Filter,1,glm::dvec3(target),{true,true,true});
-        REQUIRE_FALSE(receipt.filtered); REQUIRE(client.pending.size() == 1);
+        client.receive(1,glm::dvec3(target),{true,true,true});
+        REQUIRE(client.pending.size() == 1);
         auto oldVelocity = client.motion.vel;
         bool sampled = false;
         client.tick([&](glm::dvec3 pos) {
@@ -178,14 +172,36 @@ TEST_CASE("Only overwrites without an accepted native server packet are unexplai
     bullet::State client(sample()); client.wrote = true; client.lastWritten = {0,0,0};
     CHECK_FALSE(client.observeBefore({0,0,0}));
     client.placement(5,{1,1,1});
-    CHECK_FALSE(client.receive(bullet::DriveMode::Drive,1,{1,1,1},{true,true,true}).filtered);
+    client.receive(1,{1,1,1},{true,true,true});
     CHECK(client.observeBefore({1,1,1})); CHECK(client.overwrites == 1); CHECK(client.unexplained == 0);
     client.acceptedTick = 0;
     CHECK(client.observeBefore({1,1,1})); CHECK(client.overwrites == 2); CHECK(client.unexplained == 1);
-    CHECK(client.receive(bullet::DriveMode::Filter,1,{9,9,9},{true,true,true}).filtered);
+    client.receive(1,{9,9,9},{true,true,true});
     CHECK(client.unaged == 1); CHECK(client.lastPacketAge == -1);
-    CHECK_FALSE(client.receive(bullet::DriveMode::Drive,1,{9,9,9},{true,true,true}).filtered);
     CHECK(client.pending.back().age == -1);
+}
+TEST_CASE("A rejoin clears bullets but preserves always-on drive capability and marker settings") {
+    bullet::ClientDriver driver;
+    CHECK_FALSE(driver.marker); // production default, without any command
+    driver.available = true; // successful module startup, performed only once
+    auto m = sample();
+    REQUIRE(driver.bullets.spawn(m));
+    driver.bullets.entries.at(m.serial).step(false);
+    driver.marker = true; // explicit debug opt-in also survives a world exit
+    driver.clearWorld();
+    CHECK(driver.available); CHECK(driver.marker); CHECK(driver.bullets.entries.empty());
+    m.motion.pos = {20,70,30};
+    REQUIRE(driver.bullets.spawn(m)); // a new server session can reuse the serial
+    auto& rejoined = driver.bullets.entries.at(m.serial);
+    CHECK(rejoined.motion.age == 0); CHECK(rejoined.pending.empty());
+    REQUIRE(rejoined.step(false)); // no drive activation/mode command after rejoin
+    Interpolator native;
+    bullet::overrideInterpolator(native,glm::vec3(rejoined.motion.pos),rejoined.motion.rotation());
+    CHECK(native.mPos == glm::vec3(m.motion.pos+m.motion.vel));
+    CHECK(native.mPositionSteps == 0); CHECK(native.mRotationSteps == 0); CHECK(native.mHeadYawSteps == 0);
+    bullet::ClientDriver failedStartup;
+    failedStartup.clearWorld();
+    CHECK_FALSE(failedStartup.available); // rejoin never silently repairs a failed native hook
 }
 TEST_CASE("Unknown/late bullet messages, expiry, and lifecycle clear are safe without a bullet cap") {
     bullet::States states;

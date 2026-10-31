@@ -89,7 +89,6 @@ gun::DisplacementHistory targetHistory;
 Level const* historyLevel = nullptr;
 
 std::array<ll::event::ListenerPtr, 2> listeners;
-gun::bullet::SyncMode syncMode = gun::bullet::SyncMode::Tick;
 uint64_t experimentTick = 0;
 struct DiagnosticArm { gun::bullet::DiagnosticBudget budget; };
 std::unordered_map<int64_t, DiagnosticArm> experimentArms;
@@ -116,7 +115,7 @@ void place(Actor& actor, gun::BulletMotion const& motion) {
 }
 
 void placeBullet(Actor& actor, Bullet& b, bool final = false) {
-    if (!gun::bullet::placeDue(syncMode, b.motion.age, final)) return;
+    if (!gun::bullet::placeDue(b.motion.age, final)) return;
     gun::bullet::Placement stamp;
     stamp.serial = b.serial; stamp.runtime = b.runtime; stamp.unique = b.entity.rawID; stamp.dimension = b.dimension;
     stamp.age = final ? static_cast<int>(b.observedTicks) : b.motion.age;
@@ -148,9 +147,9 @@ void experimentLog(Bullet& b, Actor const* actor, bool alive) {
     if (!b.experimentDiagnostic) return;
     if (b.observedTicks <= 400) {
         auto p = actor ? toGlm(actor->getPosition()) : b.motion.pos;
-        logger().info("[bullet-exp-server] serial={} age={} tick={} sim=({:.6f},{:.6f},{:.6f}) actor=({:.6f},{:.6f},{:.6f}) placed={} sync={} moveMode={} water={} alive={}",
+        logger().info("[bullet-exp-server] serial={} age={} tick={} sim=({:.6f},{:.6f},{:.6f}) actor=({:.6f},{:.6f},{:.6f}) placed={} sync=every5 moveMode={} water={} alive={}",
             b.serial,b.motion.age,experimentTick,b.motion.pos.x,b.motion.pos.y,b.motion.pos.z,p.x,p.y,p.z,b.placed,
-            syncMode == gun::bullet::SyncMode::Every5 ? "every5" : "tick",debug::bulletMoveMode.load(),b.water,alive);
+            debug::bulletMoveMode.load(),b.water,alive);
     }
     if (!alive || b.observedTicks >= 400) {
         experimentSummary(b,alive ? "diagnostic-window" : "removed");
@@ -401,14 +400,9 @@ void tickAll(Level& level) {
 
 } // namespace
 
-void setEvery5(bool enabled) {
-    std::lock_guard lock(mutex);
-    syncMode = enabled ? gun::bullet::SyncMode::Every5 : gun::bullet::SyncMode::Tick;
-}
 std::string experimentStatus() {
     std::lock_guard lock(mutex);
-    return fmt::format("server sync={} moveMode={} speedScale={} active={}",
-        syncMode == gun::bullet::SyncMode::Every5 ? "every5" : "tick",debug::bulletMoveMode.load(),
+    return fmt::format("server sync=every5 moveMode={} speedScale={} active={}",debug::bulletMoveMode.load(),
         debug::bulletSpeedScale.load(),bullets.size());
 }
 void armDiagnostic(Player& player, unsigned count) {

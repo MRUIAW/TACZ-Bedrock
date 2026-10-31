@@ -12,16 +12,12 @@
 #include <vector>
 #include "gun/BulletPhysics.h"
 
-// Pure protocol/state/schedules for the 0.4.15 experiment. No entity or visual count cap.
+// Production bullet protocol/state: five-tick server placement, always-on client driving.
+// Filename retained for history. No entity or visual count cap.
 namespace tacz::gun::bullet {
-enum class SyncMode { Tick, Every5 };
-enum class DriveMode { Off, Drive, Filter };
 inline bool correctionAge(int positionAge) { return positionAge > 0 && positionAge % 5 == 0; }
-inline bool placeDue(SyncMode mode, int age, bool final = false) {
-    return final || age == 0 || mode == SyncMode::Tick || correctionAge(age);
-}
-inline bool acceptMovement(DriveMode mode, int positionAge) {
-    return mode != DriveMode::Filter || correctionAge(positionAge);
+inline bool placeDue(int age, bool final = false) {
+    return final || age == 0 || correctionAge(age);
 }
 inline glm::dvec3 interpolate(glm::dvec3 previous, glm::dvec3 current, double alpha) {
     return previous + (current - previous) * alpha;
@@ -121,7 +117,6 @@ void overrideInterpolator(Component& component, Position const& pos, Rotation co
     // Do not change native completion/vehicle ownership flags.
 }
 struct State {
-    struct Receipt { bool filtered; std::optional<int> positionAge; };
     struct Correction { int age, kind; glm::dvec3 pos; };
     struct Applied { Correction correction; double snap; bool afterStep; };
     Message spawn;
@@ -129,12 +124,12 @@ struct State {
     glm::dvec3 previous{}, lastServer{}, lastWritten{};
     bool wrote = false, diagnostic = false;
     bool interpolatorMissingLogged = false;
-    unsigned ticks = 0, overwrites = 0, unexplained = 0, received = 0, filtered = 0;
-    unsigned absolute = 0, delta = 0, hints = 0, nativeMotion = 0;
+    unsigned ticks = 0, overwrites = 0, unexplained = 0, received = 0;
+    unsigned absolute = 0, delta = 0;
     unsigned unaged = 0;
     int lastPacketAge = -1;
     unsigned correctionLines = 0;
-    unsigned arrivedTick = 0, filteredTick = 0, acceptedTick = 0;
+    unsigned arrivedTick = 0, acceptedTick = 0;
     double maxSnap = 0, tickSnap = 0;
     std::vector<std::pair<int,glm::vec3>> placements;
     std::vector<Correction> pending;
@@ -177,23 +172,19 @@ struct State {
         if (changed) { ++overwrites; if (!acceptedTick) ++unexplained; }
         return changed;
     }
-    Receipt receive(DriveMode mode, int kind, glm::dvec3 position, std::array<bool,3> axes) {
+    void receive(int kind, glm::dvec3 position, std::array<bool,3> axes) {
         ++received; ++arrivedTick;
-        if (kind == 0) ++absolute; else if (kind == 1) ++delta;
-        else if (kind == 2) ++nativeMotion; else ++hints;
-        // All received axes, not just accepted ones, advance the transport baseline.
+        if (kind == 0) ++absolute; else ++delta;
+        // Every position packet passes through to Bedrock; partial axes retain the baseline.
         for (int i = 0; i < 3; ++i) if (axes[i]) lastServer[i] = position[i];
         bool hasPosition = axes[0] || axes[1] || axes[2];
         auto positionAge = ageOf(lastServer); // rotation/motion-only packets retain the last received position's age
         lastPacketAge = positionAge.value_or(-1);
         if (!positionAge) ++unaged; // no guessed local-age fallback
-        bool reject = mode == DriveMode::Filter && (!positionAge || !acceptMovement(mode,*positionAge));
-        if (reject) { ++filtered; ++filteredTick; return {true,positionAge}; }
         ++acceptedTick;
-        // Non-filter modes must still honor an authoritative native correction if
-        // metadata is missing. Age -1 retains Java's before-step snap, never a guessed age.
+        // Honor authoritative corrections even if metadata is missing. Age -1 retains
+        // Java's before-step snap, never a guessed age.
         if (hasPosition) pending.push_back({positionAge.value_or(-1),kind,lastServer});
-        return {false,positionAge}; // hints/motion never change our Java velocity
     }
 };
 class States {
@@ -221,6 +212,14 @@ public:
         it->second.snap(pos); return true;
     }
     void clear() { entries.clear(); runtimes.clear(); lastSpawn = 0; }
+};
+// Module capability/settings outlive a world; only records are cleared on rejoin.
+// `available` is set by startup hook validation, never a player-selectable drive mode.
+struct ClientDriver {
+    States bullets;
+    bool available = false;
+    bool marker = false;
+    void clearWorld() { bullets.clear(); }
 };
 // Bounded diagnostics only, never a projectile/visibility cap. Re-arm for another sample.
 struct DiagnosticBudget {

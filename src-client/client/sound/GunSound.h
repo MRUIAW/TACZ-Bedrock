@@ -30,5 +30,6 @@ void clear();
 // END-of-client-level-tick cleanup hook, separate from render/frame playback.
 void enable();
 void disable();
+bool endTickAvailable(); // startup capability only; safe without a world
 
 } // namespace tacz::client::sound

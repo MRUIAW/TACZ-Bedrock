@@ -63,7 +63,6 @@ struct BulletDebugParams {
     float speedScale;
 };
 struct HitDiagnosticParams { int shots; };
-struct BulletSyncParams { std::string mode; };
 
 struct AmmoParams {
     int count;
@@ -236,13 +235,6 @@ void registerCommands() {
                 player->sendMessage(message); output.success(message);
             });
     }
-    command.overload<BulletSyncParams>().text("bullet").text("sync").required("mode")
-        .execute([](CommandOrigin const& origin, CommandOutput& output, BulletSyncParams const& params) {
-            if (params.mode != "tick" && params.mode != "every5") return output.error("sync: tick or every5");
-            bullet::setEvery5(params.mode == "every5");
-            if (auto* player = originPlayer(origin)) player->sendMessage("[TACZ] " + bullet::experimentStatus());
-            output.success("Bullet server placement: " + params.mode + " (hits still checked every tick)");
-        });
     command.overload().text("bullet").text("status")
         .execute([](CommandOrigin const& origin, CommandOutput& output) {
             auto status = bullet::experimentStatus();

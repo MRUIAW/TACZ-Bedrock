@@ -10,7 +10,30 @@ round, the minor number goes up by 1 for each finished feature or phase.
 
 ## [0.4.15] - 2026-10-31
 
-### Live fix — native interpolator ownership and correction ages
+### Production default — every5 + always-on client drive
+
+- Server placement is now fixed at spawn, ages 5/10/15/… and the final endpoint;
+  authoritative simulation, collision and damage still run every tick. All clients use
+  every5, without capability negotiation or per-client tick fallback. Unmodded or
+  unavailable-drive clients can wait at the muzzle about 250 ms, then see jumps.
+- Removed `/tacz bullet sync`, `/taczbullet mode`, off/tick/drive-filter alternatives,
+  packet filtering and motion/hint receive hooks. Passive Absolute/Delta observers remain
+  because native position packets are the tested snap source; placement packets remain
+  age metadata only. Shared POST-tick and early world-leave integration are unchanged.
+- World exit clears bullet records/inboxes, not module drive capability or marker settings;
+  added a synthetic rejoin regression. Startup hook failures log once; component checks
+  remain menu-safe and deferred until an actor exists, with native every5 fallback if absent.
+- Marker defaults **off**, including the BP's initial hidden variant. Use
+  `/taczbullet marker 1` to show the yellow cube, `0` to hide it. Diagnostics, status,
+  `bdebug` speed/moveTo/teleport controls, 80-block spawn cutoff, water physics and tested
+  before-/after-step snaps are retained. Tracers and ammo models remain future work.
+- User's 11:31–11:33 retest: every5+drive dry overwrites/unexplained 0/0, max snap .000002;
+  temporary-pool water max snap .000004. F3+B smoothness was visually accepted.
+  Tick+drive-filter still had one unexplained overwrite and is not retained. The final
+  production-default build/rejoin fix still needs live regression acceptance; version stays
+  0.4.15. See `docs/BULLET-0.4.15.md` for evidence, validation and the remaining checklist.
+
+### Historical live fix — native interpolator ownership and correction ages
 
 - The 10:35 live run confirmed Delta-only movement and near-zero per-tick dry-air
   physics error, but native interpolation pulled driven actors back without new packets.
@@ -22,9 +45,9 @@ round, the minor number goes up by 1 for each finished feature or phase.
   position-age predicate; corrections apply before/after the owning step in the same
   client tick, then the native override wins. Diagnostics expose the source age,
   correction phase and interpolator before/used state. Matching server/client builds
-  are required. Still an unaccepted 0.4.15 experiment; water/retest remain pending.
+  are required. At that stage, water/retest were pending; later results are recorded above.
 
-### Experimental — awaiting live acceptance
+### Historical experiment — superseded by the production default above
 
 - Runtime-selectable native bullet placement (`tick` / `every5`) and client control
   (`off` / `drive` / `drive-filter`), retaining server-only collision and damage.

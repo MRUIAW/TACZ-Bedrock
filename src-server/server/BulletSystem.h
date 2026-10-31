@@ -10,7 +10,8 @@
 class Player;
 
 // Server-driven bullets: each shot spawns a tacz:bullet entity (behavior pack) that the mod
-// moves every server tick with TACZ's motion model. Per tick the path is ray-traced against
+// simulates every server tick and places every five ticks (plus spawn/final endpoint).
+// Per tick the authoritative path is ray-traced against
 // blocks and entities; entity hits deal TACZ damage (distance falloff, headshot, armour
 // ignore, pierce). Accepted damage sends hit/kill feedback to the shooter.
 // Not yet: player latency rewind, explosions.
@@ -18,7 +19,6 @@ namespace tacz::server::bullet {
 
 void enable();
 void disable();
-void setEvery5(bool enabled);
 std::string experimentStatus();
 void armDiagnostic(Player& player, unsigned bullets);
 

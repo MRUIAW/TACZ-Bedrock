@@ -163,8 +163,9 @@ void clear() {
 
 void enable() {
     hooked = SoundCleanupTickHook::hook() == 0;
-    if (!hooked) logger().warn("Cannot hook client END tick; periodic sound cleanup and bullet experiment unavailable");
+    if (!hooked) logger().warn("Cannot hook client END tick; periodic sound cleanup unavailable");
 }
+bool endTickAvailable() { return hooked; }
 void disable() {
     if (hooked) SoundCleanupTickHook::unhook();
     hooked = false;
